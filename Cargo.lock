@@ -37,6 +37,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arcade-proto"
+version = "0.0.0"
+dependencies = [
+ "arcade-workload",
+]
+
+[[package]]
 name = "arcade-term"
 version = "0.0.0"
 dependencies = [
