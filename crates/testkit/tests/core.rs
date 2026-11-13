@@ -197,16 +197,17 @@ fn resizing_the_client_gives_the_program_the_new_size() {
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
     client.type_line("stty size");
-    client.wait_for_text("30 100").unwrap();
+    // One row of the client's terminal is the status bar.
+    client.wait_for_text("29 100").unwrap();
 
     client.resize(60, 20);
     client.type_line("stty size");
-    client.wait_for_text("20 60").unwrap();
+    client.wait_for_text("19 60").unwrap();
     assert_eq!((client.screen.cols(), client.screen.rows()), (60, 20));
 
     client.resize(132, 43);
     client.type_line("stty size");
-    client.wait_for_text("43 132").unwrap();
+    client.wait_for_text("42 132").unwrap();
 }
 
 #[test]
@@ -217,7 +218,7 @@ fn the_program_is_told_about_a_resize_with_a_signal() {
     client.type_line("trap 'echo winch-$(stty size)' WINCH; echo ready-to-trap");
     client.wait_for_text("ready-to-trap").unwrap();
     client.resize(70, 25);
-    client.wait_for_text("winch-25 70").unwrap();
+    client.wait_for_text("winch-24 70").unwrap();
 }
 
 /// Scenario 5 through the whole path: a line with combining Vietnamese, Han characters and a
@@ -274,7 +275,8 @@ fn a_client_that_disconnects_leaves_the_session_running() {
     let start = std::time::Instant::now();
     loop {
         let (_, list) = daemon.command("session.list", &[]).unwrap();
-        if list.lines().count() == 1 && list.trim_end().ends_with("\t0") {
+        // Fields: name, id, attached, windows, panes.
+        if list.lines().count() == 1 && list.split('\t').nth(2) == Some("0") {
             break;
         }
         assert!(start.elapsed() < WAIT, "still attached: {list:?}");

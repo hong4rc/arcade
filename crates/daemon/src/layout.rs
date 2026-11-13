@@ -5,9 +5,6 @@
 //! proportions. There is no frame around a pane: a window with one pane gives it the whole area,
 //! and only between two neighbours is there exactly one column or row (the divider).
 
-// The daemon starts using this module in the next step.
-#![allow(dead_code)]
-
 /// Identifier of a pane (the daemon's own number; this module does not interpret it).
 pub type PaneId = u64;
 
@@ -312,16 +309,8 @@ impl Layout {
         (panes, dividers)
     }
 
-    pub fn panes(&self) -> Vec<PaneId> {
-        self.rects().into_iter().map(|(p, _)| p).collect()
-    }
-
     pub fn len(&self) -> usize {
         self.rects().len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        false
     }
 
     pub fn contains(&self, pane: PaneId) -> bool {

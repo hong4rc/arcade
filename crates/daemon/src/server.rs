@@ -1,9 +1,9 @@
 //! The daemon: one thread, one event loop.
 //!
 //! Each turn of the loop does, in this order: (1) read what clients sent and write keyboard
-//! bytes straight to the panes' terminals, (2) read at most 64 KiB from each pane that has output
-//! and give it to the terminal emulation, (3) handle panes whose process ended, (4) build and
-//! send a screen update for each attached client that can take one. The loop sleeps in the
+//! bytes to the panes' terminals, (2) read at most 64 KiB from each pane that has output and give
+//! it to the terminal emulation, (3) handle panes whose process ended, (4) build and send a
+//! screen update for each attached client that can take one. The loop sleeps in the
 //! operating system's event queue until something happens or a concrete deadline arrives; there
 //! is no periodic timer.
 
@@ -20,15 +20,20 @@ use arcade_proto::{
     AttachRequest, ClientMessage, CreateMode, Decoder, DetachReason, PROTOCOL_VERSION,
     ServerMessage,
 };
-use arcade_term::{Event as TermEvent, Term, TermConfig};
+use arcade_term::{Cursor, CursorShape, Event as TermEvent, Term, TermConfig};
 use mio::net::{UnixListener, UnixStream};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
 
+use crate::compose::Screen;
+use crate::layout::{Layout, PaneId, Rect};
 use crate::log::Log;
 use crate::paths::prepare_socket_dir;
 use crate::pty::{self, SpawnSpec};
-use crate::render::{HostModes, Renderer};
+use crate::render::Renderer;
+
+mod actions;
+mod frame;
 
 const LISTENER: Token = Token(0);
 const WAKER: Token = Token(1);
@@ -136,21 +141,113 @@ struct Pane {
     compress_at: Option<Instant>,
     /// Compression is in progress, one small step per turn of the loop.
     compressing: bool,
+    /// Where the pane's cursor was when its screen was last read.
+    last_cursor: Cursor,
+}
+
+struct Window {
+    id: u64,
+    name: String,
+    layout: Layout,
+    focus: PaneId,
+    /// The pane that had the focus before this one.
+    last_focus: Option<PaneId>,
+    /// The focused pane fills the whole window; the layout underneath is kept.
+    zoomed: bool,
+}
+
+impl Window {
+    /// The room of every pane: the layout's, except that a zoomed pane has the whole window.
+    fn rects(&self) -> Vec<(PaneId, Rect)> {
+        let mut rects = self.layout.rects();
+        if self.zoomed {
+            for (pane, rect) in &mut rects {
+                if *pane == self.focus {
+                    *rect = self.layout.area();
+                }
+            }
+        }
+        rects
+    }
+
+    /// The panes that show, with their rooms.
+    fn visible_rects(&self) -> Vec<(PaneId, Rect)> {
+        if self.zoomed {
+            vec![(self.focus, self.layout.area())]
+        } else {
+            self.layout.rects()
+        }
+    }
 }
 
 struct Session {
     id: u64,
     name: String,
-    pane: Pane,
+    /// The environment the session was created with, for the panes made later.
+    env: Vec<String>,
+    /// Where the session was created: the working directory of a pane whose own is unknown.
+    cwd: String,
+    windows: Vec<Window>,
+    /// The window shown.
+    current: u64,
+    /// The window shown before the current one.
+    last_window: Option<u64>,
+    /// Size of the attached client's terminal.
+    cols: u16,
+    rows: u16,
     client: Option<u64>,
     /// Ordering of use, for "the session used last".
     last_used: u64,
-    /// The next update must redraw the whole screen.
+    /// The client's screen is new or changed shape: the next update must redraw all of it.
     need_full: bool,
-    /// What the attached client's terminal shows.
+    /// The panes changed room or the window shown changed: they are all read again in full.
+    relayout: bool,
+    /// The dividers or the status bar must be drawn again.
+    chrome_dirty: bool,
+    /// What the client's screen should show, and what it was last sent.
+    screen: Screen,
     renderer: Renderer,
     /// When the last update was sent to the attached client.
     last_frame: Option<Instant>,
+}
+
+/// Rows of the client's screen the status bar takes.
+const STATUS_ROWS: u16 = 1;
+
+/// The size of the area the windows have, inside a client terminal of this size.
+fn window_area(cols: u16, rows: u16) -> (u16, u16) {
+    let rows = if rows > STATUS_ROWS {
+        rows - STATUS_ROWS
+    } else {
+        rows
+    };
+    (cols.max(1), rows.max(1))
+}
+
+impl Session {
+    fn window(&self, id: u64) -> Option<&Window> {
+        self.windows.iter().find(|w| w.id == id)
+    }
+
+    fn window_mut(&mut self, id: u64) -> Option<&mut Window> {
+        self.windows.iter_mut().find(|w| w.id == id)
+    }
+
+    fn current_window(&self) -> &Window {
+        self.window(self.current)
+            .unwrap_or_else(|| &self.windows[0])
+    }
+
+    fn pane_count(&self) -> usize {
+        self.windows.iter().map(|w| w.layout.len()).sum()
+    }
+
+    fn all_panes(&self) -> Vec<PaneId> {
+        self.windows
+            .iter()
+            .flat_map(|w| w.layout.rects().into_iter().map(|(p, _)| p))
+            .collect()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -186,10 +283,12 @@ struct Server {
     scrollback_lines: usize,
     next_token: usize,
     next_session: u64,
+    next_window: u64,
     use_counter: u64,
     targets: HashMap<usize, Target>,
     clients: HashMap<u64, Client>,
     sessions: HashMap<u64, Session>,
+    panes: HashMap<u64, Pane>,
     exits_rx: Receiver<(u64, String)>,
     exits_tx: Sender<(u64, String)>,
     waker: Arc<Waker>,
@@ -225,10 +324,12 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         scrollback_lines: config.scrollback_lines,
         next_token: FIRST_DYNAMIC_TOKEN,
         next_session: 1,
+        next_window: 1,
         use_counter: 0,
         targets: HashMap::new(),
         clients: HashMap::new(),
         sessions: HashMap::new(),
+        panes: HashMap::new(),
         exits_rx,
         exits_tx,
         waker,
@@ -300,9 +401,8 @@ impl Server {
                 .clients
                 .iter()
                 .any(|(id, c)| c.read_pending && !self.client_blocked(*id))
-                || self.sessions.values().any(|s| s.pane.read_pending)
+                || self.panes.values().any(|p| p.read_pending || p.compressing)
                 || !self.exited.is_empty()
-                || self.sessions.values().any(|s| s.pane.compressing)
                 || self.needs_frame();
             let timeout = if busy {
                 Some(Duration::ZERO)
@@ -346,12 +446,7 @@ impl Server {
                     .filter(|(_, c)| c.read_pending)
                     .map(|(id, _)| *id),
             );
-            pane_ready.extend(
-                self.sessions
-                    .values()
-                    .filter(|s| s.pane.read_pending)
-                    .map(|s| s.pane.id),
-            );
+            pane_ready.extend(self.panes.values().filter(|p| p.read_pending).map(|p| p.id));
 
             // (1) Clients first, so keys reach the pane before any output is handled.
             for id in client_writable.drain() {
@@ -386,36 +481,27 @@ impl Server {
         }
     }
 
+    /// The session the client is attached to.
+    fn session_of_client(&self, client_id: u64) -> Option<u64> {
+        self.sessions
+            .values()
+            .find(|s| s.client == Some(client_id))
+            .map(|s| s.id)
+    }
+
+    /// The pane that has the focus in a session's current window.
+    fn focus_pane_of(&self, session_id: u64) -> Option<u64> {
+        self.sessions
+            .get(&session_id)
+            .map(|s| s.current_window().focus)
+    }
+
     /// A client whose pane still has a lot of unwritten input is not read from for now.
     fn client_blocked(&self, client_id: u64) -> bool {
-        self.sessions
-            .values()
-            .any(|s| s.client == Some(client_id) && s.pane.input.len() >= PANE_INPUT_SOFT_LIMIT)
-    }
-
-    /// When the next screen update for this session may be sent: `None` when there is nothing
-    /// to send or the client is still busy taking the last one.
-    fn frame_time(&self, s: &Session, now: Instant) -> Option<Instant> {
-        let ready = s
-            .client
-            .and_then(|c| self.clients.get(&c))
-            .is_some_and(|c| c.out.is_empty() && !c.gone);
-        if !(s.pane.dirty || s.need_full) || !ready {
-            return None;
-        }
-        // The 60 per second limit is for floods. A light update (an echoed key) goes out at
-        // once, so typing is not delayed by the pacing of the update before it.
-        if s.pane.rate.is_light() {
-            return Some(now);
-        }
-        Some(s.last_frame.map_or(now, |t| t + FRAME_INTERVAL))
-    }
-
-    fn needs_frame(&self) -> bool {
-        let now = Instant::now();
-        self.sessions
-            .values()
-            .any(|s| self.frame_time(s, now).is_some_and(|t| t <= now))
+        self.session_of_client(client_id)
+            .and_then(|s| self.focus_pane_of(s))
+            .and_then(|p| self.panes.get(&p))
+            .is_some_and(|p| p.input.len() >= PANE_INPUT_SOFT_LIMIT)
     }
 
     fn next_deadline(&self) -> Option<Duration> {
@@ -433,14 +519,16 @@ impl Server {
         if let Some(t) = self.stopping {
             consider(t);
         }
+        for p in self.panes.values() {
+            if let Some(t) = p.term.stuck_deadline() {
+                consider(t);
+            }
+            if let Some(t) = p.compress_at {
+                consider(t);
+            }
+        }
         for s in self.sessions.values() {
-            if let Some(t) = s.pane.term.stuck_deadline() {
-                consider(t);
-            }
             if let Some(t) = self.frame_time(s, now) {
-                consider(t);
-            }
-            if let Some(t) = s.pane.compress_at {
                 consider(t);
             }
         }
@@ -465,8 +553,8 @@ impl Server {
             && !self.killed_hard
         {
             self.killed_hard = true;
-            for s in self.sessions.values() {
-                pty::signal_group(s.pane.pid, libc::SIGKILL);
+            for p in self.panes.values() {
+                pty::signal_group(p.pid, libc::SIGKILL);
             }
         }
         false
@@ -658,7 +746,7 @@ impl Server {
             ClientMessage::Command { name, args }
                 if state == ClientState::Mismatched && name == "server.kill" =>
             {
-                let (ok, output) = self.run_command(&name, &args);
+                let (ok, output) = self.run_command(&name, &args, None);
                 self.send(id, &ServerMessage::CommandResult { ok, output });
                 if let Some(c) = self.clients.get_mut(&id) {
                     c.close_after_flush = true;
@@ -684,7 +772,7 @@ impl Server {
             ClientMessage::Attach(request) => self.attach(id, request),
             ClientMessage::Input(bytes) => {
                 if let ClientState::Attached(session) = state {
-                    self.write_to_pane(session, &bytes);
+                    self.handle_input(session, &bytes);
                 }
             }
             ClientMessage::Resize { cols, rows } => {
@@ -698,14 +786,21 @@ impl Server {
                 }
             }
             ClientMessage::Command { name, args } => {
-                let (ok, output) = self.run_command(&name, &args);
-                self.send(id, &ServerMessage::CommandResult { ok, output });
-                if let Some(c) = self.clients.get_mut(&id)
-                    && !matches!(c.state, ClientState::Attached(_))
-                {
-                    c.close_after_flush = true;
-                }
+                self.command_from_client(id, &name, &args, None)
             }
+            ClientMessage::PaneCommand { pane, name, args } => {
+                self.command_from_client(id, &name, &args, Some(pane));
+            }
+        }
+    }
+
+    fn command_from_client(&mut self, id: u64, name: &str, args: &[String], pane: Option<u64>) {
+        let (ok, output) = self.run_command(name, args, pane);
+        self.send(id, &ServerMessage::CommandResult { ok, output });
+        if let Some(c) = self.clients.get_mut(&id)
+            && !matches!(c.state, ClientState::Attached(_))
+        {
+            c.close_after_flush = true;
         }
     }
 
@@ -770,7 +865,6 @@ impl Server {
             session.client = Some(id);
             session.need_full = true;
             session.last_used = self.use_counter;
-            session.pane.dirty = true;
             session.name.clone()
         };
         if let Some(c) = self.clients.get_mut(&id) {
@@ -811,23 +905,19 @@ impl Server {
         }
     }
 
-    fn create_session(&mut self, request: &AttachRequest) -> Result<u64, String> {
-        let name = match &request.new_name {
-            Some(name) => {
-                if self.sessions.values().any(|s| &s.name == name) {
-                    return Err(format!("duplicate session: {name}"));
-                }
-                name.clone()
-            }
-            None => self.unique_name(&default_session_name(&request.cwd)),
-        };
-        let session_id = self.next_session;
-        self.next_session += 1;
+    /// Start a process in a new pseudo terminal and give it a terminal emulation. The pane is
+    /// registered with the event queue but belongs to no window yet.
+    fn spawn_pane(
+        &mut self,
+        argv: Vec<String>,
+        cwd: String,
+        base_env: &[String],
+        cols: u16,
+        rows: u16,
+    ) -> Result<Pane, String> {
         let token = self.alloc_token();
         let pane_id = token.0 as u64;
-
-        let mut env: Vec<String> = request
-            .env
+        let mut env: Vec<String> = base_env
             .iter()
             .filter(|e| {
                 !e.starts_with("ARCADE=")
@@ -842,16 +932,17 @@ impl Server {
         env.push("TERM=xterm-256color".to_string());
         env.push("COLORTERM=truecolor".to_string());
 
+        let (cols, rows) = (cols.max(1), rows.max(1));
         let spawned = pty::spawn(&SpawnSpec {
-            argv: request.command.clone(),
-            cwd: request.cwd.clone(),
+            argv,
+            cwd,
             env,
-            cols: request.cols.max(1),
-            rows: request.rows.max(1),
+            cols,
+            rows,
         })
         .map_err(|e| e.to_string())?;
 
-        let mut config = TermConfig::new(request.cols.max(1), request.rows.max(1));
+        let mut config = TermConfig::new(cols, rows);
         config.scrollback_lines = self.scrollback_lines;
         let term = Term::new(config).map_err(|e| e.to_string())?;
 
@@ -880,34 +971,85 @@ impl Server {
             let _ = waker.wake();
         });
 
+        Ok(Pane {
+            id: pane_id,
+            token,
+            master: spawned.master,
+            term,
+            pid: spawned.pid,
+            input: Vec::new(),
+            read_pending: true,
+            dirty: true,
+            rate: OutputRate::default(),
+            exit_note: None,
+            compress_at: None,
+            compressing: false,
+            last_cursor: Cursor {
+                x: 0,
+                y: 0,
+                visible: true,
+                shape: CursorShape::Block,
+                blinking: false,
+            },
+        })
+    }
+
+    fn create_session(&mut self, request: &AttachRequest) -> Result<u64, String> {
+        let name = match &request.new_name {
+            Some(name) => {
+                if self.sessions.values().any(|s| &s.name == name) {
+                    return Err(format!("duplicate session: {name}"));
+                }
+                name.clone()
+            }
+            None => self.unique_name(&default_session_name(&request.cwd)),
+        };
+        let (cols, rows) = (request.cols.max(1), request.rows.max(1));
+        let (area_cols, area_rows) = window_area(cols, rows);
+        let pane = self.spawn_pane(
+            request.command.clone(),
+            request.cwd.clone(),
+            &request.env,
+            area_cols,
+            area_rows,
+        )?;
+        let session_id = self.next_session;
+        self.next_session += 1;
+        let window_id = self.next_window;
+        self.next_window += 1;
         self.log.line(&format!(
             "session {session_id} created, pane process {}",
-            spawned.pid
+            pane.pid
         ));
         self.use_counter += 1;
         self.ever_had_session = true;
+        let pane_id = pane.id;
+        self.panes.insert(pane_id, pane);
         self.sessions.insert(
             session_id,
             Session {
                 id: session_id,
                 name,
-                pane: Pane {
-                    id: pane_id,
-                    token,
-                    master: spawned.master,
-                    term,
-                    pid: spawned.pid,
-                    input: Vec::new(),
-                    read_pending: true,
-                    dirty: true,
-                    rate: OutputRate::default(),
-                    exit_note: None,
-                    compress_at: None,
-                    compressing: false,
-                },
+                env: request.env.clone(),
+                cwd: request.cwd.clone(),
+                windows: vec![Window {
+                    id: window_id,
+                    name: default_session_name(&request.cwd),
+                    layout: Layout::new(pane_id, area_cols, area_rows),
+                    focus: pane_id,
+                    last_focus: None,
+                    zoomed: false,
+                }],
+                current: window_id,
+                last_window: None,
+                cols,
+                rows,
                 client: None,
                 last_used: self.use_counter,
                 need_full: true,
+                relayout: true,
+                chrome_dirty: true,
+                screen: Screen::new(),
                 renderer: Renderer::new(),
                 last_frame: None,
             },
@@ -946,38 +1088,81 @@ impl Server {
         }
     }
 
+    /// The client's terminal has this size: every window is laid out again for it.
     fn resize_session(&mut self, session_id: u64, cols: u16, rows: u16) {
         let (cols, rows) = (cols.max(1), rows.max(1));
+        let (area_cols, area_rows) = window_area(cols, rows);
         let Some(session) = self.sessions.get_mut(&session_id) else {
             return;
         };
-        let pane = &mut session.pane;
+        session.cols = cols;
+        session.rows = rows;
+        for window in &mut session.windows {
+            window.layout.set_area(area_cols, area_rows);
+        }
+        // The client's screen changes shape, so it needs everything again.
+        session.need_full = true;
+        session.relayout = true;
+        let windows: Vec<u64> = session.windows.iter().map(|w| w.id).collect();
+        for window_id in windows {
+            self.apply_window_sizes(session_id, window_id);
+        }
+    }
+
+    /// Give every pane of the window the size of its room, telling the program in it.
+    fn apply_window_sizes(&mut self, session_id: u64, window_id: u64) {
+        let rects = match self
+            .sessions
+            .get(&session_id)
+            .and_then(|s| s.window(window_id))
+        {
+            Some(window) => window.rects(),
+            None => return,
+        };
+        for (pane_id, rect) in rects {
+            self.set_pane_size(pane_id, rect.w, rect.h);
+        }
+    }
+
+    fn set_pane_size(&mut self, pane_id: u64, cols: u16, rows: u16) {
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        let Some(pane) = self.panes.get_mut(&pane_id) else {
+            return;
+        };
         if pane.term.cols() != cols || pane.term.rows() != rows {
             let _ = pty::set_window_size(&pane.master, cols, rows);
             if pane.term.resize(cols, rows).is_err() {
                 pane.exit_note = Some("[terminal error]".into());
             }
+            pane.dirty = true;
         }
-        // The client's screen changes shape, so it needs everything again.
-        session.need_full = true;
-        pane.dirty = true;
     }
 
     // ---- Panes ----
 
-    fn write_to_pane(&mut self, session_id: u64, bytes: &[u8]) {
-        let Some(session) = self.sessions.get_mut(&session_id) else {
-            return;
-        };
-        queue_pane_input(&mut session.pane, bytes);
+    /// Keyboard bytes from a client: for now they all go to the focused pane.
+    fn handle_input(&mut self, session_id: u64, bytes: &[u8]) {
+        if let Some(pane_id) = self.focus_pane_of(session_id) {
+            self.write_to_pane(pane_id, bytes);
+        }
+    }
+
+    fn write_to_pane(&mut self, pane_id: u64, bytes: &[u8]) {
+        if let Some(pane) = self.panes.get_mut(&pane_id) {
+            queue_pane_input(pane, bytes);
+        }
     }
 
     fn flush_pane_input(&mut self, pane_id: u64) {
         let mut unblocked = None;
-        if let Some(session) = self.sessions.values_mut().find(|s| s.pane.id == pane_id) {
-            write_pending(&mut session.pane);
-            if session.pane.input.len() < PANE_INPUT_SOFT_LIMIT {
-                unblocked = session.client;
+        if let Some(pane) = self.panes.get_mut(&pane_id) {
+            write_pending(pane);
+            if pane.input.len() < PANE_INPUT_SOFT_LIMIT {
+                unblocked = self
+                    .sessions
+                    .values()
+                    .find(|s| s.current_window().focus == pane_id)
+                    .and_then(|s| s.client);
             }
         }
         // The client was not being read; now it can be.
@@ -988,10 +1173,9 @@ impl Server {
 
     /// Read up to `limit` bytes of output from a pane and give them to its terminal.
     fn read_pane(&mut self, pane_id: u64, limit: usize) {
-        let Some(session) = self.sessions.values_mut().find(|s| s.pane.id == pane_id) else {
+        let Some(pane) = self.panes.get_mut(&pane_id) else {
             return;
         };
-        let pane = &mut session.pane;
         pane.read_pending = false;
         let mut buf = [0u8; 16 * 1024];
         let mut total = 0;
@@ -1034,8 +1218,8 @@ impl Server {
 
     fn collect_exits(&mut self) {
         while let Ok((pane_id, note)) = self.exits_rx.try_recv() {
-            if let Some(session) = self.sessions.values_mut().find(|s| s.pane.id == pane_id) {
-                session.pane.exit_note = Some(note);
+            if let Some(pane) = self.panes.get_mut(&pane_id) {
+                pane.exit_note = Some(note);
                 self.exited.push(pane_id);
             }
         }
@@ -1046,9 +1230,9 @@ impl Server {
         self.collect_exits();
         // Cancel string sequences that stayed unfinished for too long.
         let now = Instant::now();
-        for s in self.sessions.values_mut() {
-            if s.pane.term.expire_stuck(now) {
-                s.pane.dirty = true;
+        for p in self.panes.values_mut() {
+            if p.term.expire_stuck(now) {
+                p.dirty = true;
             }
         }
         let exited = std::mem::take(&mut self.exited);
@@ -1057,11 +1241,7 @@ impl Server {
             // Bounded, so a background job that keeps the terminal open cannot hold us here.
             for _ in 0..16 {
                 self.read_pane(pane_id, PANE_READ_LIMIT);
-                let more = self
-                    .sessions
-                    .values()
-                    .find(|s| s.pane.id == pane_id)
-                    .is_some_and(|s| s.pane.read_pending);
+                let more = self.panes.get(&pane_id).is_some_and(|p| p.read_pending);
                 if !more {
                     break;
                 }
@@ -1070,46 +1250,15 @@ impl Server {
         }
     }
 
-    fn close_pane(&mut self, pane_id: u64) {
-        let Some(session_id) = self
-            .sessions
-            .values()
-            .find(|s| s.pane.id == pane_id)
-            .map(|s| s.id)
-        else {
-            return;
-        };
-        // Show the final screen before saying goodbye.
-        self.build_frame_for(session_id);
-        let Some(session) = self.sessions.remove(&session_id) else {
-            return;
-        };
-        let fd = session.pane.master.as_raw_fd();
-        let _ = self.poll.registry().deregister(&mut SourceFd(&fd));
-        self.targets.remove(&session.pane.token.0);
-        // The first process is gone; hang up anything it left running in the same group.
-        pty::signal_group(session.pane.pid, libc::SIGHUP);
-        let note = session.pane.exit_note.clone().unwrap_or_default();
-        self.log.line(&format!(
-            "session {} closed: {}",
-            session.id,
-            note.trim_start_matches('[').trim_end_matches(']')
-        ));
-        if let Some(client_id) = session.client {
-            self.send(
-                client_id,
-                &ServerMessage::SessionEnded {
-                    message: format!(
-                        "[{}: {}]",
-                        session.name,
-                        note.trim_start_matches('[').trim_end_matches(']')
-                    ),
-                },
-            );
-            if let Some(c) = self.clients.get_mut(&client_id) {
-                c.state = ClientState::Ready;
-                c.close_after_flush = true;
-            }
+    /// Stop watching a pane and hang up what runs in it. The pane's window must already have let
+    /// go of it.
+    fn drop_pane(&mut self, pane_id: u64) {
+        if let Some(pane) = self.panes.remove(&pane_id) {
+            let fd = pane.master.as_raw_fd();
+            let _ = self.poll.registry().deregister(&mut SourceFd(&fd));
+            self.targets.remove(&pane.token.0);
+            // The first process is gone; hang up anything it left running in the same group.
+            pty::signal_group(pane.pid, libc::SIGHUP);
         }
     }
 
@@ -1117,8 +1266,7 @@ impl Server {
 
     fn compress_idle_panes(&mut self) {
         let now = Instant::now();
-        for session in self.sessions.values_mut() {
-            let pane = &mut session.pane;
+        for pane in self.panes.values_mut() {
             if pane.compressing {
                 if pane.term.compress_step() == arcade_term::CompressProgress::Done {
                     pane.compressing = false;
@@ -1130,159 +1278,11 @@ impl Server {
         }
     }
 
-    // ---- Screen updates ----
-
-    fn send_frames(&mut self) {
-        let now = Instant::now();
-        let due: Vec<u64> = self
-            .sessions
-            .values()
-            .filter(|s| self.frame_time(s, now).is_some_and(|t| t <= now))
-            .map(|s| s.id)
-            .collect();
-        for id in due {
-            self.build_frame_for(id);
-        }
-    }
-
-    /// Build the screen update for a session's client and queue it.
-    fn build_frame_for(&mut self, session_id: u64) {
-        let Some(session) = self.sessions.get_mut(&session_id) else {
-            return;
-        };
-        let Some(client_id) = session.client else {
-            return;
-        };
-        if !session.pane.dirty && !session.need_full {
-            return;
-        }
-        let force_full = session.need_full;
-        if force_full {
-            // The client's screen is new or changed shape: nothing of it can be trusted.
-            session.renderer.reset();
-        }
-        let frame = session.pane.term.snapshot(force_full);
-        session.pane.dirty = false;
-        session.need_full = false;
-        match frame {
-            Ok(frame) => {
-                let modes = HostModes {
-                    app_cursor_keys: session
-                        .pane
-                        .term
-                        .mode(arcade_term::Mode::AppCursorKeys)
-                        .unwrap_or(false),
-                    bracketed_paste: session
-                        .pane
-                        .term
-                        .mode(arcade_term::Mode::BracketedPaste)
-                        .unwrap_or(false),
-                };
-                let bytes = session.renderer.render(&frame, modes);
-                if !bytes.is_empty() {
-                    session.last_frame = Some(Instant::now());
-                    self.send_output(client_id, &bytes);
-                }
-            }
-            Err(e) => {
-                session.pane.exit_note = Some(format!("[{e}]"));
-                let pane_id = session.pane.id;
-                pty::signal_group(session.pane.pid, libc::SIGKILL);
-                self.exited.push(pane_id);
-            }
-        }
-    }
-
-    // ---- Commands ----
-
-    fn run_command(&mut self, name: &str, args: &[String]) -> (bool, String) {
-        match name {
-            "server.ping" => (true, "pong".to_string()),
-            "session.list" => {
-                let mut sessions: Vec<&Session> = self.sessions.values().collect();
-                sessions.sort_by_key(|s| s.id);
-                let mut text = String::new();
-                for s in sessions {
-                    text.push_str(&format!(
-                        "{}\t{}\t{}\n",
-                        s.name,
-                        s.id,
-                        u8::from(s.client.is_some())
-                    ));
-                }
-                (true, text)
-            }
-            "session.detach" => {
-                // Optional `--pane <id>`: the pane the command is run from.
-                let pane_id = args
-                    .windows(2)
-                    .find(|w| w[0] == "--pane")
-                    .and_then(|w| w[1].parse::<u64>().ok());
-                let target = self
-                    .sessions
-                    .values()
-                    .find(|s| pane_id.is_some_and(|p| s.pane.id == p))
-                    .or_else(|| {
-                        if pane_id.is_none() {
-                            self.sessions.values().find(|s| s.client.is_some())
-                        } else {
-                            None
-                        }
-                    })
-                    .map(|s| s.id);
-                match target {
-                    Some(session_id) => {
-                        self.detach_client(session_id, DetachReason::Requested, "detached");
-                        (true, String::new())
-                    }
-                    None => (false, "no such pane".to_string()),
-                }
-            }
-            "session.close" => {
-                let name = args.first();
-                let target = self
-                    .sessions
-                    .values()
-                    .find(|s| name.is_none_or(|n| &s.name == n))
-                    .map(|s| (s.id, s.pane.pid, s.pane.id));
-                match target {
-                    Some((session_id, pid, pane_id)) => {
-                        if let Some(s) = self.sessions.get_mut(&session_id) {
-                            s.pane.exit_note = Some("closed".to_string());
-                        }
-                        pty::signal_group(pid, libc::SIGHUP);
-                        // Closing does not wait for the process; the pane is gone now.
-                        self.close_pane(pane_id);
-                        (true, String::new())
-                    }
-                    None => (false, "no such session".to_string()),
-                }
-            }
-            "server.kill" => {
-                self.stopping = Some(Instant::now() + KILL_GRACE);
-                for s in self.sessions.values() {
-                    pty::signal_group(s.pane.pid, libc::SIGHUP);
-                }
-                let ids: Vec<u64> = self
-                    .sessions
-                    .values()
-                    .filter(|s| s.client.is_some())
-                    .map(|s| s.id)
-                    .collect();
-                for id in ids {
-                    self.detach_client(id, DetachReason::ServerStopping, "server stopping");
-                }
-                (true, String::new())
-            }
-            other => (false, format!("unknown command: {other}")),
-        }
-    }
-
     // ---- Shutdown ----
 
     fn shutdown_cleanup(&mut self) {
-        for s in self.sessions.values() {
-            pty::signal_group(s.pane.pid, libc::SIGKILL);
+        for p in self.panes.values() {
+            pty::signal_group(p.pid, libc::SIGKILL);
         }
         let _ = std::fs::remove_file(&self.socket_path);
     }

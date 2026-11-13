@@ -123,7 +123,7 @@ fn running_arcade_starts_the_daemon_and_shows_a_shell() {
 
     let ls = env.sessions();
     assert_eq!(ls.lines().count(), 1, "{ls:?}");
-    assert!(ls.contains("1 pane (attached)"), "{ls:?}");
+    assert!(ls.contains("1 window, 1 pane (attached)"), "{ls:?}");
 }
 
 #[test]
@@ -206,7 +206,10 @@ fn the_terminal_settings_come_back_after_a_termination_signal() {
         );
         assert_eq!(&host.settings(), host.initial_settings(), "signal {signal}");
         // The session lives on.
-        assert!(env.sessions().contains("a: 1 pane"), "signal {signal}");
+        assert!(
+            env.sessions().contains("a: 1 window, 1 pane"),
+            "signal {signal}"
+        );
     }
 }
 
@@ -262,7 +265,7 @@ fn detach_then_attach_shows_the_session_as_it_was() {
     host.type_line("arcade run session.detach");
     assert_eq!(host.wait_exit(WAIT), Some(0));
     assert!(
-        env.sessions().contains("keep: 1 pane"),
+        env.sessions().contains("keep: 1 window, 1 pane"),
         "{}",
         env.sessions()
     );
@@ -326,7 +329,7 @@ fn new_always_creates_another_session() {
     b.wait_for_prompt().unwrap();
     let ls = env.sessions();
     assert_eq!(ls.lines().count(), 2, "{ls}");
-    assert!(ls.contains("one: 1 pane (attached)"));
+    assert!(ls.contains("one: 1 window, 1 pane (attached)"));
 }
 
 #[test]
@@ -424,11 +427,12 @@ fn the_window_size_follows_the_host_terminal() {
     let mut host = env.host_sized(&["new", "-s", "size"], 90, 28);
     host.wait_for_prompt().unwrap();
     host.type_line("stty size");
-    host.wait_for_row("28 90").unwrap();
+    // One row of the host terminal is the status bar.
+    host.wait_for_row("27 90").unwrap();
     host.wait_for_prompt().unwrap();
     host.resize(120, 40);
     host.type_line("stty size");
-    host.wait_for_row("40 120").unwrap();
+    host.wait_for_row("39 120").unwrap();
 }
 
 #[test]
@@ -438,7 +442,39 @@ fn the_pane_can_run_a_command_back_on_its_own_daemon() {
     host.wait_for_prompt().unwrap();
     // `arcade` finds its daemon through the ARCADE variable the daemon put in the pane.
     host.type_line("arcade ls");
-    host.wait_for_row("self: 1 pane (attached)").unwrap();
+    host.wait_for_row("self: 1 window, 1 pane (attached)")
+        .unwrap();
+}
+
+/// Core scenario 11: `arcade run pane.split-right` from a shell in a pane splits that pane.
+#[test]
+fn a_command_run_from_a_pane_acts_on_that_panes_window() {
+    let env = Env::new();
+    let mut host = env.host_sized(&["new", "-s", "split"], 101, 31);
+    host.wait_for_prompt().unwrap();
+    host.type_line("arcade run pane.split-right");
+    // Two panes now, side by side, with one divider between them.
+    let ok = host.wait_until(WAIT, |_| {
+        env.sessions().contains("split: 1 window, 2 panes")
+    });
+    assert!(ok, "{}", env.sessions());
+    host.type_line("stty size");
+    host.wait_for_text("30 50").unwrap();
+    let divider: Vec<String> = (0..30)
+        .map(|y| {
+            host.screen
+                .row_text(y)
+                .chars()
+                .nth(50)
+                .unwrap_or(' ')
+                .to_string()
+        })
+        .collect();
+    assert!(divider.iter().all(|c| c == "│"), "{divider:?}");
+    // A command that does not exist is refused with a message and a failing exit code.
+    host.type_line("arcade run pane.fly; echo code-$?");
+    host.wait_for_text("code-1").unwrap();
+    host.wait_for_text("unknown command").unwrap();
 }
 
 #[test]

@@ -167,3 +167,36 @@ pub fn signal_group(pid: i32, signal: i32) {
         }
     }
 }
+
+/// The working directory of a process, when the system tells us.
+#[cfg(target_os = "macos")]
+pub fn process_cwd(pid: i32) -> Option<String> {
+    // SAFETY: proc_pidinfo fills the struct we give it, of the size we state.
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    // SAFETY: as above; `info` is a live local of that size.
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            (&raw mut info).cast(),
+            size,
+        )
+    };
+    if got != size {
+        return None;
+    }
+    // SAFETY: the path array is one block of bytes that the system ended with a zero byte.
+    let path = unsafe { std::ffi::CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
+    let path = path.to_str().ok()?;
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// The working directory of a process, when the system tells us.
+#[cfg(not(target_os = "macos"))]
+pub fn process_cwd(pid: i32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()
+        .map(|p| p.display().to_string())
+}

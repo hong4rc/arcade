@@ -1,9 +1,11 @@
 //! Turn what changed on a pane's screen into the bytes that draw it on the host terminal.
 //!
-//! The colors are the ones the program asked for: palette numbers stay palette numbers, so the
-//! host terminal's own theme applies. Nothing here picks a color.
+//! The colors are the ones the program asked for (or the theme's): palette numbers stay palette
+//! numbers, so the host terminal's own theme applies. Nothing here picks a color.
 
-use arcade_term::{Cell, CellWidth, Color, Cursor, CursorShape, Frame, Style, Underline};
+use arcade_term::{Cell, CellWidth, Color, Cursor, CursorShape, Style, Underline};
+
+use crate::compose::Screen;
 
 fn push_color(out: &mut Vec<u8>, color: Color, base: u8) {
     // `base` is 30 for the foreground and 40 for the background.
@@ -166,31 +168,37 @@ impl Renderer {
         *self = Self::default();
     }
 
-    /// The bytes that bring the host terminal up to date with `frame`; empty when it already is.
+    /// The bytes that bring the host terminal up to date with `screen`; empty when it already is.
     ///
-    /// Drawing rows is wrapped in synchronized output, so the host shows the update at once.
-    pub fn render(&mut self, frame: &Frame, modes: HostModes) -> Vec<u8> {
-        if self.rows.len() != usize::from(frame.rows_total) {
-            self.rows = vec![None; usize::from(frame.rows_total)];
+    /// Only the rows the grid marks as written to are looked at, and one that comes out
+    /// identical to what was last sent (for instance one the cursor merely passed over) is not
+    /// sent again. Drawing rows is wrapped in synchronized output, so the host shows the update at
+    /// once.
+    pub fn render(&mut self, screen: &mut Screen, cursor: &Cursor, modes: HostModes) -> Vec<u8> {
+        if self.rows.len() != usize::from(screen.rows()) {
+            self.rows = vec![None; usize::from(screen.rows())];
         }
         let mut body = Vec::new();
-        for row in &frame.rows {
+        for y in 0..screen.rows() {
+            if !screen.take_dirty(y) {
+                continue;
+            }
             let mut bytes = Vec::new();
-            push_row(&mut bytes, row.y, &row.cells);
-            let slot = &mut self.rows[usize::from(row.y)];
+            push_row(&mut bytes, y, screen.row(y));
+            let slot = &mut self.rows[usize::from(y)];
             if slot.as_deref() != Some(bytes.as_slice()) {
                 body.extend_from_slice(&bytes);
                 *slot = Some(bytes);
             }
         }
-        let cursor = SentCursor {
-            x: frame.cursor.x,
-            y: frame.cursor.y,
-            visible: frame.cursor.visible,
-            shape: frame.cursor.shape,
-            blinking: frame.cursor.blinking,
+        let sent = SentCursor {
+            x: cursor.x,
+            y: cursor.y,
+            visible: cursor.visible,
+            shape: cursor.shape,
+            blinking: cursor.blinking,
         };
-        let cursor_changed = self.cursor != Some(cursor);
+        let cursor_changed = self.cursor != Some(sent);
         let modes_changed = self.modes != Some(modes);
         if body.is_empty() && !cursor_changed && !modes_changed {
             return Vec::new();
@@ -202,7 +210,7 @@ impl Renderer {
             out.extend_from_slice(b"\x1b[0m");
         }
         if !body.is_empty() || cursor_changed {
-            push_cursor(&mut out, &frame.cursor);
+            push_cursor(&mut out, cursor);
         }
         if modes_changed {
             let previous = self.modes.unwrap_or_default();
@@ -224,7 +232,7 @@ impl Renderer {
         if !body.is_empty() {
             out.extend_from_slice(b"\x1b[?2026l");
         }
-        self.cursor = Some(cursor);
+        self.cursor = Some(sent);
         self.modes = Some(modes);
         out
     }

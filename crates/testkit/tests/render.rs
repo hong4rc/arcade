@@ -54,8 +54,12 @@ fn first_difference(got: &Frame, want: &Frame) -> Option<String> {
     None
 }
 
+/// What the panes show on the client's screen: all of it but the status bar, the last row.
 fn client_frame(client: &mut TestClient) -> Frame {
-    client.screen.snapshot(true).expect("snapshot")
+    let mut frame = client.screen.snapshot(true).expect("snapshot");
+    frame.rows.pop();
+    frame.rows_total -= 1;
+    frame
 }
 
 fn direct_term(cols: u16, rows: u16, data: &[u8]) -> Term {
@@ -102,7 +106,8 @@ fn every_kind_of_load_draws_the_same_screen_as_feeding_it_directly() {
         let file = daemon.dir().join("load.bin");
         std::fs::write(&file, &data).unwrap();
 
-        let mut options = AttachOptions::new().size(arcade_workload::COLS, arcade_workload::ROWS);
+        let mut options =
+            AttachOptions::new().size(arcade_workload::COLS, arcade_workload::ROWS + 1);
         options.command = cat_then_mark(&file);
         let mut client = daemon.attach(options).unwrap();
 
@@ -139,7 +144,8 @@ fn the_screen_is_redrawn_whole_when_the_client_resizes() {
     let data = generate(Workload::Colored, 200 * 1024, 5);
     let file = daemon.dir().join("load.bin");
     std::fs::write(&file, &data).unwrap();
-    let mut options = AttachOptions::new().size(100, 30);
+    // One row more than the pane: the status bar.
+    let mut options = AttachOptions::new().size(100, 31);
     options.command = cat_then_mark(&file);
     let mut client = daemon.attach(options).unwrap();
     client
@@ -152,7 +158,7 @@ fn the_screen_is_redrawn_whole_when_the_client_resizes() {
     expect_same_screen(&mut client, &direct.snapshot(true).unwrap(), WAIT);
 
     for (cols, rows) in [(70, 20), (140, 45), (100, 30)] {
-        client.resize(cols, rows);
+        client.resize(cols, rows + 1);
         direct.resize(cols, rows).unwrap();
         let want = direct.snapshot(true).unwrap();
         expect_same_screen(&mut client, &want, WAIT);
@@ -165,7 +171,7 @@ fn a_new_client_gets_the_whole_screen() {
     let data = generate(Workload::Colored, 100 * 1024, 9);
     let file = daemon.dir().join("load.bin");
     std::fs::write(&file, &data).unwrap();
-    let mut options = AttachOptions::new().size(100, 30);
+    let mut options = AttachOptions::new().size(100, 31);
     options.command = cat_then_mark(&file);
     let mut first = daemon.attach(options).unwrap();
     first
@@ -174,7 +180,7 @@ fn a_new_client_gets_the_whole_screen() {
     let want = client_frame(&mut first);
     // Same session, new client, same size: everything must be drawn for it.
     let mut second = daemon
-        .attach(AttachOptions::new().existing(None).size(100, 30))
+        .attach(AttachOptions::new().existing(None).size(100, 31))
         .unwrap();
     expect_same_screen(&mut second, &want, WAIT);
 }
@@ -403,7 +409,7 @@ fn neovim_in_a_pane_looks_the_same_as_neovim_alone() {
 
     let mut argv = vec![nvim.display().to_string()];
     argv.extend(args.iter().cloned());
-    let mut options = AttachOptions::new().size(100, 30);
+    let mut options = AttachOptions::new().size(100, 31);
     options.command = argv;
     options.env = Some(env.clone());
     let mut client = daemon.attach(options).unwrap();

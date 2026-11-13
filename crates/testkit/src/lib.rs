@@ -118,10 +118,30 @@ impl TestDaemon {
 
     /// Run a named command on a fresh connection.
     pub fn command(&self, name: &str, args: &[&str]) -> Result<(bool, String), String> {
+        self.command_from(None, name, args)
+    }
+
+    /// Run a named command as `arcade run` does inside a pane: on the session and window of the
+    /// pane (the number in that pane's `ARCADE_PANE` variable). Without a pane it acts on the
+    /// session whose client is attached.
+    pub fn command_from(
+        &self,
+        pane: Option<u64>,
+        name: &str,
+        args: &[&str],
+    ) -> Result<(bool, String), String> {
         let mut client = TestClient::connect(&self.socket)?;
-        client.send_message(&ClientMessage::Command {
-            name: name.to_string(),
-            args: args.iter().map(|s| s.to_string()).collect(),
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        client.send_message(&match pane {
+            Some(pane) => ClientMessage::PaneCommand {
+                pane,
+                name: name.to_string(),
+                args,
+            },
+            None => ClientMessage::Command {
+                name: name.to_string(),
+                args,
+            },
         })?;
         let deadline = Instant::now() + WAIT;
         loop {
@@ -267,6 +287,18 @@ pub trait Screened: Sized {
         (0..term.rows()).map(|r| term.row_text(r)).collect()
     }
 
+    /// The rows the panes show: every row except the last, which is the status bar.
+    fn content_rows(&self) -> Vec<String> {
+        let mut rows = self.screen_rows();
+        rows.pop();
+        rows
+    }
+
+    /// The text of the status bar (the last row).
+    fn status_row(&self) -> String {
+        self.screen_rows().pop().unwrap_or_default()
+    }
+
     /// The screen as one string, rows joined by newlines, empty rows at the end dropped.
     fn screen_text(&self) -> String {
         let mut rows = self.screen_rows();
@@ -314,7 +346,7 @@ pub trait Screened: Sized {
     /// the screen: the shell is ready for the next command.
     fn wait_for_prompt(&mut self) -> Result<(), String> {
         let ok = self.wait_until(WAIT, |c| {
-            c.screen_rows()
+            c.content_rows()
                 .iter()
                 .rev()
                 .find(|r| !r.is_empty())
@@ -355,6 +387,23 @@ impl Screened for TestClient {
         self.closed
     }
 }
+
+/// The text of some cells: a blank cell is a space, and trailing blanks are cut.
+pub fn cells_text(cells: &[arcade_term::Cell]) -> String {
+    let text: String = cells
+        .iter()
+        .map(|c| {
+            if c.text.is_empty() {
+                " ".to_string()
+            } else {
+                c.text.clone()
+            }
+        })
+        .collect();
+    text.trim_end().to_string()
+}
+
+static MARKER: AtomicU32 = AtomicU32::new(0);
 
 pub struct TestClient {
     stream: UnixStream,
@@ -442,6 +491,54 @@ impl TestClient {
         let mut bytes = line.as_bytes().to_vec();
         bytes.push(b'\r');
         self.send(&bytes);
+    }
+
+    /// The text of a rectangle of the screen, one string per row, trailing blanks cut. Only
+    /// meant for screens without wide characters.
+    pub fn region(&mut self, x: u16, y: u16, w: u16, h: u16) -> Vec<String> {
+        let grid = self.screen.screen().expect("read the screen");
+        grid.iter()
+            .skip(usize::from(y))
+            .take(usize::from(h))
+            .map(|row| {
+                let end = (usize::from(x) + usize::from(w)).min(row.len());
+                cells_text(&row[usize::from(x).min(end)..end])
+            })
+            .collect()
+    }
+
+    /// The style of one cell of the screen.
+    pub fn style_at(&self, row: u16, col: u16) -> arcade_term::Style {
+        self.screen.style_at(row, col)
+    }
+
+    /// The number of the pane that has the focus (its `ARCADE_PANE` variable), asked of the
+    /// shell running in it.
+    pub fn focused_pane_id(&mut self) -> u64 {
+        let marker = format!("pane-id{}=", MARKER.fetch_add(1, Ordering::Relaxed));
+        self.type_line(&format!("echo {marker}$ARCADE_PANE."));
+        let mut found = None;
+        let ok = self.wait_until(WAIT, |c| {
+            for row in c.screen_rows() {
+                let mut from = 0;
+                while let Some(at) = row[from..].find(&marker) {
+                    let rest = &row[from + at + marker.len()..];
+                    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                    if !digits.is_empty() && rest[digits.len()..].starts_with('.') {
+                        found = digits.parse().ok();
+                        return true;
+                    }
+                    from += at + marker.len();
+                }
+            }
+            false
+        });
+        assert!(
+            ok,
+            "no answer to the pane id question:\n{}",
+            self.screen_text()
+        );
+        found.expect("pane id")
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {

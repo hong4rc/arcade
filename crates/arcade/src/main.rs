@@ -108,7 +108,7 @@ fn run(mut args: Vec<String>) -> u8 {
             }
             list_command(&options)
         }
-        "kill-server" => simple_command(&options, "server.kill", &[], true),
+        "kill-server" => simple_command(&options, "server.kill", &[], None, true),
         "kill-session" => {
             let mut args_out = Vec::new();
             match rest {
@@ -116,21 +116,17 @@ fn run(mut args: Vec<String>) -> u8 {
                 [flag, name] if flag == "-t" => args_out.push(name.clone()),
                 _ => return usage_error("usage: kill-session [-t <session>]"),
             }
-            simple_command(&options, "session.close", &args_out, false)
+            simple_command(&options, "session.close", &args_out, None, false)
         }
         "run" => {
             let Some((name, extra)) = rest.split_first() else {
                 return usage_error("run needs a command name");
             };
-            let mut command_args = extra.to_vec();
-            // Run from a pane, the command acts on that pane's session.
-            if name == "session.detach"
-                && let Ok(pane) = std::env::var("ARCADE_PANE")
-            {
-                command_args.push("--pane".to_string());
-                command_args.push(pane);
-            }
-            simple_command(&options, name, &command_args, false)
+            // Run from a pane, the command acts on that pane's session and window.
+            let pane = std::env::var("ARCADE_PANE")
+                .ok()
+                .and_then(|p| p.parse::<u64>().ok());
+            simple_command(&options, name, extra, pane, false)
         }
         "-h" | "--help" | "help" => {
             print!("{USAGE}");
@@ -231,11 +227,20 @@ fn command_result(
     connection: &mut connection::Connection,
     name: &str,
     args: &[String],
+    pane: Option<u64>,
 ) -> Result<(bool, String), String> {
-    connection.send(&ClientMessage::Command {
-        name: name.to_string(),
-        args: args.to_vec(),
-    })?;
+    let message = match pane {
+        Some(pane) => ClientMessage::PaneCommand {
+            pane,
+            name: name.to_string(),
+            args: args.to_vec(),
+        },
+        None => ClientMessage::Command {
+            name: name.to_string(),
+            args: args.to_vec(),
+        },
+    };
+    connection.send(&message)?;
     loop {
         match connection.receive()? {
             Some(ServerMessage::CommandResult { ok, output }) => return Ok((ok, output)),
@@ -247,7 +252,13 @@ fn command_result(
 
 /// Run one named command and print its answer. `allow_mismatch` lets a command through to a
 /// daemon of another version (only `server.kill` is accepted there).
-fn simple_command(options: &Options, name: &str, args: &[String], allow_mismatch: bool) -> u8 {
+fn simple_command(
+    options: &Options,
+    name: &str,
+    args: &[String],
+    pane: Option<u64>,
+    allow_mismatch: bool,
+) -> u8 {
     let mut connection = match open_connection(options, false) {
         Ok(Handshake::Ok(connection)) => connection,
         Ok(Handshake::Mismatch {
@@ -263,7 +274,7 @@ fn simple_command(options: &Options, name: &str, args: &[String], allow_mismatch
         }
         Err(code) => return code,
     };
-    match command_result(&mut connection, name, args) {
+    match command_result(&mut connection, name, args, pane) {
         Ok((true, output)) => {
             print!("{output}");
             0
@@ -290,14 +301,25 @@ fn list_command(options: &Options) -> u8 {
         }
         Err(code) => return code,
     };
-    match command_result(&mut connection, "session.list", &[]) {
+    match command_result(&mut connection, "session.list", &[], None) {
         Ok((true, output)) => {
             for line in output.lines() {
                 let mut fields = line.split('\t');
                 let name = fields.next().unwrap_or("");
-                let attached = fields.nth(1) == Some("1");
+                let mut number = |skip: usize| {
+                    fields
+                        .nth(skip)
+                        .and_then(|f| f.parse::<usize>().ok())
+                        .unwrap_or(0)
+                };
+                // Fields after the name: id, attached, windows, panes.
+                let attached = number(1) == 1;
+                let windows = number(0);
+                let panes = number(0);
                 println!(
-                    "{name}: 1 pane{}",
+                    "{name}: {}, {}{}",
+                    count(windows, "window"),
+                    count(panes, "pane"),
                     if attached { " (attached)" } else { "" }
                 );
             }
@@ -311,5 +333,13 @@ fn list_command(options: &Options) -> u8 {
             eprintln!("arcade: {e}");
             1
         }
+    }
+}
+
+fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
     }
 }
