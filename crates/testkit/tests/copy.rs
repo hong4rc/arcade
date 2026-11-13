@@ -237,7 +237,11 @@ fn the_capital_y_copies_and_stays_in_copy_mode() {
     client.send(b"VY");
     wait_clipboard(&mut client, 1);
     assert_eq!(client.clipboard_writes[0], b"stay-here".to_vec());
-    assert!(bar(&client).contains(" COPY "));
+    // A message takes the place of the bar until the next key; that key is a copy mode key, and
+    // the bar then shows copy mode again.
+    message_has(&mut client, "sent 9 characters");
+    client.send(b"k");
+    assert!(in_copy_mode(&mut client), "{}", bar(&client));
 }
 
 #[test]

@@ -226,6 +226,8 @@ fn the_program_is_told_about_a_resize_with_a_signal() {
     client.type_line("trap 'echo winch-$(stty size)' WINCH; echo ready-to-trap");
     client.wait_for_text("ready-to-trap").unwrap();
     client.resize(70, 25);
+    // Some shells (dash) run a trap only once the next command is read, so a command follows.
+    client.type_line("true");
     client.wait_for_text("winch-24 70").unwrap();
 }
 
