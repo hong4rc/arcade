@@ -30,8 +30,14 @@ impl Env {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         // The pane's shell is a login shell, which reads this file after the system's own
-        // profile; it makes the prompt the same on every machine.
-        std::fs::write(dir.join(".profile"), "PS1='$ '\n").unwrap();
+        // profile; it makes the prompt the same on every machine, and puts the directory of the
+        // `arcade` under test back on the path, where some systems' profiles replace the path.
+        let bin_dir = Path::new(ARCADE).parent().unwrap().display().to_string();
+        std::fs::write(
+            dir.join(".profile"),
+            format!("PS1='$ '\nPATH={bin_dir}:$PATH\nexport PATH\n"),
+        )
+        .unwrap();
         let socket = dir.join("s");
         Env { dir, socket }
     }
@@ -419,6 +425,7 @@ fn the_window_size_follows_the_host_terminal() {
     host.wait_for_prompt().unwrap();
     host.type_line("stty size");
     host.wait_for_row("28 90").unwrap();
+    host.wait_for_prompt().unwrap();
     host.resize(120, 40);
     host.type_line("stty size");
     host.wait_for_row("40 120").unwrap();

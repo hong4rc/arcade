@@ -1,3 +1,6 @@
 /target
 /.tools
 /bench-results
+/plans
+.DS_Store
+*.log

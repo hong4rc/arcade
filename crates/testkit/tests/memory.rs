@@ -1,5 +1,8 @@
 //! Memory of a pane with a full scrollback. This test is alone in its file so that it runs in a
-//! process of its own: other tests running beside it would blur the measurement.
+//! process of its own: other tests running beside it would blur the measurement. It measures the
+//! physical footprint, which only macOS reports.
+
+#![cfg(target_os = "macos")]
 
 use std::time::{Duration, Instant};
 
@@ -9,7 +12,6 @@ use arcade_workload::scrollback_fill;
 /// A pane that has filled its scrollback and gone quiet gets the old lines compressed, which
 /// brings its memory under the 30 MB the performance spec asks for.
 #[test]
-#[cfg(target_os = "macos")]
 fn a_quiet_pane_gives_back_memory() {
     let daemon = TestDaemon::start();
     let dir = daemon.dir().to_path_buf();
