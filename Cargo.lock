@@ -48,6 +48,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arcade-bench"
+version = "0.0.0"
+dependencies = [
+ "arcade-workload",
+ "libc",
+ "serde_json",
+]
+
+[[package]]
 name = "arcade-daemon"
 version = "0.0.0"
 dependencies = [

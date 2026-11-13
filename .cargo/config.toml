@@ -1,6 +1,7 @@
 [alias]
 lint = "clippy --workspace --all-targets -- -D warnings"
 parser-eval = "run --release -p parser-eval --"
+bench-run = "run --release -p arcade-bench --"
 
 [env]
 # libghostty-vt (one of the parser candidates) builds with this Zig; see scripts/fetch-zig.sh.
