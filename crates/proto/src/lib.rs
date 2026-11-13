@@ -12,7 +12,7 @@
 use std::fmt;
 
 /// Version of this protocol. Bump it whenever any message changes.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Largest message the decoder accepts, tag and payload together.
 pub const MAX_MESSAGE_LEN: usize = 8 * 1024 * 1024;
@@ -127,6 +127,14 @@ pub enum ClientMessage {
         name: String,
         args: Vec<String>,
     },
+    /// A named command run from inside a pane (`arcade run` with the `ARCADE_PANE` variable): it
+    /// acts on the session and window that pane is in. A message of its own, so that the layout
+    /// of [`ClientMessage::Command`] stays as it was.
+    PaneCommand {
+        pane: u64,
+        name: String,
+        args: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,6 +184,9 @@ impl Writer {
     fn u32(&mut self, v: u32) {
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
+    fn u64(&mut self, v: u64) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
     fn bytes(&mut self, v: &[u8]) {
         self.u32(v.len() as u32);
         self.buf.extend_from_slice(v);
@@ -223,6 +234,12 @@ impl<'a> Reader<'a> {
     fn u32(&mut self) -> Result<u32, ProtoError> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    fn u64(&mut self) -> Result<u64, ProtoError> {
+        let b = self.take(8)?;
+        Ok(u64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
     }
     fn bytes(&mut self) -> Result<Vec<u8>, ProtoError> {
         let len = self.u32()? as usize;
@@ -306,6 +323,12 @@ impl Message for ClientMessage {
                 w.list(args);
                 6
             }
+            ClientMessage::PaneCommand { pane, name, args } => {
+                w.u64(*pane);
+                w.str(name);
+                w.list(args);
+                7
+            }
         };
         *out = w.buf;
         tag
@@ -342,6 +365,11 @@ impl Message for ClientMessage {
             },
             5 => ClientMessage::Detach,
             6 => ClientMessage::Command {
+                name: r.str()?,
+                args: r.list()?,
+            },
+            7 => ClientMessage::PaneCommand {
+                pane: r.u64()?,
                 name: r.str()?,
                 args: r.list()?,
             },

@@ -54,6 +54,16 @@ fn client_messages() -> Vec<ClientMessage> {
             name: "x".into(),
             args: vec!["tiếng Việt".into(), "汉字".into(), "👨\u{200D}👩".into()],
         },
+        ClientMessage::PaneCommand {
+            pane: u64::MAX,
+            name: "pane.split-right".into(),
+            args: vec![],
+        },
+        ClientMessage::PaneCommand {
+            pane: 7,
+            name: "window.rename".into(),
+            args: vec!["tên".into()],
+        },
     ]
 }
 
