@@ -471,6 +471,16 @@ fn a_command_run_from_a_pane_acts_on_that_panes_window() {
         })
         .collect();
     assert!(divider.iter().all(|c| c == "│"), "{divider:?}");
+    // A new window adds a tab, and `arcade ls` counts the windows.
+    host.type_line("arcade run window.new");
+    let ok = host.wait_until(WAIT, |_| {
+        env.sessions().contains("split: 2 windows, 3 panes")
+    });
+    assert!(ok, "{}", env.sessions());
+    // Wait for the new window to be drawn (the old one's text goes), then go back to the first.
+    assert!(host.wait_until(WAIT, |h| !h.screen_text().contains("30 50")));
+    host.type_line("arcade run window.select 1");
+    host.wait_for_text("30 50").unwrap();
     // A command that does not exist is refused with a message and a failing exit code.
     host.type_line("arcade run pane.fly; echo code-$?");
     host.wait_for_text("code-1").unwrap();

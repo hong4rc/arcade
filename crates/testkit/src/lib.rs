@@ -74,6 +74,9 @@ impl TestDaemon {
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).expect("create test directory");
+        // A pane made after the first one runs a login shell, which reads the system's profile
+        // and then this one (the test's home is this directory): it puts the prompt back.
+        std::fs::write(dir.join(".profile"), "PS1='$ '\n").expect("write the test profile");
         let socket = dir.join("s");
         let mut config = DaemonConfig::new(&socket);
         adjust(&mut config);

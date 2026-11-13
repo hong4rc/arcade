@@ -129,6 +129,49 @@ impl Server {
                 self.close_pane(ctx.pane);
                 Ok(String::new())
             }
+            Command::WindowNew => self.new_window(ctx),
+            Command::WindowSelect(number) => {
+                let target = number
+                    .checked_sub(1)
+                    .and_then(|index| {
+                        self.sessions
+                            .get(&ctx.session)
+                            .and_then(|s| s.windows.get(index))
+                    })
+                    .map(|w| w.id)
+                    .ok_or_else(|| format!("no window {number}"))?;
+                self.select_window(ctx.session, target);
+                Ok(String::new())
+            }
+            Command::WindowNext => self.step_window(ctx.session, 1),
+            Command::WindowPrevious => self.step_window(ctx.session, -1),
+            Command::WindowLast => {
+                let last = self
+                    .sessions
+                    .get(&ctx.session)
+                    .and_then(|s| s.last_window)
+                    .ok_or_else(|| "no window to go back to".to_string())?;
+                self.select_window(ctx.session, last);
+                Ok(String::new())
+            }
+            Command::WindowRename(Some(name)) => {
+                let window = self
+                    .sessions
+                    .get_mut(&ctx.session)
+                    .and_then(|s| s.window_mut(ctx.window))
+                    .ok_or_else(|| "no such window".to_string())?;
+                window.name = name;
+                window.name_manual = true;
+                if let Some(s) = self.sessions.get_mut(&ctx.session) {
+                    s.chrome_dirty = true;
+                }
+                Ok(String::new())
+            }
+            Command::WindowRename(None) => {
+                Err("window.rename needs a name when it is not typed at the keyboard".to_string())
+            }
+            Command::WindowMoveLeft => self.move_window(ctx, -1),
+            Command::WindowMoveRight => self.move_window(ctx, 1),
             Command::SessionDetach => {
                 self.detach_client(ctx.session, DetachReason::Requested, "detached");
                 Ok(String::new())
@@ -323,6 +366,90 @@ impl Server {
         if let Some(session) = self.sessions.get_mut(&ctx.session) {
             session.chrome_dirty = true;
         }
+        Ok(String::new())
+    }
+
+    // ---- Windows ----
+
+    fn new_window(&mut self, ctx: Ctx) -> Result<String, String> {
+        let session = self
+            .sessions
+            .get(&ctx.session)
+            .ok_or_else(|| "no such session".to_string())?;
+        let (cols, rows) = window_area(session.cols, session.rows);
+        let cwd = self
+            .panes
+            .get(&ctx.pane)
+            .and_then(|p| pty::process_cwd(p.pid))
+            .unwrap_or_else(|| session.cwd.clone());
+        let env = session.env.clone();
+        let pane = self.spawn_pane(Vec::new(), cwd.clone(), &env, cols, rows)?;
+        let pane_id = pane.id;
+        self.panes.insert(pane_id, pane);
+        let window_id = self.next_window;
+        self.next_window += 1;
+        let Some(session) = self.sessions.get_mut(&ctx.session) else {
+            return Ok(String::new());
+        };
+        session.windows.push(Window {
+            id: window_id,
+            name: directory_name(&cwd),
+            name_manual: false,
+            layout: Layout::new(pane_id, cols, rows),
+            focus: pane_id,
+            last_focus: None,
+            zoomed: false,
+        });
+        self.select_window(ctx.session, window_id);
+        Ok(String::new())
+    }
+
+    /// Show another window; the one shown now becomes the one to go back to.
+    fn select_window(&mut self, session_id: u64, window_id: u64) {
+        let Some(session) = self.sessions.get_mut(&session_id) else {
+            return;
+        };
+        if session.current == window_id || session.window(window_id).is_none() {
+            return;
+        }
+        session.last_window = Some(session.current);
+        session.current = window_id;
+        session.relayout = true;
+        session.chrome_dirty = true;
+    }
+
+    /// The next window (`step` 1) or the previous one (`step` -1), going round at the ends.
+    fn step_window(&mut self, session_id: u64, step: isize) -> Result<String, String> {
+        let session = self
+            .sessions
+            .get(&session_id)
+            .ok_or_else(|| "no such session".to_string())?;
+        let count = session.windows.len() as isize;
+        let at = session
+            .windows
+            .iter()
+            .position(|w| w.id == session.current)
+            .unwrap_or(0) as isize;
+        let target = session.windows[(at + step).rem_euclid(count) as usize].id;
+        self.select_window(session_id, target);
+        Ok(String::new())
+    }
+
+    /// Swap the window with its neighbour in the status bar; at either end nothing happens.
+    fn move_window(&mut self, ctx: Ctx, step: isize) -> Result<String, String> {
+        let session = self
+            .sessions
+            .get_mut(&ctx.session)
+            .ok_or_else(|| "no such session".to_string())?;
+        let Some(at) = session.windows.iter().position(|w| w.id == ctx.window) else {
+            return Err("no such window".to_string());
+        };
+        let to = at as isize + step;
+        if to < 0 || to as usize >= session.windows.len() {
+            return Ok(String::new());
+        }
+        session.windows.swap(at, to as usize);
+        session.chrome_dirty = true;
         Ok(String::new())
     }
 

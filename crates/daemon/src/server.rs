@@ -148,6 +148,8 @@ struct Pane {
 struct Window {
     id: u64,
     name: String,
+    /// The user chose the name, so it is not taken from the working directory any more.
+    name_manual: bool,
     layout: Layout,
     focus: PaneId,
     /// The pane that had the focus before this one.
@@ -209,7 +211,12 @@ struct Session {
     renderer: Renderer,
     /// When the last update was sent to the attached client.
     last_frame: Option<Instant>,
+    /// When the windows' automatic names were last compared with the panes' directories.
+    names_checked: Option<Instant>,
 }
+
+/// The shortest time between two looks at the panes' directories for the windows' names.
+const NAME_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Rows of the client's screen the status bar takes.
 const STATUS_ROWS: u16 = 1;
@@ -1034,7 +1041,8 @@ impl Server {
                 cwd: request.cwd.clone(),
                 windows: vec![Window {
                     id: window_id,
-                    name: default_session_name(&request.cwd),
+                    name: directory_name(&request.cwd),
+                    name_manual: false,
                     layout: Layout::new(pane_id, area_cols, area_rows),
                     focus: pane_id,
                     last_focus: None,
@@ -1052,6 +1060,7 @@ impl Server {
                 screen: Screen::new(),
                 renderer: Renderer::new(),
                 last_frame: None,
+                names_checked: None,
             },
         );
         Ok(session_id)
@@ -1304,6 +1313,16 @@ fn default_session_name(cwd: &str) -> String {
         .and_then(|n| n.to_str())
         .filter(|n| !n.is_empty())
         .unwrap_or("0")
+        .to_string()
+}
+
+/// The last part of a directory path, or the whole path for the root.
+fn directory_name(cwd: &str) -> String {
+    Path::new(cwd)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty())
+        .unwrap_or("/")
         .to_string()
 }
 

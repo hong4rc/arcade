@@ -98,6 +98,28 @@ impl Server {
         if !(panes_dirty || session.need_full || session.relayout || session.chrome_dirty) {
             return;
         }
+        // The names of the windows come from the panes' directories. They are looked at only
+        // now, when an update is going out anyway, and at most once a second.
+        let now = Instant::now();
+        if session
+            .names_checked
+            .is_none_or(|t| now.duration_since(t) >= NAME_CHECK_INTERVAL)
+        {
+            session.names_checked = Some(now);
+            for window in session.windows.iter_mut().filter(|w| !w.name_manual) {
+                let name = self
+                    .panes
+                    .get(&window.focus)
+                    .and_then(|p| pty::process_cwd(p.pid))
+                    .map(|cwd| directory_name(&cwd));
+                if let Some(name) = name
+                    && name != window.name
+                {
+                    window.name = name;
+                    session.chrome_dirty = true;
+                }
+            }
+        }
         let full = session.need_full;
         let relayout = session.relayout || full;
         let (cols, rows) = (session.cols, session.rows);
