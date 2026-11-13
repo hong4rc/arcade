@@ -27,8 +27,10 @@ use mio::net::{UnixListener, UnixStream};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
 
+use crate::clipboard::Clipboard;
 use crate::compose::Screen;
 use crate::config::{self, Config, StatusPosition};
+use crate::copy::Copy;
 use crate::keymap::Keymap;
 use crate::keys::{Input, KeyReader};
 use crate::layout::{Layout, PaneId, Rect};
@@ -157,6 +159,18 @@ struct Pane {
     compressing: bool,
     /// Where the pane's cursor was when its screen was last read.
     last_cursor: Cursor,
+    /// Set while the pane is in copy mode: the pane then shows this instead of its screen.
+    copy: Option<Copy>,
+}
+
+impl Pane {
+    /// Something about the pane has to be drawn again.
+    fn wants_frame(&self) -> bool {
+        match &self.copy {
+            Some(copy) => copy.dirty,
+            None => self.dirty,
+        }
+    }
 }
 
 struct Window {
@@ -360,6 +374,8 @@ struct Server {
     /// A line to show on the status bar when a client next attaches (a mistake in the file the
     /// daemon started with).
     startup_message: Option<String>,
+    /// What the last copy held.
+    clipboard: Clipboard,
 }
 
 /// Run the daemon until its last session closes (or it is told to stop). Removes the socket
@@ -417,6 +433,7 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         config: settings,
         config_path: config.config_path.clone(),
         startup_message,
+        clipboard: Clipboard::default(),
         log: config
             .log_path
             .as_deref()
@@ -1091,6 +1108,7 @@ impl Server {
                 shape: CursorShape::Block,
                 blinking: false,
             },
+            copy: None,
         })
     }
 
@@ -1240,6 +1258,8 @@ impl Server {
             if pane.term.resize(cols, rows).is_err() {
                 pane.exit_note = Some("[terminal error]".into());
             }
+            // The rows copy mode counts from change with the width; it starts over.
+            pane.copy = None;
             pane.dirty = true;
         }
     }
@@ -1302,16 +1322,22 @@ impl Server {
             }
         }
         // Answers the terminal wants to give to the program go back to it at once.
+        let mut clipboard_writes = Vec::new();
         if pane.term.has_events() {
             let mut replies = Vec::new();
             for event in pane.term.drain_events() {
-                if let TermEvent::Reply(bytes) = event {
-                    replies.extend_from_slice(&bytes);
+                match event {
+                    TermEvent::Reply(bytes) => replies.extend_from_slice(&bytes),
+                    TermEvent::ClipboardWrite(data) => clipboard_writes.push(data),
+                    _ => {}
                 }
             }
             if !replies.is_empty() {
                 queue_pane_input(pane, &replies);
             }
+        }
+        for data in clipboard_writes {
+            self.pane_wrote_clipboard(pane_id, &data);
         }
     }
 

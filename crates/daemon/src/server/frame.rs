@@ -4,7 +4,7 @@ use super::*;
 use crate::render::HostModes;
 use crate::status::{self, StatusInfo, Tab};
 
-fn status_info(s: &Session) -> StatusInfo {
+fn status_info(s: &Session, copy: bool) -> StatusInfo {
     StatusInfo {
         session: s.name.clone(),
         tabs: s
@@ -19,7 +19,7 @@ fn status_info(s: &Session) -> StatusInfo {
             .collect(),
         prefix: s.key_state.prefix_active(),
         locked: s.key_state.locked,
-        copy: false,
+        copy,
         message: s.key_state.message.clone(),
         prompt: s.key_state.status_prompt(),
     }
@@ -40,10 +40,10 @@ impl Server {
         let mut heavy = false;
         for (pane_id, _) in s.current_window().visible_rects() {
             if let Some(pane) = self.panes.get(&pane_id)
-                && pane.dirty
+                && pane.wants_frame()
             {
                 dirty = true;
-                heavy |= !pane.rate.is_light();
+                heavy |= pane.copy.is_none() && !pane.rate.is_light();
             }
         }
         if !(dirty || s.need_full || s.relayout || s.chrome_dirty) {
@@ -95,7 +95,7 @@ impl Server {
             .collect();
         let panes_dirty = visible
             .iter()
-            .any(|(p, _)| self.panes.get(p).is_some_and(|p| p.dirty));
+            .any(|(p, _)| self.panes.get(p).is_some_and(Pane::wants_frame));
         if !(panes_dirty || session.need_full || session.relayout || session.chrome_dirty) {
             return;
         }
@@ -136,6 +136,31 @@ impl Server {
             let Some(pane) = self.panes.get_mut(pane_id) else {
                 continue;
             };
+            // A pane in copy mode shows its view of the rows, not what the program draws; what
+            // the program draws is read again when copy mode ends.
+            if let Some(copy) = pane.copy.as_mut() {
+                pane.dirty = false;
+                if relayout || copy.dirty {
+                    copy.dirty = false;
+                    let rows = copy
+                        .view(&pane.term)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(y, cells)| arcade_term::RowUpdate { y: y as u16, cells })
+                        .collect();
+                    session.screen.blit(
+                        *rect,
+                        arcade_term::Frame {
+                            cols: rect.w,
+                            rows_total: rect.h,
+                            damage: arcade_term::Damage::Full,
+                            rows,
+                            cursor: pane.last_cursor,
+                        },
+                    );
+                }
+                continue;
+            }
             if !(relayout || pane.dirty) {
                 continue;
             }
@@ -164,7 +189,8 @@ impl Server {
             };
             session.screen.draw_dividers(&dividers, origin, focus_rect);
             if let Some(y) = status_row(rows, status_position) {
-                let (cells, prompt_cursor) = status::build(cols, &status_info(session));
+                let copy_on = self.panes.get(&focus).is_some_and(|p| p.copy.is_some());
+                let (cells, prompt_cursor) = status::build(cols, &status_info(session, copy_on));
                 session.screen.set_row(y, cells);
                 cursor_override = prompt_cursor.map(|x| (x, y));
             }
@@ -195,6 +221,16 @@ impl Server {
                 shape: CursorShape::Bar,
                 blinking: false,
             },
+            (None, Some((rect, pane))) if pane.copy.is_some() => {
+                let shown = pane.copy.as_ref().and_then(|c| c.cursor_in_view());
+                arcade_term::Cursor {
+                    x: rect.x + shown.map_or(0, |(x, _)| x),
+                    y: rect.y + shown.map_or(0, |(_, y)| y),
+                    visible: shown.is_some(),
+                    shape: CursorShape::Block,
+                    blinking: false,
+                }
+            }
             (None, Some((rect, pane))) => {
                 let c = pane.last_cursor;
                 arcade_term::Cursor {

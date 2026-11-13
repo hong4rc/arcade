@@ -22,6 +22,9 @@ pub(super) enum PromptKind {
     ClosePane,
     RenameWindow,
     RenameSession,
+    /// The text to look for in copy mode, going down or going up.
+    SearchForward,
+    SearchBackward,
 }
 
 pub(super) struct PromptState {
@@ -95,7 +98,10 @@ impl Server {
                 Input::Key { key, raw } => self.handle_key(session_id, key, &raw),
                 Input::Paste(text) => self.handle_paste(session_id, &text),
                 Input::Raw(raw) => {
-                    if self.in_prompt(session_id) || self.picker_open(session_id) {
+                    if self.in_prompt(session_id)
+                        || self.picker_open(session_id)
+                        || self.focus_in_copy_mode(session_id)
+                    {
                         continue;
                     }
                     if let Some(pane) = self.focus_pane_of(session_id) {
@@ -110,6 +116,13 @@ impl Server {
         self.sessions
             .get(&session_id)
             .is_some_and(|s| s.picker.is_some())
+    }
+
+    /// The focused pane shows copy mode, so keys are for copy mode and not for its program.
+    fn focus_in_copy_mode(&self, session_id: u64) -> bool {
+        self.focus_pane_of(session_id)
+            .and_then(|p| self.panes.get(&p))
+            .is_some_and(|p| p.copy.is_some())
     }
 
     fn in_prompt(&self, session_id: u64) -> bool {
@@ -130,7 +143,7 @@ impl Server {
         }
     }
 
-    fn set_message(&mut self, session_id: u64, text: &str) {
+    pub(super) fn set_message(&mut self, session_id: u64, text: &str) {
         if let Some(s) = self.sessions.get_mut(&session_id) {
             s.key_state.message = Some(text.to_string());
             s.chrome_dirty = true;
@@ -186,7 +199,7 @@ impl Server {
                     let b = b.clone();
                     self.run_binding(session_id, &b);
                 }
-                _ => self.send_key_to_pane(pane, original, raw),
+                _ => self.key_to_focus(session_id, pane, original, raw),
             }
             return;
         }
@@ -209,7 +222,7 @@ impl Server {
                 self.set_prefix(session_id, PrefixState::Idle);
                 if key == keymap::normalize(self.config.keys.prefix) {
                     // The prefix twice sends the prefix key itself.
-                    self.send_key_to_pane(pane, original, raw);
+                    self.key_to_focus(session_id, pane, original, raw);
                 } else {
                     self.set_message(
                         session_id,
@@ -229,7 +242,20 @@ impl Server {
             self.run_binding(session_id, &b);
             return;
         }
-        self.send_key_to_pane(pane, original, raw);
+        self.key_to_focus(session_id, pane, original, raw);
+    }
+
+    /// A key no table above took: for the pane in copy mode it is a copy mode key (or nothing),
+    /// for any other pane it is typing.
+    fn key_to_focus(&mut self, session_id: u64, pane: u64, original: Key, raw: &[u8]) {
+        let in_copy = self.panes.get(&pane).is_some_and(|p| p.copy.is_some());
+        if !in_copy {
+            self.send_key_to_pane(pane, original, raw);
+            return;
+        }
+        if let Some(b) = Keymap::get(&self.keymap.copy, original).cloned() {
+            self.run_binding(session_id, &b);
+        }
     }
 
     /// Run what a key is bound to. Closing a pane asks first and renaming asks for the name;
@@ -242,6 +268,12 @@ impl Server {
             ("pane.close", _) => Some((PromptKind::ClosePane, "Close this pane? (y/n) ")),
             ("window.rename", true) => Some((PromptKind::RenameWindow, "Window name: ")),
             ("session.rename", true) => Some((PromptKind::RenameSession, "Session name: ")),
+            ("copy.search-forward", _) if self.focus_in_copy_mode(session_id) => {
+                Some((PromptKind::SearchForward, "/"))
+            }
+            ("copy.search-backward", _) if self.focus_in_copy_mode(session_id) => {
+                Some((PromptKind::SearchBackward, "?"))
+            }
             _ => None,
         };
         let picker = match (binding.command.as_str(), binding.args.is_empty()) {
@@ -327,7 +359,17 @@ impl Server {
         };
         let (name, args): (&str, Vec<String>) = match prompt.kind {
             PromptKind::ClosePane => ("pane.close", Vec::new()),
-            PromptKind::RenameWindow | PromptKind::RenameSession if prompt.text.is_empty() => {
+            PromptKind::RenameWindow
+            | PromptKind::RenameSession
+            | PromptKind::SearchForward
+            | PromptKind::SearchBackward
+                if prompt.text.is_empty() =>
+            {
+                return;
+            }
+            PromptKind::SearchForward | PromptKind::SearchBackward => {
+                let forward = prompt.kind == PromptKind::SearchForward;
+                self.copy_search(session_id, pane, &prompt.text, forward);
                 return;
             }
             PromptKind::RenameWindow => ("window.rename", vec![prompt.text]),
@@ -358,6 +400,9 @@ impl Server {
                 prompt.text.push_str(&line);
                 s.chrome_dirty = true;
             }
+            return;
+        }
+        if self.focus_in_copy_mode(session_id) {
             return;
         }
         if let Some(pane) = self.focus_pane_of(session_id) {

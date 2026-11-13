@@ -1,7 +1,8 @@
 //! What the named commands do to sessions, windows and panes.
 
 use super::*;
-use crate::commands::{self, Command, ListCommand};
+use crate::commands::{self, Command, CopyCommand, ListCommand};
+use crate::copy::{Copy, Outcome};
 use crate::layout::{Axis, Direction, LayoutError};
 use crate::picker::{Item, PickerKind};
 
@@ -244,8 +245,128 @@ impl Server {
                 }
                 Ok(String::new())
             }
-            _ => Err("this command is not available yet".to_string()),
+            // `execute` handles the form with a name before it gets here.
+            Command::SessionClose(Some(_)) => Err("no such session".to_string()),
+            Command::CopyEnter => self.enter_copy(ctx),
+            Command::Copy(command) => self.copy_command(ctx, command),
+            Command::PanePaste => self.paste_buffer(ctx.pane),
         }
+    }
+
+    // ---- Copy mode and the clipboard ----
+
+    fn enter_copy(&mut self, ctx: Ctx) -> Result<String, String> {
+        let pane = self
+            .panes
+            .get_mut(&ctx.pane)
+            .ok_or_else(|| "no such pane".to_string())?;
+        if pane.copy.is_none() {
+            let (cols, rows) = (pane.term.cols(), pane.term.rows());
+            pane.copy = Some(Copy::enter(
+                &pane.term,
+                pane.term.cursor_position(),
+                cols,
+                rows,
+            ));
+            self.copy_mode_changed(ctx.session);
+        }
+        Ok(String::new())
+    }
+
+    /// The status bar and the pane's room must be drawn again.
+    pub(super) fn copy_mode_changed(&mut self, session_id: u64) {
+        if let Some(s) = self.sessions.get_mut(&session_id) {
+            s.relayout = true;
+            s.chrome_dirty = true;
+        }
+    }
+
+    pub(super) fn exit_copy(&mut self, session_id: u64, pane_id: u64) {
+        if let Some(pane) = self.panes.get_mut(&pane_id) {
+            pane.copy = None;
+            // What the screen shows now was not looked at while copy mode was on.
+            pane.dirty = true;
+        }
+        self.copy_mode_changed(session_id);
+    }
+
+    fn copy_command(&mut self, ctx: Ctx, command: CopyCommand) -> Result<String, String> {
+        let pane = self
+            .panes
+            .get_mut(&ctx.pane)
+            .ok_or_else(|| "no such pane".to_string())?;
+        let Some(copy) = pane.copy.as_mut() else {
+            return Err("the pane is not in copy mode".to_string());
+        };
+        match copy.apply(&pane.term, command) {
+            Outcome::Moved => Ok(String::new()),
+            Outcome::Message(message) => {
+                self.set_message(ctx.session, &message);
+                Ok(String::new())
+            }
+            Outcome::AskSearch { .. } => {
+                Err("the text to search for is typed at the keyboard".to_string())
+            }
+            Outcome::Yank { text, stay } => {
+                self.copy_text(ctx.session, &text);
+                if !stay {
+                    self.exit_copy(ctx.session, ctx.pane);
+                }
+                Ok(String::new())
+            }
+            Outcome::Exit => {
+                self.exit_copy(ctx.session, ctx.pane);
+                Ok(String::new())
+            }
+        }
+    }
+
+    /// Search in the pane's copy mode for what was typed at the prompt.
+    pub(super) fn copy_search(&mut self, session_id: u64, pane_id: u64, text: &str, forward: bool) {
+        let Some(pane) = self.panes.get_mut(&pane_id) else {
+            return;
+        };
+        let Some(copy) = pane.copy.as_mut() else {
+            return;
+        };
+        match copy.search(&pane.term, text, forward) {
+            Ok(false) => {}
+            Ok(true) => self.set_message(session_id, "search wrapped around"),
+            Err(message) => self.set_message(session_id, &message),
+        }
+    }
+
+    /// Keep `text` in the buffer and send it out the way the settings say, to the client of
+    /// this session only.
+    pub(super) fn copy_text(&mut self, session_id: u64, text: &str) {
+        let sent = self.clipboard.copy(text, &self.config.clipboard);
+        let client = self.sessions.get(&session_id).and_then(|s| s.client);
+        if let (Some(bytes), Some(client)) = (sent.osc52, client) {
+            self.send_output(client, &bytes);
+        }
+        self.set_message(session_id, &sent.message);
+    }
+
+    /// A program in a pane asked for the clipboard to be set.
+    pub(super) fn pane_wrote_clipboard(&mut self, pane_id: u64, data: &[u8]) {
+        if !self.config.clipboard.allow_pane_write {
+            return;
+        }
+        let Some((session, _)) = self.locate_pane(pane_id) else {
+            return;
+        };
+        let text = String::from_utf8_lossy(data).into_owned();
+        self.copy_text(session, &text);
+    }
+
+    fn paste_buffer(&mut self, pane_id: u64) -> Result<String, String> {
+        let text = self
+            .clipboard
+            .buffer()
+            .map(str::to_string)
+            .ok_or_else(|| "nothing has been copied yet".to_string())?;
+        self.send_paste_to_pane(pane_id, text.as_bytes());
+        Ok(String::new())
     }
 
     // ---- The floating list, switching sessions, moving windows between sessions ----

@@ -93,6 +93,10 @@ pub fn normalize(key: Key) -> Key {
         '>' => '.',
         '?' => '/',
         '~' => '`',
+        c if c.is_uppercase() => match c.to_lowercase().next().filter(|l| l.is_alphabetic()) {
+            Some(lower) => lower,
+            None => return key,
+        },
         _ => return key,
     };
     Key {
@@ -283,6 +287,7 @@ impl Keymap {
         map.fill_direct(config);
         map.fill_prefix(config);
         map.fill_list(config);
+        map.fill_copy(config);
         map
     }
 
@@ -365,6 +370,8 @@ impl Keymap {
         bind(t, ch('$'), "session.rename", &[], false);
         bind(t, ch('s'), "session.list", &[], false);
         bind(t, ch('m'), "window.move-to-session", &[], false);
+        bind(t, ch('['), "copy.enter", &[], false);
+        bind(t, ch(']'), "pane.paste", &[], false);
         bind(t, ch('d'), "session.detach", &[], false);
         bind(t, ch('g'), "arcade.lock", &[], false);
         bind(t, ch('r'), "arcade.reload-config", &[], false);
@@ -394,6 +401,84 @@ impl Keymap {
             false,
         );
         bind(t, ch('q'), "list.cancel", &[], false);
+    }
+
+    fn fill_copy(&mut self, config: &KeysConfig) {
+        let t = &mut self.copy;
+        // The four movement characters always move, so a default that would take one of them
+        // (in either case) moves to the key given after it, or goes without a key.
+        let nav = |c: char| config.nav.contains(&c.to_ascii_lowercase());
+        let place = |t: &mut Table, key: char, fallback: Option<char>, command: &str| {
+            let chosen = if nav(key) {
+                fallback.filter(|f| !nav(*f))
+            } else {
+                Some(key)
+            };
+            if let Some(c) = chosen {
+                bind(t, ch(c), command, &[], false);
+            }
+        };
+        place(t, 'w', None, "copy.word-next");
+        place(t, 'b', None, "copy.word-back");
+        place(t, 'e', Some('j'), "copy.word-end");
+        place(t, '0', None, "copy.line-start");
+        place(t, '^', None, "copy.line-first-char");
+        place(t, '$', None, "copy.line-end");
+        place(t, 'g', None, "copy.top");
+        place(t, 'G', None, "copy.bottom");
+        place(t, '/', None, "copy.search-forward");
+        place(t, '?', None, "copy.search-backward");
+        place(t, 'n', Some('k'), "copy.search-next");
+        place(t, 'N', Some('K'), "copy.search-previous");
+        place(t, 'v', None, "copy.select-char");
+        place(t, 'V', None, "copy.select-line");
+        place(t, 'y', None, "copy.yank");
+        place(t, 'Y', None, "copy.yank-stay");
+        place(t, 'q', None, "copy.exit");
+        let ctrl = |c: char| Key {
+            code: Code::Char(c),
+            mods: Mods {
+                ctrl: true,
+                ..Mods::NONE
+            },
+        };
+        bind(t, ctrl('u'), "copy.half-page-up", &[], false);
+        bind(t, ctrl('d'), "copy.half-page-down", &[], false);
+        bind(t, ctrl('b'), "copy.page-up", &[], false);
+        bind(t, ctrl('f'), "copy.page-down", &[], false);
+        bind(
+            t,
+            plain(Code::Named(Named::PageUp)),
+            "copy.page-up",
+            &[],
+            false,
+        );
+        bind(
+            t,
+            plain(Code::Named(Named::PageDown)),
+            "copy.page-down",
+            &[],
+            false,
+        );
+        bind(t, plain(Code::Named(Named::Enter)), "copy.yank", &[], false);
+        bind(
+            t,
+            plain(Code::Named(Named::Escape)),
+            "copy.cancel",
+            &[],
+            false,
+        );
+        // The movement keys last, so that nothing above can have taken one.
+        for (index, command) in [
+            (0, "copy.left"),
+            (1, "copy.down"),
+            (2, "copy.up"),
+            (3, "copy.right"),
+        ] {
+            for code in direction_codes(config, index) {
+                bind(t, plain(code), command, &[], false);
+            }
+        }
     }
 
     /// The binding of `key` in `table`.
@@ -510,5 +595,108 @@ mod tests {
         for c in "nei".chars() {
             assert!(Keymap::get(&map.prefix, k(&c.to_string())).is_none(), "{c}");
         }
+    }
+
+    #[test]
+    fn capital_letters_are_looked_up_as_lower_case_with_shift() {
+        let from_text = k("V");
+        let from_reader = Key {
+            code: Code::Char('v'),
+            mods: Mods {
+                shift: true,
+                ..Mods::NONE
+            },
+        };
+        assert_eq!(normalize(from_text), from_reader);
+        assert_eq!(
+            normalize(Key {
+                code: Code::Char('V'),
+                mods: Mods::NONE
+            }),
+            from_reader
+        );
+    }
+
+    fn copy_command(map: &Keymap, key: &str) -> Option<String> {
+        Keymap::get(&map.copy, k(key)).map(|b| b.command.clone())
+    }
+
+    #[test]
+    fn the_copy_table_has_the_vi_keys_by_default() {
+        let map = Keymap::defaults(&KeysConfig::default());
+        for (key, command) in [
+            ("h", "copy.left"),
+            ("j", "copy.down"),
+            ("k", "copy.up"),
+            ("l", "copy.right"),
+            ("w", "copy.word-next"),
+            ("b", "copy.word-back"),
+            ("e", "copy.word-end"),
+            ("0", "copy.line-start"),
+            ("^", "copy.line-first-char"),
+            ("$", "copy.line-end"),
+            ("g", "copy.top"),
+            ("G", "copy.bottom"),
+            ("ctrl+u", "copy.half-page-up"),
+            ("ctrl+d", "copy.half-page-down"),
+            ("ctrl+b", "copy.page-up"),
+            ("ctrl+f", "copy.page-down"),
+            ("pageup", "copy.page-up"),
+            ("pagedown", "copy.page-down"),
+            ("/", "copy.search-forward"),
+            ("?", "copy.search-backward"),
+            ("n", "copy.search-next"),
+            ("N", "copy.search-previous"),
+            ("v", "copy.select-char"),
+            ("V", "copy.select-line"),
+            ("y", "copy.yank"),
+            ("enter", "copy.yank"),
+            ("Y", "copy.yank-stay"),
+            ("escape", "copy.cancel"),
+            ("q", "copy.exit"),
+        ] {
+            assert_eq!(copy_command(&map, key).as_deref(), Some(command), "{key}");
+        }
+        assert_eq!(
+            Keymap::get(&map.prefix, k("[")).map(|b| b.command.as_str()),
+            Some("copy.enter")
+        );
+        assert_eq!(
+            Keymap::get(&map.prefix, k("]")).map(|b| b.command.as_str()),
+            Some("pane.paste")
+        );
+    }
+
+    #[test]
+    fn the_movement_keys_win_in_the_copy_table_and_what_they_took_moves_on() {
+        let config = KeysConfig {
+            nav: ['h', 'n', 'e', 'i'],
+            ..KeysConfig::default()
+        };
+        let map = Keymap::defaults(&config);
+        for (key, command) in [
+            ("h", "copy.left"),
+            ("n", "copy.down"),
+            ("e", "copy.up"),
+            ("i", "copy.right"),
+            ("k", "copy.search-next"),
+            ("K", "copy.search-previous"),
+            ("j", "copy.word-end"),
+        ] {
+            assert_eq!(copy_command(&map, key).as_deref(), Some(command), "{key}");
+        }
+        // The capital of a movement key is not a movement, and its search key moved too.
+        assert_eq!(copy_command(&map, "N"), None);
+        // A replacement that is a movement key as well leaves the command without a key.
+        let config = KeysConfig {
+            nav: ['h', 'n', 'k', 'j'],
+            ..KeysConfig::default()
+        };
+        let map = Keymap::defaults(&config);
+        assert_eq!(copy_command(&map, "n").as_deref(), Some("copy.down"));
+        assert!(
+            !map.copy.values().any(|b| b.command == "copy.search-next"),
+            "no key is left for it"
+        );
     }
 }

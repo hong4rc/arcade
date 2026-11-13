@@ -30,6 +30,8 @@ pub enum Role {
     Picker,
     /// The line of the floating list that is chosen.
     PickerSelected,
+    /// The cells of copy mode that are selected or found by a search.
+    Selection,
 }
 
 fn fg(color: u8) -> Style {
@@ -89,6 +91,11 @@ pub fn style(role: Role) -> Style {
             fg: Color::Indexed(0),
             bg: Color::Indexed(4),
             bold: true,
+            ..Style::default()
+        },
+        Role::Selection => Style {
+            fg: Color::Indexed(0),
+            bg: Color::Indexed(6),
             ..Style::default()
         },
     }

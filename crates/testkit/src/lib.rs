@@ -18,7 +18,7 @@ use arcade_daemon::DaemonConfig;
 use arcade_proto::{
     AttachRequest, ClientMessage, CreateMode, Decoder, PROTOCOL_VERSION, ServerMessage, encode,
 };
-use arcade_term::{Term, TermConfig};
+use arcade_term::{Event, Term, TermConfig};
 
 /// Memory a process really holds, in KiB: on macOS the system's "physical footprint", which
 /// (unlike the resident size) drops when memory is compressed or given back; elsewhere the
@@ -421,6 +421,8 @@ pub struct TestClient {
     pub output_messages: usize,
     /// Number of bytes of screen output received.
     pub output_bytes: usize,
+    /// What the host terminal was asked to put on its clipboard (OSC 52), decoded, in order.
+    pub clipboard_writes: Vec<Vec<u8>>,
 }
 
 impl TestClient {
@@ -435,6 +437,7 @@ impl TestClient {
             closed: false,
             output_messages: 0,
             output_bytes: 0,
+            clipboard_writes: Vec::new(),
         };
         client.send_message(&ClientMessage::Hello {
             version: PROTOCOL_VERSION,
@@ -573,8 +576,13 @@ impl TestClient {
                             self.output_messages += 1;
                             self.output_bytes += bytes.len();
                             self.screen.feed(&bytes);
-                            // The virtual screen's own replies go nowhere.
-                            let _ = self.screen.drain_events();
+                            // The virtual screen's own replies go nowhere; what it was asked to
+                            // put on the clipboard is kept.
+                            for event in self.screen.drain_events() {
+                                if let Event::ClipboardWrite(data) = event {
+                                    self.clipboard_writes.push(data);
+                                }
+                            }
                         }
                         Ok(Some(other)) => self.messages.push(other),
                         Ok(None) => break,

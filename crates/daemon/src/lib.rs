@@ -1,9 +1,11 @@
 //! The Arcade daemon: sessions, panes, their processes and terminals, and the socket clients
 //! attach through.
 
+mod clipboard;
 mod commands;
 mod compose;
 pub mod config;
+mod copy;
 mod keymap;
 mod keys;
 mod layout;
