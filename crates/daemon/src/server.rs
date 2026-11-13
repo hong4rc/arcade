@@ -34,6 +34,7 @@ use crate::keys::{Input, KeyReader};
 use crate::layout::{Layout, PaneId, Rect};
 use crate::log::Log;
 use crate::paths::prepare_socket_dir;
+use crate::picker::Picker;
 use crate::pty::{self, SpawnSpec};
 use crate::render::Renderer;
 use keys::KeyState;
@@ -232,6 +233,8 @@ struct Session {
     keys: KeyReader,
     /// The prefix, the lock, the prompt and the message line.
     key_state: KeyState,
+    /// The floating list, while one is open.
+    picker: Option<Picker>,
 }
 
 /// The shortest time between two looks at the panes' directories for the windows' names.
@@ -930,6 +933,12 @@ impl Server {
                 return;
             }
         };
+        self.bind_client(id, session_id, cols, rows);
+    }
+
+    /// Make `id` the client of the session. The session's earlier client, if another, is told and
+    /// let go: a session has one client at a time.
+    fn bind_client(&mut self, id: u64, session_id: u64, cols: u16, rows: u16) {
         // Only one client per session: the earlier one is told and let go.
         let previous = self.sessions.get(&session_id).and_then(|s| s.client);
         if let Some(previous) = previous
@@ -949,6 +958,8 @@ impl Server {
             session.client = Some(id);
             session.keys = KeyReader::new();
             session.key_state.prefix = keys::PrefixState::Idle;
+            session.key_state.prompt = None;
+            session.picker = None;
             if let Some(message) = self.startup_message.take() {
                 session.key_state.message = Some(message);
             }
@@ -1146,6 +1157,7 @@ impl Server {
                 names_checked: None,
                 keys: KeyReader::new(),
                 key_state: KeyState::new(),
+                picker: None,
             },
         );
         Ok(session_id)

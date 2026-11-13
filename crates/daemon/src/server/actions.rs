@@ -1,8 +1,9 @@
 //! What the named commands do to sessions, windows and panes.
 
 use super::*;
-use crate::commands::{self, Command};
+use crate::commands::{self, Command, ListCommand};
 use crate::layout::{Axis, Direction, LayoutError};
+use crate::picker::{Item, PickerKind};
 
 /// Where a command acts: a session, one of its windows, and a pane in that window.
 #[derive(Clone, Copy)]
@@ -15,6 +16,24 @@ pub(super) struct Ctx {
 /// How far one resize step moves a divider.
 const RESIZE_COLS: u16 = 5;
 const RESIZE_ROWS: u16 = 2;
+
+/// Put a window in a session's bar: with the number it gets there (the next one, or the lowest
+/// free one when numbers do not close up), in its place by number.
+fn add_window(session: &mut Session, mut window: Window, base_index: usize, renumber: bool) {
+    window.number = if renumber {
+        base_index + session.windows.len()
+    } else {
+        (base_index..)
+            .find(|n| session.windows.iter().all(|w| w.number != *n))
+            .unwrap_or(base_index)
+    };
+    let place = session
+        .windows
+        .iter()
+        .position(|w| w.number > window.number)
+        .unwrap_or(session.windows.len());
+    session.windows.insert(place, window);
+}
 
 impl Server {
     pub(super) fn run_command(
@@ -210,6 +229,13 @@ impl Server {
                 Ok(String::new())
             }
             Command::ArcadeReloadConfig => self.reload_config(),
+            Command::List(command) => self.list_command(ctx.session, command),
+            Command::SessionSwitch(name) => self.switch_session(ctx.session, &name),
+            Command::WindowMoveToSession(Some(name)) => self.move_window_to_session(ctx, &name),
+            Command::WindowMoveToSession(None) => Err(
+                "window.move-to-session needs a session name when it is not chosen from the list"
+                    .to_string(),
+            ),
             Command::ArcadeRedraw => {
                 if let Some(s) = self.sessions.get_mut(&ctx.session) {
                     s.need_full = true;
@@ -220,6 +246,159 @@ impl Server {
             }
             _ => Err("this command is not available yet".to_string()),
         }
+    }
+
+    // ---- The floating list, switching sessions, moving windows between sessions ----
+
+    /// Open the list of sessions, to go to one or to move the current window to one.
+    pub(super) fn open_picker(&mut self, session_id: u64, kind: PickerKind) -> Result<(), String> {
+        let current = self
+            .sessions
+            .get(&session_id)
+            .ok_or_else(|| "no such session".to_string())?;
+        if kind == PickerKind::MoveWindow && current.windows.len() < 2 {
+            return Err("this is the last window of its session".to_string());
+        }
+        let mut sessions: Vec<&Session> = self.sessions.values().collect();
+        sessions.sort_by(|a, b| a.name.cmp(&b.name));
+        let items: Vec<Item> = sessions
+            .iter()
+            .filter(|s| kind == PickerKind::Sessions || s.id != session_id)
+            .map(|s| Item {
+                name: s.name.clone(),
+                detail: match s.windows.len() {
+                    1 => "1 window".to_string(),
+                    n => format!("{n} windows"),
+                },
+                current: s.id == session_id,
+            })
+            .collect();
+        if items.is_empty() {
+            return Err("no other session".to_string());
+        }
+        let selected = items.iter().position(|i| i.current).unwrap_or(0);
+        let title = match kind {
+            PickerKind::Sessions => "Sessions",
+            PickerKind::MoveWindow => "Move window to",
+        };
+        if let Some(s) = self.sessions.get_mut(&session_id) {
+            s.picker = Some(Picker::new(kind, title, items, selected));
+            s.chrome_dirty = true;
+        }
+        Ok(())
+    }
+
+    fn list_command(&mut self, session_id: u64, command: ListCommand) -> Result<String, String> {
+        let session = self
+            .sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| "no such session".to_string())?;
+        let Some(picker) = session.picker.as_mut() else {
+            return Err("no list is open".to_string());
+        };
+        match command {
+            ListCommand::Up => picker.up(),
+            ListCommand::Down => picker.down(),
+            ListCommand::Cancel => {
+                session.picker = None;
+                // What was under the list is drawn again in full.
+                session.relayout = true;
+            }
+            ListCommand::Select => {
+                let kind = picker.kind;
+                let name = picker.chosen().map(|i| i.name.clone());
+                session.picker = None;
+                session.relayout = true;
+                session.chrome_dirty = true;
+                let Some(name) = name else {
+                    return Ok(String::new());
+                };
+                return match kind {
+                    PickerKind::Sessions => self.switch_session(session_id, &name),
+                    PickerKind::MoveWindow => {
+                        let ctx = self.current_ctx(session_id)?;
+                        self.move_window_to_session(ctx, &name)
+                    }
+                };
+            }
+        }
+        session.chrome_dirty = true;
+        Ok(String::new())
+    }
+
+    fn current_ctx(&self, session_id: u64) -> Result<Ctx, String> {
+        let session = self
+            .sessions
+            .get(&session_id)
+            .ok_or_else(|| "no such session".to_string())?;
+        let window = session.current_window();
+        Ok(Ctx {
+            session: session_id,
+            window: window.id,
+            pane: window.focus,
+        })
+    }
+
+    /// The client of this session goes to another session without leaving. A client that the
+    /// other session had is told and let go.
+    fn switch_session(&mut self, from: u64, name: &str) -> Result<String, String> {
+        let target = self
+            .sessions
+            .values()
+            .find(|s| s.name == name)
+            .map(|s| s.id)
+            .ok_or_else(|| format!("no such session: {name}"))?;
+        if target == from {
+            return Ok(String::new());
+        }
+        let source = self
+            .sessions
+            .get_mut(&from)
+            .ok_or_else(|| "no such session".to_string())?;
+        let Some(client) = source.client.take() else {
+            return Err("no client is attached to switch".to_string());
+        };
+        let (cols, rows) = (source.cols, source.rows);
+        source.key_state.prefix = keys::PrefixState::Idle;
+        source.picker = None;
+        self.bind_client(client, target, cols, rows);
+        Ok(String::new())
+    }
+
+    /// The current window, with its panes and processes, goes to the end of another session's
+    /// bar. The client stays where it is.
+    fn move_window_to_session(&mut self, ctx: Ctx, name: &str) -> Result<String, String> {
+        let target = self
+            .sessions
+            .values()
+            .find(|s| s.name == name)
+            .map(|s| s.id)
+            .ok_or_else(|| format!("no such session: {name}"))?;
+        if target == ctx.session {
+            return Err("the window is in that session already".to_string());
+        }
+        let source = self
+            .sessions
+            .get(&ctx.session)
+            .ok_or_else(|| "no such session".to_string())?;
+        if source.windows.len() < 2 {
+            return Err("this is the last window of its session".to_string());
+        }
+        let mut window = self
+            .take_window(ctx)
+            .ok_or_else(|| "no such window".to_string())?;
+        let (base_index, renumber) = (self.config.base_index, self.config.renumber);
+        let status = self.config.status_position;
+        let window_id = window.id;
+        let Some(destination) = self.sessions.get_mut(&target) else {
+            return Err("no such session".to_string());
+        };
+        let (cols, rows) = window_area(destination.cols, destination.rows, status);
+        window.layout.set_area(cols, rows);
+        add_window(destination, window, base_index, renumber);
+        destination.chrome_dirty = true;
+        self.apply_window_sizes(target, window_id);
+        Ok(String::new())
     }
 
     /// Read the configuration file again and replace the settings and the key tables with it.
@@ -477,23 +656,11 @@ impl Server {
         let Some(session) = self.sessions.get_mut(&ctx.session) else {
             return Ok(String::new());
         };
-        let number = if renumber {
-            base_index + session.windows.len()
-        } else {
-            (base_index..)
-                .find(|n| session.windows.iter().all(|w| w.number != *n))
-                .unwrap_or(base_index)
-        };
-        let place = session
-            .windows
-            .iter()
-            .position(|w| w.number > number)
-            .unwrap_or(session.windows.len());
-        session.windows.insert(
-            place,
+        add_window(
+            session,
             Window {
                 id: window_id,
-                number,
+                number: 0,
                 name: directory_name(&cwd),
                 name_manual: false,
                 layout: Layout::new(pane_id, cols, rows),
@@ -501,6 +668,8 @@ impl Server {
                 last_focus: None,
                 zoomed: false,
             },
+            base_index,
+            renumber,
         );
         self.select_window(ctx.session, window_id);
         Ok(String::new())
@@ -628,14 +797,16 @@ impl Server {
 
     /// Remove a window, which has one pane left (the caller drops it), and show another.
     fn remove_window(&mut self, ctx: Ctx) {
+        self.take_window(ctx);
+    }
+
+    /// Take a window out of its session, which must have another, and show another window. The
+    /// window and its panes carry on; the caller decides what becomes of them.
+    fn take_window(&mut self, ctx: Ctx) -> Option<Window> {
         let (base_index, renumber) = (self.config.base_index, self.config.renumber);
-        let Some(session) = self.sessions.get_mut(&ctx.session) else {
-            return;
-        };
-        let Some(index) = session.windows.iter().position(|w| w.id == ctx.window) else {
-            return;
-        };
-        session.windows.remove(index);
+        let session = self.sessions.get_mut(&ctx.session)?;
+        let index = session.windows.iter().position(|w| w.id == ctx.window)?;
+        let window = session.windows.remove(index);
         if renumber {
             for (i, w) in session.windows.iter_mut().enumerate() {
                 w.number = base_index + i;
@@ -654,6 +825,7 @@ impl Server {
         }
         session.relayout = true;
         session.chrome_dirty = true;
+        Some(window)
     }
 
     /// End a session: hang up every pane and tell the client.

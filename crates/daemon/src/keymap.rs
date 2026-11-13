@@ -282,6 +282,7 @@ impl Keymap {
         let mut map = Keymap::default();
         map.fill_direct(config);
         map.fill_prefix(config);
+        map.fill_list(config);
         map
     }
 
@@ -362,10 +363,37 @@ impl Keymap {
         bind(t, ch('>'), "window.move-right", &[], true);
         bind(t, ch(','), "window.rename", &[], false);
         bind(t, ch('$'), "session.rename", &[], false);
+        bind(t, ch('s'), "session.list", &[], false);
+        bind(t, ch('m'), "window.move-to-session", &[], false);
         bind(t, ch('d'), "session.detach", &[], false);
         bind(t, ch('g'), "arcade.lock", &[], false);
         bind(t, ch('r'), "arcade.reload-config", &[], false);
         bind(t, ch('R'), "arcade.redraw", &[], false);
+    }
+
+    fn fill_list(&mut self, config: &KeysConfig) {
+        let t = &mut self.list;
+        // Up and down are the second and third movement keys and the arrows.
+        for (index, command) in [(2, "list.up"), (1, "list.down")] {
+            for code in direction_codes(config, index) {
+                bind(t, plain(code), command, &[], false);
+            }
+        }
+        bind(
+            t,
+            plain(Code::Named(Named::Enter)),
+            "list.select",
+            &[],
+            false,
+        );
+        bind(
+            t,
+            plain(Code::Named(Named::Escape)),
+            "list.cancel",
+            &[],
+            false,
+        );
+        bind(t, ch('q'), "list.cancel", &[], false);
     }
 
     /// The binding of `key` in `table`.

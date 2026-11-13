@@ -35,6 +35,15 @@ pub enum CopyCommand {
     Exit,
 }
 
+/// The commands of the floating list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListCommand {
+    Up,
+    Down,
+    Select,
+    Cancel,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     PaneFocus(Direction),
@@ -60,6 +69,7 @@ pub enum Command {
     SessionClose(Option<String>),
     CopyEnter,
     Copy(CopyCommand),
+    List(ListCommand),
     ArcadeLock,
     ArcadeReloadConfig,
     ArcadeRedraw,
@@ -136,6 +146,10 @@ const NAMES: &[(&str, Command)] = &[
     ("copy.yank-stay", Command::Copy(CopyCommand::YankStay)),
     ("copy.cancel", Command::Copy(CopyCommand::Cancel)),
     ("copy.exit", Command::Copy(CopyCommand::Exit)),
+    ("list.up", Command::List(ListCommand::Up)),
+    ("list.down", Command::List(ListCommand::Down)),
+    ("list.select", Command::List(ListCommand::Select)),
+    ("list.cancel", Command::List(ListCommand::Cancel)),
     ("arcade.lock", Command::ArcadeLock),
     ("arcade.reload-config", Command::ArcadeReloadConfig),
     ("arcade.redraw", Command::ArcadeRedraw),

@@ -9,6 +9,7 @@ mod keys;
 mod layout;
 mod log;
 mod paths;
+mod picker;
 pub mod pty;
 mod render;
 mod server;

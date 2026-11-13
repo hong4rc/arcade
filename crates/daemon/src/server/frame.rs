@@ -169,7 +169,25 @@ impl Server {
                 cursor_override = prompt_cursor.map(|x| (x, y));
             }
         }
+        // The floating list is drawn over everything on every update.
+        let picker_open = session.picker.is_some();
+        if let Some(picker) = &session.picker {
+            let drawn = picker.draw(cols, rows);
+            session.screen.overlay(drawn.x, drawn.y, &drawn.rows);
+        }
+        let cursor_override = if picker_open {
+            Some((0, 0))
+        } else {
+            cursor_override
+        };
         let cursor = match (cursor_override, focus_rect.zip(self.panes.get(&focus))) {
+            (Some(_), _) if picker_open => arcade_term::Cursor {
+                x: 0,
+                y: 0,
+                visible: false,
+                shape: CursorShape::Block,
+                blinking: false,
+            },
             (Some((x, y)), _) => arcade_term::Cursor {
                 x,
                 y,

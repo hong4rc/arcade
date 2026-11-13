@@ -198,6 +198,31 @@ impl Screen {
         }
     }
 
+    /// Draw cells over the grid with their top left corner at (`x`, `y`), cut at the edges.
+    pub fn overlay(&mut self, x: u16, y: u16, rows: &[Vec<Cell>]) {
+        for (i, cells) in rows.iter().enumerate() {
+            let gy = usize::from(y) + i;
+            if gy >= usize::from(self.rows) {
+                break;
+            }
+            let row = &mut self.cells[gy];
+            for (j, cell) in cells.iter().enumerate() {
+                let gx = usize::from(x) + j;
+                if gx >= row.len() {
+                    break;
+                }
+                row[gx] = cell.clone();
+            }
+            // A wide character cut off at the right edge would draw outside.
+            if let Some(last) = row.last_mut()
+                && last.width == CellWidth::Wide
+            {
+                *last = blank(Style::default());
+            }
+            self.dirty[gy] = true;
+        }
+    }
+
     /// Replace a whole row.
     pub fn set_row(&mut self, y: u16, cells: Vec<Cell>) {
         if y >= self.rows {

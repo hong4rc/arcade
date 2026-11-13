@@ -26,6 +26,10 @@ pub enum Role {
     Divider,
     /// The part of a divider that touches the focused pane.
     DividerFocus,
+    /// The floating list: its frame and the lines that are not chosen.
+    Picker,
+    /// The line of the floating list that is chosen.
+    PickerSelected,
 }
 
 fn fg(color: u8) -> Style {
@@ -76,6 +80,17 @@ pub fn style(role: Role) -> Style {
             bold: true,
             ..fg(4)
         },
+        Role::Picker => Style {
+            fg: Color::Indexed(7),
+            bg: Color::Indexed(0),
+            ..Style::default()
+        },
+        Role::PickerSelected => Style {
+            fg: Color::Indexed(0),
+            bg: Color::Indexed(4),
+            bold: true,
+            ..Style::default()
+        },
     }
 }
 
@@ -87,6 +102,18 @@ pub enum Symbol {
     DividerHorizontal,
     /// Marks the tab of a window whose pane is zoomed.
     Zoomed,
+    /// The corners and sides of the frame of the floating list.
+    PickerTopLeft,
+    PickerTopRight,
+    PickerBottomLeft,
+    PickerBottomRight,
+    PickerHorizontal,
+    PickerVertical,
+    /// In front of the line of the floating list that is chosen, and of the others (blank).
+    PickerSelectedMark,
+    PickerOtherMark,
+    /// After the line that stands for what is current (the session shown).
+    PickerCurrentMark,
 }
 
 pub fn symbol(symbol: Symbol) -> &'static str {
@@ -94,5 +121,14 @@ pub fn symbol(symbol: Symbol) -> &'static str {
         Symbol::DividerVertical => "│",
         Symbol::DividerHorizontal => "─",
         Symbol::Zoomed => "[Z]",
+        Symbol::PickerTopLeft => "┌",
+        Symbol::PickerTopRight => "┐",
+        Symbol::PickerBottomLeft => "└",
+        Symbol::PickerBottomRight => "┘",
+        Symbol::PickerHorizontal => "─",
+        Symbol::PickerVertical => "│",
+        Symbol::PickerSelectedMark => "> ",
+        Symbol::PickerOtherMark => "  ",
+        Symbol::PickerCurrentMark => " *",
     }
 }

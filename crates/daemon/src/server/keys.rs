@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::keymap::{self, Binding, Keymap, key_name};
+use crate::picker::PickerKind;
 use crate::status::Prompt;
 
 /// Where the prefix table stands.
@@ -80,15 +81,21 @@ impl Server {
     }
 
     pub(super) fn dispatch_inputs(&mut self, session_id: u64, inputs: Vec<Input>) {
+        let client = self.sessions.get(&session_id).and_then(|s| s.client);
+        let mut session_id = session_id;
         for input in inputs {
-            if !self.sessions.contains_key(&session_id) {
-                return;
+            // A key may have taken the client to another session: the keys after it go there.
+            if self.sessions.get(&session_id).and_then(|s| s.client) != client {
+                match client.and_then(|c| self.session_of_client(c)) {
+                    Some(now) => session_id = now,
+                    None => return,
+                }
             }
             match input {
                 Input::Key { key, raw } => self.handle_key(session_id, key, &raw),
                 Input::Paste(text) => self.handle_paste(session_id, &text),
                 Input::Raw(raw) => {
-                    if self.in_prompt(session_id) {
+                    if self.in_prompt(session_id) || self.picker_open(session_id) {
                         continue;
                     }
                     if let Some(pane) = self.focus_pane_of(session_id) {
@@ -97,6 +104,12 @@ impl Server {
                 }
             }
         }
+    }
+
+    fn picker_open(&self, session_id: u64) -> bool {
+        self.sessions
+            .get(&session_id)
+            .is_some_and(|s| s.picker.is_some())
     }
 
     fn in_prompt(&self, session_id: u64) -> bool {
@@ -149,6 +162,12 @@ impl Server {
         }
         if s.key_state.message.take().is_some() {
             s.chrome_dirty = true;
+        }
+        if s.picker.is_some() {
+            if let Some(b) = Keymap::get(&self.keymap.list, key).cloned() {
+                self.run_binding(session_id, &b);
+            }
+            return;
         }
         if s.key_state.prompt.is_some() {
             self.prompt_key(session_id, key, raw);
@@ -225,6 +244,17 @@ impl Server {
             ("session.rename", true) => Some((PromptKind::RenameSession, "Session name: ")),
             _ => None,
         };
+        let picker = match (binding.command.as_str(), binding.args.is_empty()) {
+            ("session.list", true) => Some(PickerKind::Sessions),
+            ("window.move-to-session", true) => Some(PickerKind::MoveWindow),
+            _ => None,
+        };
+        if let Some(kind) = picker {
+            if let Err(message) = self.open_picker(session_id, kind) {
+                self.set_message(session_id, &message);
+            }
+            return;
+        }
         if let Some((kind, label)) = ask {
             if let Some(s) = self.sessions.get_mut(&session_id) {
                 s.key_state.prompt = Some(PromptState {
@@ -310,6 +340,13 @@ impl Server {
     }
 
     fn handle_paste(&mut self, session_id: u64, text: &[u8]) {
+        if self
+            .sessions
+            .get(&session_id)
+            .is_some_and(|s| s.picker.is_some())
+        {
+            return;
+        }
         if let Some(s) = self.sessions.get_mut(&session_id)
             && let Some(prompt) = s.key_state.prompt.as_mut()
         {
