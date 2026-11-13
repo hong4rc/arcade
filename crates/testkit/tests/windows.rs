@@ -26,6 +26,10 @@ fn three_windows(daemon: &TestDaemon) -> TestClient {
     for (index, name) in ["A", "B", "C"].into_iter().enumerate() {
         if index > 0 {
             run(daemon, "window.new", &[]);
+            // Typing before the new window's shell has printed its prompt would mix the two.
+            let before = format!("here-{}", ["A", "B", "C"][index - 1]);
+            assert!(client.wait_until(WAIT, |c| !c.screen_text().contains(&before)));
+            client.wait_for_prompt().unwrap();
         }
         run(daemon, "window.rename", &[name]);
         client.type_line(&format!("echo here-{name}"));
