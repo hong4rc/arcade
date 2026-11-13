@@ -5,13 +5,14 @@ use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 /// What to write to the host terminal when the client leaves, whatever the way it leaves:
-/// show the cursor, restore its shape and the colors, end synchronized output, turn off the key
+/// give the keyboard back (the kitty protocol off), show the cursor, restore its shape and the colors, end synchronized output, turn off the key
 /// modes the pane had turned on, and go back to the normal screen.
 pub const RESTORE_SEQUENCE: &[u8] =
-    b"\x1b[0m\x1b[0 q\x1b[?25h\x1b[?2026l\x1b[?1l\x1b[?2004l\x1b[?1049l";
+    b"\x1b[<u\x1b[0m\x1b[0 q\x1b[?25h\x1b[?2026l\x1b[?1l\x1b[?2004l\x1b[?1049l";
 
-/// Switch to the alternate screen, where the multiplexer draws.
-pub const ENTER_SEQUENCE: &[u8] = b"\x1b[?1049h\x1b[0m\x1b[H\x1b[2J";
+/// Switch to the alternate screen, where the multiplexer draws, and ask for the kitty keyboard
+/// protocol (flag 1) so that Esc, Ctrl+m and Ctrl+i can be told from Enter and Tab.
+pub const ENTER_SEQUENCE: &[u8] = b"\x1b[?1049h\x1b[>1u\x1b[0m\x1b[H\x1b[2J";
 
 pub fn is_tty(fd: RawFd) -> bool {
     // SAFETY: isatty only inspects the descriptor number.

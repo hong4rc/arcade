@@ -178,6 +178,20 @@ fn key_modes_are_shared_while_attached_and_reset_on_leaving() {
     assert_eq!(host.screen.mode(Mode::BracketedPaste), Some(false));
 }
 
+/// The client asks the host terminal for the kitty keyboard protocol while attached, so that Esc,
+/// Ctrl+m and Ctrl+i can be told from Enter and Tab, and gives the keyboard back when it leaves.
+#[test]
+fn the_kitty_keyboard_protocol_is_on_while_attached_and_off_after() {
+    use arcade_term::Mode;
+    let env = Env::new();
+    let mut host = env.host(&["new", "-s", "kitty"]);
+    host.wait_for_prompt().unwrap();
+    assert_eq!(host.screen.mode(Mode::KittyKeyboard), Some(true));
+    host.type_line("arcade run session.detach");
+    assert_eq!(host.wait_exit(WAIT), Some(0));
+    assert_eq!(host.screen.mode(Mode::KittyKeyboard), Some(false));
+}
+
 #[test]
 fn the_terminal_settings_come_back_after_a_detach_command() {
     let env = Env::new();

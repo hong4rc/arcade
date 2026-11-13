@@ -25,6 +25,9 @@ use libghostty_vt::style::{Style as GStyle, StyleColor, Underline as GUnderline}
 use libghostty_vt::terminal::CompressionMode;
 use libghostty_vt::{Terminal, key::KittyKeyFlags};
 
+mod keys;
+pub use keys::{Code, Key, Mods, Named, PaneKeyModes, encode as encode_key};
+
 /// Largest clipboard write accepted from a pane, in bytes after decoding.
 pub const CLIPBOARD_WRITE_LIMIT: usize = 1024 * 1024;
 
@@ -444,6 +447,18 @@ impl Term {
                 .kitty_keyboard_flags()
                 .ok()
                 .map(|flags| flags != KittyKeyFlags::DISABLED),
+        }
+    }
+
+    /// What the program in this terminal asked for about its keys.
+    pub fn key_modes(&self) -> PaneKeyModes {
+        PaneKeyModes {
+            app_cursor_keys: self.mode(Mode::AppCursorKeys) == Some(true),
+            kitty_flags: self
+                .term
+                .kitty_keyboard_flags()
+                .map(|flags| flags.bits())
+                .unwrap_or(0),
         }
     }
 

@@ -3,6 +3,7 @@
 
 mod commands;
 mod compose;
+mod keys;
 mod layout;
 mod log;
 mod paths;
