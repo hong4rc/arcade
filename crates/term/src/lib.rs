@@ -173,6 +173,14 @@ pub enum Damage {
     Full,
 }
 
+/// One row of the whole screen, scrollback included.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Line {
+    pub cells: Vec<Cell>,
+    /// The row goes on from the row above it: the terminal broke one long line over both.
+    pub continues: bool,
+}
+
 /// What changed on screen since the previous frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame {
@@ -391,6 +399,79 @@ impl Term {
             }
         }
         text.trim_end().to_string()
+    }
+
+    /// Rows of the whole screen: the scrollback and the visible rows.
+    pub fn total_rows(&self) -> usize {
+        self.scrollback_lines() + usize::from(self.rows)
+    }
+
+    /// One row of the whole screen, counted from the oldest scrollback line (row 0). `None`
+    /// past the last row.
+    ///
+    /// Reads the terminal directly and leaves the change record alone, so it can be used while
+    /// the pane's screen is being shown from somewhere else (copy mode).
+    pub fn line(&self, y: usize) -> Option<Line> {
+        if y >= self.total_rows() {
+            return None;
+        }
+        let y32 = u32::try_from(y).ok()?;
+        let first = self
+            .term
+            .grid_ref(Point::Screen(Coordinate { x: 0, y: y32 }))
+            .ok()?;
+        let continues = first
+            .row()
+            .and_then(|row| row.is_wrap_continuation())
+            .unwrap_or(false);
+        let mut cells = Vec::with_capacity(usize::from(self.cols));
+        let mut buf = ['\0'; 32];
+        for col in 0..self.cols {
+            let Ok(grid_ref) = self
+                .term
+                .grid_ref(Point::Screen(Coordinate { x: col, y: y32 }))
+            else {
+                cells.push(Cell {
+                    text: String::new(),
+                    width: CellWidth::Narrow,
+                    style: Style::default(),
+                });
+                continue;
+            };
+            let raw = grid_ref.cell().ok();
+            let width = match raw.as_ref().and_then(|c| c.wide().ok()) {
+                Some(CellWide::Wide) => CellWidth::Wide,
+                Some(CellWide::SpacerTail) => CellWidth::SpacerTail,
+                _ => CellWidth::Narrow,
+            };
+            let text = match grid_ref.graphemes(&mut buf) {
+                Ok(n) if n > 0 && width != CellWidth::SpacerTail => buf[..n].iter().collect(),
+                _ => String::new(),
+            };
+            let mut style = if raw
+                .as_ref()
+                .is_some_and(|c| c.has_styling().unwrap_or(false))
+            {
+                grid_ref.style().map(convert_style).unwrap_or_default()
+            } else {
+                Style::default()
+            };
+            match raw.as_ref().and_then(|c| c.content_tag().ok()) {
+                Some(CellContentTag::BgColorPalette) => {
+                    if let Some(index) = raw.as_ref().and_then(|c| c.bg_color_palette().ok()) {
+                        style.bg = Color::Indexed(index.0);
+                    }
+                }
+                Some(CellContentTag::BgColorRgb) => {
+                    if let Some(rgb) = raw.as_ref().and_then(|c| c.bg_color_rgb().ok()) {
+                        style.bg = Color::Rgb(rgb.r, rgb.g, rgb.b);
+                    }
+                }
+                _ => {}
+            }
+            cells.push(Cell { text, width, style });
+        }
+        Some(Line { cells, continues })
     }
 
     /// Cursor position as (column, row), both starting at zero.

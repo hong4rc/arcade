@@ -496,3 +496,63 @@ fn expire_stuck_uses_the_real_clock_too() {
         std::thread::yield_now();
     }
 }
+
+fn line_text(term: &Term, y: usize) -> String {
+    let line = term.line(y).expect("a row");
+    line.cells
+        .iter()
+        .map(|c| {
+            if c.text.is_empty() {
+                " "
+            } else {
+                c.text.as_str()
+            }
+        })
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
+#[test]
+fn rows_are_counted_from_the_oldest_scrollback_line() {
+    let mut t = term(10, 3);
+    for i in 1..=8 {
+        t.feed(format!("line{i}\r\n").as_bytes());
+    }
+    // Eight lines and the empty one the cursor is on: nine rows of text, three visible.
+    assert_eq!(t.total_rows(), t.scrollback_lines() + 3);
+    assert_eq!(line_text(&t, 0), "line1");
+    assert_eq!(line_text(&t, 7), "line8");
+    assert!(t.line(t.total_rows()).is_none());
+    // Reading does not use up the change record of the screen.
+    assert!(t.snapshot(false).unwrap().damage != Damage::Clean);
+}
+
+#[test]
+fn a_row_says_whether_it_goes_on_from_the_row_above() {
+    let mut t = term(5, 3);
+    t.feed(b"abcdefgh\r\nxy\r\n");
+    let first = t.line(0).unwrap();
+    let second = t.line(1).unwrap();
+    let third = t.line(2).unwrap();
+    assert!(!first.continues);
+    assert!(
+        second.continues,
+        "the terminal broke the first line over two rows"
+    );
+    assert!(!third.continues);
+}
+
+#[test]
+fn wide_and_combining_characters_and_styles_are_read_from_scrollback() {
+    let mut t = term(8, 2);
+    t.feed("漢a\u{1b}[1;31mb\u{1b}[0m e\u{301}\r\n\r\n\r\n".as_bytes());
+    let line = t.line(0).unwrap();
+    assert_eq!(line.cells[0].text, "漢");
+    assert_eq!(line.cells[0].width, CellWidth::Wide);
+    assert_eq!(line.cells[1].width, CellWidth::SpacerTail);
+    assert_eq!(line.cells[2].text, "a");
+    assert!(line.cells[3].style.bold);
+    assert_eq!(line.cells[3].style.fg, Color::Indexed(1));
+    assert_eq!(line.cells[5].text, "e\u{301}");
+}
