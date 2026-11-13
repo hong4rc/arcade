@@ -89,8 +89,8 @@ fn the_pane_starts_in_the_requested_directory() {
 /// A daemon with no key of its own in the way: every byte a test sends should reach the program.
 fn daemon_without_key_bindings() -> TestDaemon {
     TestDaemon::start_with(|c| {
-        c.keys.prefix = arcade_daemon::parse_key("f12").unwrap();
-        c.keys.direct_modifier = None;
+        c.config.keys.prefix = arcade_daemon::parse_key("f12").unwrap();
+        c.config.keys.direct_modifier = None;
     })
 }
 

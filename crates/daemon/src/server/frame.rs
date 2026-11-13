@@ -4,20 +4,14 @@ use super::*;
 use crate::render::HostModes;
 use crate::status::{self, StatusInfo, Tab};
 
-/// The row of the client's screen the status bar is on, if there is room for one.
-fn status_row(rows: u16) -> Option<u16> {
-    (rows > STATUS_ROWS).then(|| rows - STATUS_ROWS)
-}
-
 fn status_info(s: &Session) -> StatusInfo {
     StatusInfo {
         session: s.name.clone(),
         tabs: s
             .windows
             .iter()
-            .enumerate()
-            .map(|(index, w)| Tab {
-                number: index + 1,
+            .map(|w| Tab {
+                number: w.number,
                 name: w.name.clone(),
                 current: w.id == s.current,
                 zoomed: w.zoomed,
@@ -85,13 +79,20 @@ impl Server {
 
     /// Build the screen update for a session's client and queue it.
     pub(super) fn build_frame_for(&mut self, session_id: u64) {
+        let status_position = self.config.status_position;
         let Some(session) = self.sessions.get_mut(&session_id) else {
             return;
         };
         let Some(client_id) = session.client else {
             return;
         };
-        let visible = session.current_window().visible_rects();
+        let origin = window_origin(session.rows, status_position);
+        let visible: Vec<(PaneId, Rect)> = session
+            .current_window()
+            .visible_rects()
+            .into_iter()
+            .map(|(p, r)| (p, Rect::new(r.x, r.y + origin, r.w, r.h)))
+            .collect();
         let panes_dirty = visible
             .iter()
             .any(|(p, _)| self.panes.get(p).is_some_and(|p| p.dirty));
@@ -161,8 +162,8 @@ impl Server {
             } else {
                 window.layout.dividers()
             };
-            session.screen.draw_dividers(&dividers, 0, focus_rect);
-            if let Some(y) = status_row(rows) {
+            session.screen.draw_dividers(&dividers, origin, focus_rect);
+            if let Some(y) = status_row(rows, status_position) {
                 let (cells, prompt_cursor) = status::build(cols, &status_info(session));
                 session.screen.set_row(y, cells);
                 cursor_override = prompt_cursor.map(|x| (x, y));

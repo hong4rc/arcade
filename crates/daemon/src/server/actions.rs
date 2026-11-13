@@ -131,13 +131,10 @@ impl Server {
             }
             Command::WindowNew => self.new_window(ctx),
             Command::WindowSelect(number) => {
-                let target = number
-                    .checked_sub(1)
-                    .and_then(|index| {
-                        self.sessions
-                            .get(&ctx.session)
-                            .and_then(|s| s.windows.get(index))
-                    })
+                let target = self
+                    .sessions
+                    .get(&ctx.session)
+                    .and_then(|s| s.windows.iter().find(|w| w.number == number))
                     .map(|w| w.id)
                     .ok_or_else(|| format!("no window {number}"))?;
                 self.select_window(ctx.session, target);
@@ -212,6 +209,7 @@ impl Server {
                 session.chrome_dirty = true;
                 Ok(String::new())
             }
+            Command::ArcadeReloadConfig => self.reload_config(),
             Command::ArcadeRedraw => {
                 if let Some(s) = self.sessions.get_mut(&ctx.session) {
                     s.need_full = true;
@@ -221,6 +219,54 @@ impl Server {
                 Ok(String::new())
             }
             _ => Err("this command is not available yet".to_string()),
+        }
+    }
+
+    /// Read the configuration file again and replace the settings and the key tables with it.
+    /// A file with a mistake changes nothing and says what is wrong.
+    fn reload_config(&mut self) -> Result<String, String> {
+        let path = self
+            .config_path
+            .clone()
+            .ok_or_else(|| "no configuration file is in use".to_string())?;
+        match config::load(&path) {
+            Ok(new) => {
+                self.apply_config(new);
+                self.log.line("configuration reloaded");
+                Ok("configuration reloaded".to_string())
+            }
+            Err(errors) => {
+                for e in &errors {
+                    self.log.line(&format!("configuration: {e}"));
+                }
+                Err(summarize_config_errors(&errors))
+            }
+        }
+    }
+
+    fn apply_config(&mut self, new: Config) {
+        let layout_changed = new.status_position != self.config.status_position;
+        self.keymap = new.keymap();
+        if let Some(lines) = new.scrollback_lines {
+            self.scrollback_lines = lines;
+        }
+        self.config = new;
+        let (base_index, renumber) = (self.config.base_index, self.config.renumber);
+        let mut resize = Vec::new();
+        for s in self.sessions.values_mut() {
+            s.key_state.prefix = keys::PrefixState::Idle;
+            s.chrome_dirty = true;
+            if renumber {
+                for (i, w) in s.windows.iter_mut().enumerate() {
+                    w.number = base_index + i;
+                }
+            }
+            resize.push((s.id, s.cols, s.rows));
+        }
+        if layout_changed {
+            for (id, cols, rows) in resize {
+                self.resize_session(id, cols, rows);
+            }
         }
     }
 
@@ -415,7 +461,7 @@ impl Server {
             .sessions
             .get(&ctx.session)
             .ok_or_else(|| "no such session".to_string())?;
-        let (cols, rows) = window_area(session.cols, session.rows);
+        let (cols, rows) = window_area(session.cols, session.rows, self.config.status_position);
         let cwd = self
             .panes
             .get(&ctx.pane)
@@ -427,18 +473,35 @@ impl Server {
         self.panes.insert(pane_id, pane);
         let window_id = self.next_window;
         self.next_window += 1;
+        let (base_index, renumber) = (self.config.base_index, self.config.renumber);
         let Some(session) = self.sessions.get_mut(&ctx.session) else {
             return Ok(String::new());
         };
-        session.windows.push(Window {
-            id: window_id,
-            name: directory_name(&cwd),
-            name_manual: false,
-            layout: Layout::new(pane_id, cols, rows),
-            focus: pane_id,
-            last_focus: None,
-            zoomed: false,
-        });
+        let number = if renumber {
+            base_index + session.windows.len()
+        } else {
+            (base_index..)
+                .find(|n| session.windows.iter().all(|w| w.number != *n))
+                .unwrap_or(base_index)
+        };
+        let place = session
+            .windows
+            .iter()
+            .position(|w| w.number > number)
+            .unwrap_or(session.windows.len());
+        session.windows.insert(
+            place,
+            Window {
+                id: window_id,
+                number,
+                name: directory_name(&cwd),
+                name_manual: false,
+                layout: Layout::new(pane_id, cols, rows),
+                focus: pane_id,
+                last_focus: None,
+                zoomed: false,
+            },
+        );
         self.select_window(ctx.session, window_id);
         Ok(String::new())
     }
@@ -487,7 +550,14 @@ impl Server {
         if to < 0 || to as usize >= session.windows.len() {
             return Ok(String::new());
         }
+        // The windows trade places, and the numbers stay with the places.
         session.windows.swap(at, to as usize);
+        let (a, b) = (
+            session.windows[at].number,
+            session.windows[to as usize].number,
+        );
+        session.windows[at].number = b;
+        session.windows[to as usize].number = a;
         session.chrome_dirty = true;
         Ok(String::new())
     }
@@ -558,6 +628,7 @@ impl Server {
 
     /// Remove a window, which has one pane left (the caller drops it), and show another.
     fn remove_window(&mut self, ctx: Ctx) {
+        let (base_index, renumber) = (self.config.base_index, self.config.renumber);
         let Some(session) = self.sessions.get_mut(&ctx.session) else {
             return;
         };
@@ -565,6 +636,11 @@ impl Server {
             return;
         };
         session.windows.remove(index);
+        if renumber {
+            for (i, w) in session.windows.iter_mut().enumerate() {
+                w.number = base_index + i;
+            }
+        }
         if session.last_window == Some(ctx.window) {
             session.last_window = None;
         }

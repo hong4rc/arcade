@@ -113,8 +113,8 @@ fn direct_keys_move_focus_and_windows_with_one_press() {
 #[test]
 fn the_direct_modifier_and_movement_keys_come_from_the_settings() {
     let daemon = TestDaemon::start_with(|c| {
-        c.keys.direct_modifier = parse_key("ctrl+alt+x").map(|k| Some(k.mods)).unwrap();
-        c.keys.nav = ['h', 'n', 'e', 'i'];
+        c.config.keys.direct_modifier = parse_key("ctrl+alt+x").map(|k| Some(k.mods)).unwrap();
+        c.config.keys.nav = ['h', 'n', 'e', 'i'];
     });
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
@@ -305,7 +305,7 @@ fn a_key_that_is_in_no_table_reaches_the_program_exactly_once() {
 
 #[test]
 fn an_old_style_enter_never_starts_a_prefix_of_ctrl_m() {
-    let daemon = TestDaemon::start_with(|c| c.keys.prefix = parse_key("ctrl+m").unwrap());
+    let daemon = TestDaemon::start_with(|c| c.config.keys.prefix = parse_key("ctrl+m").unwrap());
     let mut client = raw_pane(&daemon);
     client.send(b"\r");
     client.send(b"|");
@@ -337,7 +337,7 @@ fn the_lock_sends_every_key_to_the_program_but_the_unlock_key() {
 
 #[test]
 fn the_lock_is_refused_when_nothing_could_unlock_it() {
-    let daemon = TestDaemon::start_with(|c| c.keys.direct_modifier = None);
+    let daemon = TestDaemon::start_with(|c| c.config.keys.direct_modifier = None);
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
     client.send(CTRL_A);

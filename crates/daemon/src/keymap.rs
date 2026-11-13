@@ -364,6 +364,7 @@ impl Keymap {
         bind(t, ch('$'), "session.rename", &[], false);
         bind(t, ch('d'), "session.detach", &[], false);
         bind(t, ch('g'), "arcade.lock", &[], false);
+        bind(t, ch('r'), "arcade.reload-config", &[], false);
         bind(t, ch('R'), "arcade.redraw", &[], false);
     }
 

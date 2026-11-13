@@ -178,7 +178,7 @@ impl Server {
         if state != PrefixState::Idle {
             if let Some(b) = Keymap::get(&self.keymap.prefix, key).cloned() {
                 let next = if b.repeat {
-                    PrefixState::Repeating(now + self.keys_config.repeat_window)
+                    PrefixState::Repeating(now + self.config.keys.repeat_window)
                 } else {
                     PrefixState::Idle
                 };
@@ -188,7 +188,7 @@ impl Server {
             }
             if state == PrefixState::Awaiting {
                 self.set_prefix(session_id, PrefixState::Idle);
-                if key == keymap::normalize(self.keys_config.prefix) {
+                if key == keymap::normalize(self.config.keys.prefix) {
                     // The prefix twice sends the prefix key itself.
                     self.send_key_to_pane(pane, original, raw);
                 } else {
@@ -202,7 +202,7 @@ impl Server {
             // The repeat window was open and this key is not in the table: it is typing.
             self.set_prefix(session_id, PrefixState::Idle);
         }
-        if key == keymap::normalize(self.keys_config.prefix) {
+        if key == keymap::normalize(self.config.keys.prefix) {
             self.set_prefix(session_id, PrefixState::Awaiting);
             return;
         }
@@ -237,7 +237,7 @@ impl Server {
             return;
         }
         let (ok, output) = self.run_command(&binding.command, &binding.args, Some(pane));
-        if !ok {
+        if !ok || binding.command == "arcade.reload-config" {
             self.set_message(session_id, &output);
         }
     }

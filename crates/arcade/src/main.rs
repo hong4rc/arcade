@@ -21,6 +21,7 @@ commands:
   kill-session [-t <session>]     close a session
   kill-server                     stop the daemon and every session
   run <command> [<argument>...]   run a command, for scripts (for example session.detach)
+  config check [<file>]           check the configuration file and list its mistakes
 ";
 
 fn main() -> ExitCode {
@@ -108,6 +109,11 @@ fn run(mut args: Vec<String>) -> u8 {
             }
             list_command(&options)
         }
+        "config" => match rest {
+            [word] if word == "check" => config_check(None),
+            [word, file] if word == "check" => config_check(Some(PathBuf::from(file))),
+            _ => usage_error("usage: config check [<file>]"),
+        },
         "kill-server" => simple_command(&options, "server.kill", &[], None, true),
         "kill-session" => {
             let mut args_out = Vec::new();
@@ -141,9 +147,42 @@ fn no_server(options: &Options) -> u8 {
     1
 }
 
+/// Where the configuration file is: `ARCADE_CONFIG`, or `~/.config/arcade/config.toml`.
+fn default_config_path() -> Option<PathBuf> {
+    arcade_daemon::config::default_path(
+        std::env::var("ARCADE_CONFIG").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+/// `arcade config check`: read the file and say what is wrong with it, with the lines.
+fn config_check(file: Option<PathBuf>) -> u8 {
+    let Some(path) = file.or_else(default_config_path) else {
+        eprintln!("arcade: no configuration file path (set HOME or ARCADE_CONFIG)");
+        return 1;
+    };
+    if !path.exists() {
+        println!("no file at {}: the defaults are used", path.display());
+        return 0;
+    }
+    match arcade_daemon::config::load(&path) {
+        Ok(_) => {
+            println!("ok: {}", path.display());
+            0
+        }
+        Err(errors) => {
+            for e in errors {
+                eprintln!("{}: {e}", path.display());
+            }
+            1
+        }
+    }
+}
+
 fn daemon_command(options: &Options) -> u8 {
     let mut config = arcade_daemon::DaemonConfig::new(&options.socket);
     config.log_path = Some(options.socket.with_extension("log"));
+    config.config_path = default_config_path();
     match arcade_daemon::run(config) {
         Ok(()) => 0,
         Err(e) => {

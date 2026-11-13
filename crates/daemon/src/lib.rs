@@ -3,6 +3,7 @@
 
 mod commands;
 mod compose;
+pub mod config;
 mod keymap;
 mod keys;
 mod layout;

@@ -11,6 +11,7 @@ arcade-proto = { path = "../proto" }
 # One thread waits on the operating system's event queue (kqueue, epoll); no async runtime.
 mio = { version = "1", features = ["os-poll", "net", "os-ext"] }
 libc = "0.2"
+toml = { version = "1", default-features = false, features = ["parse"] }
 
 [lints]
 workspace = true

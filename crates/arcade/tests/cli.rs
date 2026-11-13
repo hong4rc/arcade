@@ -501,6 +501,52 @@ fn a_command_run_from_a_pane_acts_on_that_panes_window() {
     host.wait_for_text("unknown command").unwrap();
 }
 
+/// `arcade config check` lists the mistakes of a file with their lines and fails, and says ok
+/// for a good one. A missing file is not an error: the defaults are used.
+#[test]
+fn config_check_reports_mistakes_with_lines() {
+    let env = Env::new();
+    let bad = env.dir.join("bad.toml");
+    std::fs::write(
+        &bad,
+        "[keys]\nprefix = \"ctrl+a\"\nbogus = 1\n\n[keys.after-prefix]\n\"z\" = \"pane.fly\"\n",
+    )
+    .unwrap();
+    let out = env.plain(&["config", "check", bad.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let text = stderr(&out);
+    assert!(text.contains("line 3: unknown key"), "{text}");
+    let good = env.dir.join("good.toml");
+    std::fs::write(&good, "[keys]\nnav = \"hnei\"\n").unwrap();
+    let out = env.plain(&["config", "check", good.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(stdout(&out).starts_with("ok:"), "{}", stdout(&out));
+    // Without a file at the usual place (the test's home is its own directory).
+    let out = env.plain(&["config", "check"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(stdout(&out).contains("defaults"), "{}", stdout(&out));
+}
+
+/// The daemon the `arcade` command starts reads `~/.config/arcade/config.toml`.
+#[test]
+fn the_daemon_reads_the_file_in_the_home_directory() {
+    let env = Env::new();
+    let config_dir = env.dir.join(".config/arcade");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[status]\nposition = \"top\"\n",
+    )
+    .unwrap();
+    let mut host = env.host(&["new", "-s", "homefile"]);
+    host.wait_for_prompt().unwrap();
+    assert!(
+        host.wait_until(WAIT, |h| h.screen_rows()[0].contains(" homefile ")),
+        "{}",
+        host.screen_text()
+    );
+}
+
 #[test]
 fn unknown_commands_print_usage_and_fail() {
     let env = Env::new();

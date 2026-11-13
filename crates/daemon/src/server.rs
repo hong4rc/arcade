@@ -28,7 +28,8 @@ use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
 
 use crate::compose::Screen;
-use crate::keymap::{Keymap, KeysConfig};
+use crate::config::{self, Config, StatusPosition};
+use crate::keymap::Keymap;
 use crate::keys::{Input, KeyReader};
 use crate::layout::{Layout, PaneId, Rect};
 use crate::log::Log;
@@ -110,8 +111,10 @@ pub struct DaemonConfig {
     pub log_path: Option<PathBuf>,
     /// Size at which the log file is replaced by a new one (see `log::Log`).
     pub log_limit_bytes: u64,
-    /// The keys: the prefix, the direct modifier, the movement characters.
-    pub keys: KeysConfig,
+    /// The settings used when there is no configuration file (and until it is read).
+    pub config: Config,
+    /// The configuration file. `None` reads none, which is what the tests use.
+    pub config_path: Option<PathBuf>,
 }
 
 /// A log file of this size, plus the one before it, is the most the daemon keeps on disk.
@@ -124,7 +127,8 @@ impl DaemonConfig {
             scrollback_lines: arcade_term::DEFAULT_SCROLLBACK_LINES,
             log_path: None,
             log_limit_bytes: DEFAULT_LOG_LIMIT_BYTES,
-            keys: KeysConfig::default(),
+            config: Config::default(),
+            config_path: None,
         }
     }
 }
@@ -156,6 +160,8 @@ struct Pane {
 
 struct Window {
     id: u64,
+    /// The number shown on the tab and used by `window.select`.
+    number: usize,
     name: String,
     /// The user chose the name, so it is not taken from the working directory any more.
     name_manual: bool,
@@ -231,17 +237,42 @@ struct Session {
 /// The shortest time between two looks at the panes' directories for the windows' names.
 const NAME_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Rows of the client's screen the status bar takes.
-const STATUS_ROWS: u16 = 1;
-
-/// The size of the area the windows have, inside a client terminal of this size.
-fn window_area(cols: u16, rows: u16) -> (u16, u16) {
-    let rows = if rows > STATUS_ROWS {
-        rows - STATUS_ROWS
+/// The size of the area the windows have, inside a client terminal of this size: the status bar
+/// takes one row when it shows (and there is more than one row).
+fn window_area(cols: u16, rows: u16, status: StatusPosition) -> (u16, u16) {
+    let rows = if rows > 1 && status != StatusPosition::Off {
+        rows - 1
     } else {
         rows
     };
     (cols.max(1), rows.max(1))
+}
+
+/// The row of the status bar, if it shows.
+fn status_row(rows: u16, status: StatusPosition) -> Option<u16> {
+    match status {
+        StatusPosition::Off => None,
+        _ if rows <= 1 => None,
+        StatusPosition::Top => Some(0),
+        StatusPosition::Bottom => Some(rows - 1),
+    }
+}
+
+/// The row of the client's screen where the windows start.
+fn window_origin(rows: u16, status: StatusPosition) -> u16 {
+    u16::from(status == StatusPosition::Top && rows > 1)
+}
+
+/// What the status bar says when the file has mistakes: the first one, and how many there are.
+fn summarize_config_errors(errors: &[String]) -> String {
+    match errors {
+        [] => "the configuration file has mistakes".to_string(),
+        [one] => format!("config: {one}"),
+        [first, rest @ ..] => format!(
+            "config: {first} (and {} more; `arcade config check` lists them)",
+            rest.len()
+        ),
+    }
 }
 
 impl Session {
@@ -320,8 +351,12 @@ struct Server {
     empty_since: Option<Instant>,
     started: Instant,
     log: Log,
-    keys_config: KeysConfig,
+    config: Config,
+    config_path: Option<PathBuf>,
     keymap: Keymap,
+    /// A line to show on the status bar when a client next attaches (a mistake in the file the
+    /// daemon started with).
+    startup_message: Option<String>,
 }
 
 /// Run the daemon until its last session closes (or it is told to stop). Removes the socket
@@ -339,11 +374,25 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         .register(&mut listener, LISTENER, Interest::READABLE)?;
     let waker = Arc::new(Waker::new(poll.registry(), WAKER)?);
     let (exits_tx, exits_rx) = mpsc::channel();
+    // A file with a mistake never stops the daemon: it starts with the settings it was given
+    // and says so on the first status bar.
+    let mut startup_message = None;
+    let mut startup_log = Vec::new();
+    let settings = match config.config_path.as_deref().map(config::load) {
+        Some(Ok(settings)) => settings,
+        Some(Err(errors)) => {
+            startup_message = Some(summarize_config_errors(&errors));
+            startup_log = errors;
+            config.config.clone()
+        }
+        None => config.config.clone(),
+    };
+    let scrollback_lines = settings.scrollback_lines.unwrap_or(config.scrollback_lines);
     let mut server = Server {
         poll,
         listener,
         socket_path: config.socket_path.clone(),
-        scrollback_lines: config.scrollback_lines,
+        scrollback_lines,
         next_token: FIRST_DYNAMIC_TOKEN,
         next_session: 1,
         next_window: 1,
@@ -361,8 +410,10 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         ever_had_session: false,
         empty_since: None,
         started: Instant::now(),
-        keymap: Keymap::defaults(&config.keys),
-        keys_config: config.keys.clone(),
+        keymap: settings.keymap(),
+        config: settings,
+        config_path: config.config_path.clone(),
+        startup_message,
         log: config
             .log_path
             .as_deref()
@@ -370,6 +421,9 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
                 Log::open(path, config.log_limit_bytes)
             }),
     };
+    for e in &startup_log {
+        server.log.line(&format!("configuration: {e}"));
+    }
     server.log.line(&format!(
         "daemon started, process {}, protocol {}",
         std::process::id(),
@@ -895,6 +949,9 @@ impl Server {
             session.client = Some(id);
             session.keys = KeyReader::new();
             session.key_state.prefix = keys::PrefixState::Idle;
+            if let Some(message) = self.startup_message.take() {
+                session.key_state.message = Some(message);
+            }
             session.need_full = true;
             session.last_used = self.use_counter;
             session.name.clone()
@@ -1037,7 +1094,7 @@ impl Server {
             None => self.unique_name(&default_session_name(&request.cwd)),
         };
         let (cols, rows) = (request.cols.max(1), request.rows.max(1));
-        let (area_cols, area_rows) = window_area(cols, rows);
+        let (area_cols, area_rows) = window_area(cols, rows, self.config.status_position);
         let pane = self.spawn_pane(
             request.command.clone(),
             request.cwd.clone(),
@@ -1067,6 +1124,7 @@ impl Server {
                 windows: vec![Window {
                     id: window_id,
                     name: directory_name(&request.cwd),
+                    number: self.config.base_index,
                     name_manual: false,
                     layout: Layout::new(pane_id, area_cols, area_rows),
                     focus: pane_id,
@@ -1127,7 +1185,7 @@ impl Server {
     /// The client's terminal has this size: every window is laid out again for it.
     fn resize_session(&mut self, session_id: u64, cols: u16, rows: u16) {
         let (cols, rows) = (cols.max(1), rows.max(1));
-        let (area_cols, area_rows) = window_area(cols, rows);
+        let (area_cols, area_rows) = window_area(cols, rows, self.config.status_position);
         let Some(session) = self.sessions.get_mut(&session_id) else {
             return;
         };
