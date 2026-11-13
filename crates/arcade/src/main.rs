@@ -146,7 +146,9 @@ fn no_server(options: &Options) -> u8 {
 }
 
 fn daemon_command(options: &Options) -> u8 {
-    match arcade_daemon::run(arcade_daemon::DaemonConfig::new(&options.socket)) {
+    let mut config = arcade_daemon::DaemonConfig::new(&options.socket);
+    config.log_path = Some(options.socket.with_extension("log"));
+    match arcade_daemon::run(config) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("arcade: daemon: {e}");

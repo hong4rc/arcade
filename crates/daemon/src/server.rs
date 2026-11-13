@@ -25,6 +25,7 @@ use mio::net::{UnixListener, UnixStream};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
 
+use crate::log::Log;
 use crate::paths::prepare_socket_dir;
 use crate::pty::{self, SpawnSpec};
 use crate::render::{HostModes, Renderer};
@@ -94,13 +95,22 @@ const FLUSH_GRACE: Duration = Duration::from_secs(1);
 pub struct DaemonConfig {
     pub socket_path: PathBuf,
     pub scrollback_lines: usize,
+    /// Where the daemon logs: next to the socket, with the extension `log`. `None` for no log.
+    pub log_path: Option<PathBuf>,
+    /// Size at which the log file is replaced by a new one (see `log::Log`).
+    pub log_limit_bytes: u64,
 }
+
+/// A log file of this size, plus the one before it, is the most the daemon keeps on disk.
+pub const DEFAULT_LOG_LIMIT_BYTES: u64 = 1024 * 1024;
 
 impl DaemonConfig {
     pub fn new(socket_path: impl Into<PathBuf>) -> Self {
         DaemonConfig {
             socket_path: socket_path.into(),
             scrollback_lines: arcade_term::DEFAULT_SCROLLBACK_LINES,
+            log_path: None,
+            log_limit_bytes: DEFAULT_LOG_LIMIT_BYTES,
         }
     }
 }
@@ -190,6 +200,7 @@ struct Server {
     ever_had_session: bool,
     empty_since: Option<Instant>,
     started: Instant,
+    log: Log,
 }
 
 /// Run the daemon until its last session closes (or it is told to stop). Removes the socket
@@ -227,8 +238,23 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         ever_had_session: false,
         empty_since: None,
         started: Instant::now(),
+        log: config
+            .log_path
+            .as_deref()
+            .map_or_else(Log::disabled, |path| {
+                Log::open(path, config.log_limit_bytes)
+            }),
     };
+    server.log.line(&format!(
+        "daemon started, process {}, protocol {}",
+        std::process::id(),
+        arcade_proto::PROTOCOL_VERSION
+    ));
     let result = server.event_loop();
+    match &result {
+        Ok(()) => server.log.line("daemon stopped"),
+        Err(e) => server.log.line(&format!("daemon failed: {:?}", e.kind())),
+    }
     server.shutdown_cleanup();
     result
 }
@@ -472,6 +498,7 @@ impl Server {
                             gone: false,
                         },
                     );
+                    self.log.line(&format!("client {} connected", token.0));
                 }
                 Err(e) if would_block(&e) => return Ok(()),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -583,6 +610,8 @@ impl Server {
             self.handle_message(id, message);
         }
         if let Some(e) = protocol_error {
+            self.log
+                .line(&format!("client {id} sent a bad message: {e}"));
             self.send(
                 id,
                 &ServerMessage::CommandResult {
@@ -689,6 +718,7 @@ impl Server {
             .collect();
         for id in gone {
             if let Some(mut client) = self.clients.remove(&id) {
+                self.log.line(&format!("client {id} disconnected"));
                 let _ = self.poll.registry().deregister(&mut client.stream);
                 self.targets.remove(&(id as usize));
                 // A client that disappears only detaches; the session carries on.
@@ -850,6 +880,10 @@ impl Server {
             let _ = waker.wake();
         });
 
+        self.log.line(&format!(
+            "session {session_id} created, pane process {}",
+            spawned.pid
+        ));
         self.use_counter += 1;
         self.ever_had_session = true;
         self.sessions.insert(
@@ -1056,6 +1090,11 @@ impl Server {
         // The first process is gone; hang up anything it left running in the same group.
         pty::signal_group(session.pane.pid, libc::SIGHUP);
         let note = session.pane.exit_note.clone().unwrap_or_default();
+        self.log.line(&format!(
+            "session {} closed: {}",
+            session.id,
+            note.trim_start_matches('[').trim_end_matches(']')
+        ));
         if let Some(client_id) = session.client {
             self.send(
                 client_id,
