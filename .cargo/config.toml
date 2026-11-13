@@ -1,0 +1,11 @@
+[alias]
+lint = "clippy --workspace --all-targets -- -D warnings"
+parser-eval = "run --release -p parser-eval --"
+
+[env]
+# libghostty-vt (one of the parser candidates) builds with this Zig; see scripts/fetch-zig.sh.
+ZIG = { value = ".tools/zig/zig", relative = true }
+# Always compile the Zig library optimized, also for `cargo test`. Its build script would
+# otherwise pick Zig's Debug mode for debug builds (and for any profile with debug info), which
+# is thousands of times slower and makes the test suite take many minutes.
+LIBGHOSTTY_VT_SYS_OPTIMIZE = { value = "ReleaseFast", force = false }
