@@ -124,6 +124,11 @@ fn run(connection: &mut Connection, signals: &Signals, stdin_fd: i32, stdout_fd:
     let socket_fd = connection.stream.as_raw_fd();
     let mut key_buf = vec![0u8; 16 * 1024];
     let mut net_buf = vec![0u8; 64 * 1024];
+    // Messages that came in the same read as `Attached` are already in the decoder; the socket
+    // will not report them again, so they are handled before waiting.
+    if let Some(outcome) = handle_messages(connection, stdout_fd) {
+        return outcome;
+    }
     loop {
         let mut fds = [
             libc::pollfd {
@@ -201,28 +206,37 @@ fn run(connection: &mut Connection, signals: &Signals, stdin_fd: i32, stdout_fd:
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(_) => return Outcome::Lost("[lost server]".to_string()),
             }
-            loop {
-                match connection.decoder.next_message() {
-                    Ok(Some(ServerMessage::Output(bytes))) => {
-                        if write_all(stdout_fd, &bytes).is_err() {
-                            return Outcome::Left("[detached: terminal closed]".to_string());
-                        }
-                    }
-                    Ok(Some(ServerMessage::Detached { message, .. })) => {
-                        return Outcome::Left(format!("[{message}]"));
-                    }
-                    Ok(Some(ServerMessage::SessionEnded { message })) => {
-                        return Outcome::Left(message);
-                    }
-                    Ok(Some(ServerMessage::CommandResult { output, .. })) => {
-                        return Outcome::Refused(output);
-                    }
-                    Ok(Some(_)) => {}
-                    Ok(None) => break,
-                    Err(e) => {
-                        return Outcome::Lost(format!("arcade: bad message from the server: {e}"));
-                    }
+            if let Some(outcome) = handle_messages(connection, stdout_fd) {
+                return outcome;
+            }
+        }
+    }
+}
+
+/// Handle every complete message the decoder holds. `Some` ends the client.
+fn handle_messages(connection: &mut Connection, stdout_fd: i32) -> Option<Outcome> {
+    loop {
+        match connection.decoder.next_message() {
+            Ok(Some(ServerMessage::Output(bytes))) => {
+                if write_all(stdout_fd, &bytes).is_err() {
+                    return Some(Outcome::Left("[detached: terminal closed]".to_string()));
                 }
+            }
+            Ok(Some(ServerMessage::Detached { message, .. })) => {
+                return Some(Outcome::Left(format!("[{message}]")));
+            }
+            Ok(Some(ServerMessage::SessionEnded { message })) => {
+                return Some(Outcome::Left(message));
+            }
+            Ok(Some(ServerMessage::CommandResult { output, .. })) => {
+                return Some(Outcome::Refused(output));
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => return None,
+            Err(e) => {
+                return Some(Outcome::Lost(format!(
+                    "arcade: bad message from the server: {e}"
+                )));
             }
         }
     }
