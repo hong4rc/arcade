@@ -732,3 +732,101 @@ fn real_shell_smoke() {
     host.type_line("exit");
     println!("exit code {:?}", host.wait_exit(WAIT));
 }
+
+// ---- A working session, the way the author uses it ----
+
+/// The author's own settings (`docs/spec-phase-1.md`, section 4).
+const AUTHOR_CONFIG: &str = "[keys]\nprefix = \"ctrl+m\"\ndirect-modifier = \"ctrl+alt\"\nnav = \"hnei\"\n\n[status]\nposition = \"top\"\n";
+/// Ctrl+m as a terminal with the kitty keyboard protocol reports it (Enter is a different key).
+const AUTHOR_PREFIX: &[u8] = b"\x1b[109;5u";
+
+fn wait_row_has(host: &mut PtyHost, row: usize, text: &str) {
+    let ok = host.wait_until(WAIT, |h| h.screen_rows()[row].contains(text));
+    assert!(ok, "row {row} lacks {text:?}:\n{}", host.screen_text());
+}
+
+fn wait_screen_has(host: &mut PtyHost, text: &str) {
+    let ok = host.wait_until(WAIT, |h| h.screen_text().contains(text));
+    assert!(ok, "the screen lacks {text:?}:\n{}", host.screen_text());
+}
+
+/// Split a pane, make and move between windows and sessions, copy, detach and attach again,
+/// all through the real `arcade` command in a terminal, with the author's settings.
+#[test]
+fn a_working_session_with_the_authors_settings() {
+    let env = Env::new();
+    let config_dir = env.dir.join(".config/arcade");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("config.toml"), AUTHOR_CONFIG).unwrap();
+
+    let mut host = env.host_sized(&["new", "-s", "work"], 100, 30);
+    host.wait_for_prompt().unwrap();
+    wait_row_has(&mut host, 0, " work ");
+
+    // Split: a divider, and the new pane takes what is typed.
+    host.send(AUTHOR_PREFIX);
+    host.send(b"|");
+    wait_screen_has(&mut host, "│");
+    host.type_line("echo right-pane");
+    wait_screen_has(&mut host, "right-pane");
+    // Ctrl+Alt+h goes back to the left pane.
+    host.send(b"\x1b[104;7u");
+    host.type_line("echo left-pane");
+    wait_screen_has(&mut host, "left-pane");
+
+    // A second window: a second tab, and the first one is one key away (Ctrl+Alt+1).
+    host.send(AUTHOR_PREFIX);
+    host.send(b"c");
+    wait_row_has(&mut host, 0, " 2 ");
+    host.wait_for_prompt().unwrap();
+    host.type_line("echo in-window-two");
+    wait_screen_has(&mut host, "in-window-two");
+    host.send(b"\x1b[49;7u");
+    wait_screen_has(&mut host, "right-pane");
+    assert!(!host.screen_text().contains("in-window-two"));
+
+    // A second session, made by another terminal and left again.
+    let mut other = env.host_sized(&["new", "-s", "other"], 100, 30);
+    other.wait_for_prompt().unwrap();
+    other.type_line("echo only-other");
+    wait_screen_has(&mut other, "only-other");
+    other.send(AUTHOR_PREFIX);
+    other.send(b"d");
+    assert_eq!(other.wait_exit(WAIT), Some(0));
+
+    // The list of sessions: `n` is down with these settings; Enter goes there.
+    host.send(AUTHOR_PREFIX);
+    host.send(b"s");
+    wait_screen_has(&mut host, "Sessions");
+    host.send(b"n");
+    host.send(b"\r");
+    wait_row_has(&mut host, 0, " other ");
+    wait_screen_has(&mut host, "only-other");
+
+    // Copy mode: search for the line, select it, copy.
+    host.send(AUTHOR_PREFIX);
+    host.send(b"[");
+    wait_row_has(&mut host, 0, " COPY ");
+    host.send(b"?");
+    host.send(b"only-other");
+    host.send(b"\r");
+    host.send(b"Vy");
+    wait_row_has(&mut host, 0, "sent 10 characters");
+    assert!(!host.screen_rows()[0].contains(" COPY "));
+
+    // Detach, and attach again to the first session: everything is as it was left.
+    host.send(AUTHOR_PREFIX);
+    host.send(b"d");
+    assert_eq!(host.wait_exit(WAIT), Some(0));
+    let listing = stdout(&env.plain(&["ls"]));
+    assert!(
+        listing.contains("work") && listing.contains("other"),
+        "{listing}"
+    );
+    let mut again = env.host_sized(&["attach", "-t", "work"], 100, 30);
+    wait_row_has(&mut again, 0, " work ");
+    wait_screen_has(&mut again, "right-pane");
+    wait_screen_has(&mut again, "left-pane");
+    again.send(b"\x1b[50;7u");
+    wait_screen_has(&mut again, "in-window-two");
+}

@@ -791,10 +791,12 @@ fn probe_script(config: &Config, log: &Path) -> String {
 }
 
 fn latency_run(client: &mut Client, log: &Path, samples: usize) -> R<Value> {
-    let (_, _) = {
-        let (t, b) = read_until(client, b"PROBE-READY", Duration::from_secs(20), Vec::new())?;
-        (t, b)
-    };
+    read_until(client, b"PROBE-READY", Duration::from_secs(20), Vec::new())?;
+    latency_measure(client, log, samples)
+}
+
+/// The measurement itself, once the probe is known to be running in the pane that has focus.
+fn latency_measure(client: &mut Client, log: &Path, samples: usize) -> R<Value> {
     drain_for(client, Duration::from_millis(300))?;
     let mut sent = Vec::with_capacity(samples);
     let mut seen = Vec::with_capacity(samples);
@@ -889,6 +891,43 @@ fn run_latency(config: &Config) -> R<Value> {
                     out.insert(
                         "tmux_other_pane_flooding".into(),
                         latency_run(&mut client, &log, samples)?,
+                    );
+                    drop(client);
+                    subject.stop();
+                }
+
+                if *kind == Kind::Arcade {
+                    // The same, with a second, visible pane that floods output without pause.
+                    // The pane is made after the client attached (Arcade has no way to give
+                    // the new pane a command), the flood is typed into it, and the focus goes
+                    // back to the pane with the probe.
+                    let _ = fs::remove_file(&log);
+                    let subject = Subject::new(*kind, &config.arcade_exe, &config.dir);
+                    subject.start(&script)?;
+                    if !flood_file.exists() {
+                        workload_files(config)?;
+                    }
+                    let mut client = Client::open(&subject.attach_argv())?;
+                    read_until(
+                        &mut client,
+                        b"PROBE-READY",
+                        Duration::from_secs(20),
+                        Vec::new(),
+                    )?;
+                    subject.arcade(&["run", "pane.split-down"])?;
+                    subject.arcade(&["run", "pane.focus-down"])?;
+                    let flood = format!(
+                        "stty -opost; while :; do cat {}; done\r",
+                        shell_quote(&flood_file)
+                    );
+                    // A terminal always reads what it is sent.
+                    drain_for(&mut client, Duration::from_millis(1500))?;
+                    client.pty.write_all(flood.as_bytes())?;
+                    drain_for(&mut client, Duration::from_millis(1500))?;
+                    subject.arcade(&["run", "pane.focus-up"])?;
+                    out.insert(
+                        "arcade_other_pane_flooding".into(),
+                        latency_measure(&mut client, &log, samples)?,
                     );
                     drop(client);
                     subject.stop();
