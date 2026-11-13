@@ -115,24 +115,117 @@ fn push_cursor(out: &mut Vec<u8>, cursor: &Cursor) {
         (CursorShape::Bar, false) => 6,
     };
     out.extend_from_slice(format!("\x1b[{shape} q").as_bytes());
-    if cursor.visible {
-        out.extend_from_slice(
-            format!("\x1b[{};{}H\x1b[?25h", cursor.y + 1, cursor.x + 1).as_bytes(),
-        );
-    }
+    // The position is sent also while the cursor is hidden, so that the host terminal's cursor
+    // is where the pane's is whenever it is shown again.
+    out.extend_from_slice(format!("\x1b[{};{}H", cursor.y + 1, cursor.x + 1).as_bytes());
+    out.extend_from_slice(if cursor.visible {
+        b"\x1b[?25h"
+    } else {
+        b"\x1b[?25l"
+    });
 }
 
-/// The bytes that bring the host terminal up to date with `frame`.
+/// The modes of the pane that the host terminal must share, so that the keys it sends are the
+/// ones the program expects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct HostModes {
+    /// Arrow keys send `ESC O A` instead of `ESC [ A` (DECCKM).
+    pub app_cursor_keys: bool,
+    /// Pasted text is wrapped in `ESC [ 200 ~` and `ESC [ 201 ~`.
+    pub bracketed_paste: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SentCursor {
+    x: u16,
+    y: u16,
+    visible: bool,
+    shape: CursorShape,
+    blinking: bool,
+}
+
+/// Remembers what the host terminal shows and turns each new frame into the smallest update.
 ///
-/// The whole update is wrapped in synchronized output, so the host shows it all at once.
-pub fn render(frame: &Frame) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(b"\x1b[?2026h\x1b[?25l");
-    for row in &frame.rows {
-        push_row(&mut out, row.y, &row.cells);
+/// Rows the library calls changed are compared with what was last sent, so a row that is
+/// identical (for instance one the cursor merely passed over) is not sent again.
+#[derive(Default)]
+pub struct Renderer {
+    rows: Vec<Option<Vec<u8>>>,
+    cursor: Option<SentCursor>,
+    modes: Option<HostModes>,
+}
+
+impl Renderer {
+    pub fn new() -> Self {
+        Self::default()
     }
-    out.extend_from_slice(b"\x1b[0m");
-    push_cursor(&mut out, &frame.cursor);
-    out.extend_from_slice(b"\x1b[?2026l");
-    out
+
+    /// Forget what the host shows: the next update sends everything. Used when a client
+    /// attaches and when the screen changes size.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// The bytes that bring the host terminal up to date with `frame`; empty when it already is.
+    ///
+    /// Drawing rows is wrapped in synchronized output, so the host shows the update at once.
+    pub fn render(&mut self, frame: &Frame, modes: HostModes) -> Vec<u8> {
+        if self.rows.len() != usize::from(frame.rows_total) {
+            self.rows = vec![None; usize::from(frame.rows_total)];
+        }
+        let mut body = Vec::new();
+        for row in &frame.rows {
+            let mut bytes = Vec::new();
+            push_row(&mut bytes, row.y, &row.cells);
+            let slot = &mut self.rows[usize::from(row.y)];
+            if slot.as_deref() != Some(bytes.as_slice()) {
+                body.extend_from_slice(&bytes);
+                *slot = Some(bytes);
+            }
+        }
+        let cursor = SentCursor {
+            x: frame.cursor.x,
+            y: frame.cursor.y,
+            visible: frame.cursor.visible,
+            shape: frame.cursor.shape,
+            blinking: frame.cursor.blinking,
+        };
+        let cursor_changed = self.cursor != Some(cursor);
+        let modes_changed = self.modes != Some(modes);
+        if body.is_empty() && !cursor_changed && !modes_changed {
+            return Vec::new();
+        }
+        let mut out = Vec::with_capacity(body.len() + 64);
+        if !body.is_empty() {
+            out.extend_from_slice(b"\x1b[?2026h\x1b[?25l");
+            out.extend_from_slice(&body);
+            out.extend_from_slice(b"\x1b[0m");
+        }
+        if !body.is_empty() || cursor_changed {
+            push_cursor(&mut out, &frame.cursor);
+        }
+        if modes_changed {
+            let previous = self.modes.unwrap_or_default();
+            if self.modes.is_none() || previous.app_cursor_keys != modes.app_cursor_keys {
+                out.extend_from_slice(if modes.app_cursor_keys {
+                    b"\x1b[?1h"
+                } else {
+                    b"\x1b[?1l"
+                });
+            }
+            if self.modes.is_none() || previous.bracketed_paste != modes.bracketed_paste {
+                out.extend_from_slice(if modes.bracketed_paste {
+                    b"\x1b[?2004h"
+                } else {
+                    b"\x1b[?2004l"
+                });
+            }
+        }
+        if !body.is_empty() {
+            out.extend_from_slice(b"\x1b[?2026l");
+        }
+        self.cursor = Some(cursor);
+        self.modes = Some(modes);
+        out
+    }
 }

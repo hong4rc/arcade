@@ -27,7 +27,7 @@ use mio::{Events, Interest, Poll, Token, Waker};
 
 use crate::paths::prepare_socket_dir;
 use crate::pty::{self, SpawnSpec};
-use crate::render::render;
+use crate::render::{HostModes, Renderer};
 
 const LISTENER: Token = Token(0);
 const WAKER: Token = Token(1);
@@ -42,6 +42,8 @@ const PANE_INPUT_LIMIT: usize = 1024 * 1024;
 /// Keyboard bytes kept waiting for a pane before we stop reading from its client, so that a
 /// large paste is paced by the program instead of being dropped.
 const PANE_INPUT_SOFT_LIMIT: usize = 256 * 1024;
+/// Shortest time between two screen updates to one client: 60 a second at most.
+const FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
 /// Largest piece of screen update put in one message.
 const OUTPUT_CHUNK: usize = 1024 * 1024;
 /// How long a freshly started daemon waits for its first client before it gives up.
@@ -91,6 +93,10 @@ struct Session {
     last_used: u64,
     /// The next update must redraw the whole screen.
     need_full: bool,
+    /// What the attached client's terminal shows.
+    renderer: Renderer,
+    /// When the last update was sent to the attached client.
+    last_frame: Option<Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -314,13 +320,24 @@ impl Server {
             .any(|s| s.client == Some(client_id) && s.pane.input.len() >= PANE_INPUT_SOFT_LIMIT)
     }
 
+    /// When the next screen update for this session may be sent: `None` when there is nothing
+    /// to send or the client is still busy taking the last one.
+    fn frame_time(&self, s: &Session, now: Instant) -> Option<Instant> {
+        let ready = s
+            .client
+            .and_then(|c| self.clients.get(&c))
+            .is_some_and(|c| c.out.is_empty() && !c.gone);
+        if !(s.pane.dirty || s.need_full) || !ready {
+            return None;
+        }
+        Some(s.last_frame.map_or(now, |t| t + FRAME_INTERVAL))
+    }
+
     fn needs_frame(&self) -> bool {
-        self.sessions.values().any(|s| {
-            s.pane.dirty
-                && s.client
-                    .and_then(|c| self.clients.get(&c))
-                    .is_some_and(|c| c.out.is_empty())
-        })
+        let now = Instant::now();
+        self.sessions
+            .values()
+            .any(|s| self.frame_time(s, now).is_some_and(|t| t <= now))
     }
 
     fn next_deadline(&self) -> Option<Duration> {
@@ -340,6 +357,9 @@ impl Server {
         }
         for s in self.sessions.values() {
             if let Some(t) = s.pane.term.stuck_deadline() {
+                consider(t);
+            }
+            if let Some(t) = self.frame_time(s, now) {
                 consider(t);
             }
         }
@@ -796,6 +816,8 @@ impl Server {
                 client: None,
                 last_used: self.use_counter,
                 need_full: true,
+                renderer: Renderer::new(),
+                last_frame: None,
             },
         );
         Ok(session_id)
@@ -993,20 +1015,19 @@ impl Server {
     // ---- Screen updates ----
 
     fn send_frames(&mut self) {
-        let ids: Vec<u64> = self.sessions.keys().copied().collect();
-        for id in ids {
-            let ready = self.sessions.get(&id).is_some_and(|s| {
-                s.pane.dirty
-                    && s.client
-                        .and_then(|c| self.clients.get(&c))
-                        .is_some_and(|c| c.out.is_empty() && !c.gone)
-            });
-            if ready {
-                self.build_frame_for(id);
-            }
+        let now = Instant::now();
+        let due: Vec<u64> = self
+            .sessions
+            .values()
+            .filter(|s| self.frame_time(s, now).is_some_and(|t| t <= now))
+            .map(|s| s.id)
+            .collect();
+        for id in due {
+            self.build_frame_for(id);
         }
     }
 
+    /// Build the screen update for a session's client and queue it.
     fn build_frame_for(&mut self, session_id: u64) {
         let Some(session) = self.sessions.get_mut(&session_id) else {
             return;
@@ -1017,15 +1038,33 @@ impl Server {
         if !session.pane.dirty && !session.need_full {
             return;
         }
-        // Until the update is drawn only as differences (a later step), every update is whole.
-        let force_full = true;
+        let force_full = session.need_full;
+        if force_full {
+            // The client's screen is new or changed shape: nothing of it can be trusted.
+            session.renderer.reset();
+        }
         let frame = session.pane.term.snapshot(force_full);
         session.pane.dirty = false;
         session.need_full = false;
         match frame {
             Ok(frame) => {
-                let bytes = render(&frame);
-                self.send_output(client_id, &bytes);
+                let modes = HostModes {
+                    app_cursor_keys: session
+                        .pane
+                        .term
+                        .mode(arcade_term::Mode::AppCursorKeys)
+                        .unwrap_or(false),
+                    bracketed_paste: session
+                        .pane
+                        .term
+                        .mode(arcade_term::Mode::BracketedPaste)
+                        .unwrap_or(false),
+                };
+                let bytes = session.renderer.render(&frame, modes);
+                if !bytes.is_empty() {
+                    session.last_frame = Some(Instant::now());
+                    self.send_output(client_id, &bytes);
+                }
             }
             Err(e) => {
                 session.pane.exit_note = Some(format!("[{e}]"));

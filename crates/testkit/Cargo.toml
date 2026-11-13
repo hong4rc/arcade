@@ -13,3 +13,6 @@ libc = "0.2"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+arcade-workload = { path = "../workload" }

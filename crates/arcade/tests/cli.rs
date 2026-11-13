@@ -147,6 +147,31 @@ fn the_terminal_settings_come_back_after_the_client_exits() {
     assert_eq!(&host.settings(), host.initial_settings());
 }
 
+/// The pane turns on key modes; the host terminal shares them while attached and has them off
+/// again once the client has left.
+#[test]
+fn key_modes_are_shared_while_attached_and_reset_on_leaving() {
+    use arcade_term::Mode;
+    let env = Env::new();
+    let mut host = env.host(&["new", "-s", "modes"]);
+    host.wait_for_prompt().unwrap();
+    host.type_line("printf '\\033[?1h\\033[?2004h'; echo modes-set");
+    host.wait_for_row("modes-set").unwrap();
+    let on = host.wait_until(WAIT, |h| {
+        h.screen.mode(Mode::AppCursorKeys) == Some(true)
+            && h.screen.mode(Mode::BracketedPaste) == Some(true)
+    });
+    assert!(
+        on,
+        "the host terminal did not get the modes:\n{}",
+        host.screen_text()
+    );
+    host.type_line("arcade run session.detach");
+    assert_eq!(host.wait_exit(WAIT), Some(0));
+    assert_eq!(host.screen.mode(Mode::AppCursorKeys), Some(false));
+    assert_eq!(host.screen.mode(Mode::BracketedPaste), Some(false));
+}
+
 #[test]
 fn the_terminal_settings_come_back_after_a_detach_command() {
     let env = Env::new();

@@ -79,6 +79,7 @@ dependencies = [
  "arcade-daemon",
  "arcade-proto",
  "arcade-term",
+ "arcade-workload",
  "libc",
 ]
 
