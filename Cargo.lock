@@ -37,6 +37,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arcade-term"
+version = "0.0.0"
+dependencies = [
+ "arcade-workload",
+ "libghostty-vt",
+]
+
+[[package]]
 name = "arcade-workload"
 version = "0.0.0"
 
