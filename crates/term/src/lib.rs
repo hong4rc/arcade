@@ -447,6 +447,11 @@ impl Term {
         }
     }
 
+    /// Whether the alternate screen is in use (shorthand for the mode).
+    pub fn mode_alt_screen(&self) -> Option<bool> {
+        self.mode(Mode::AltScreen)
+    }
+
     /// Number of lines currently kept above the visible screen.
     pub fn scrollback_lines(&self) -> usize {
         self.term.scrollback_rows().unwrap_or(0)

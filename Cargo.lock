@@ -37,6 +37,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "arcade"
+version = "0.0.0"
+dependencies = [
+ "arcade-daemon",
+ "arcade-proto",
+ "arcade-term",
+ "arcade-testkit",
+ "libc",
+]
+
+[[package]]
 name = "arcade-daemon"
 version = "0.0.0"
 dependencies = [

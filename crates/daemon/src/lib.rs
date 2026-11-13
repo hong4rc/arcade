@@ -2,9 +2,11 @@
 //! attach through.
 
 mod paths;
-mod pty;
+pub mod pty;
 mod render;
 mod server;
 
-pub use paths::{default_socket_path, default_socket_path_from, resolve_socket_path};
+pub use paths::{
+    default_socket_path, default_socket_path_from, prepare_socket_dir, resolve_socket_path,
+};
 pub use server::{DaemonConfig, run};

@@ -17,7 +17,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use arcade_proto::{
-    AttachRequest, ClientMessage, Decoder, DetachReason, PROTOCOL_VERSION, ServerMessage,
+    AttachRequest, ClientMessage, CreateMode, Decoder, DetachReason, PROTOCOL_VERSION,
+    ServerMessage,
 };
 use arcade_term::{Event as TermEvent, Term, TermConfig};
 use mio::net::{UnixListener, UnixStream};
@@ -38,6 +39,9 @@ const PANE_READ_LIMIT: usize = 64 * 1024;
 const CLIENT_READ_LIMIT: usize = 256 * 1024;
 /// Most keyboard bytes kept waiting for a pane that does not read its input.
 const PANE_INPUT_LIMIT: usize = 1024 * 1024;
+/// Keyboard bytes kept waiting for a pane before we stop reading from its client, so that a
+/// large paste is paced by the program instead of being dropped.
+const PANE_INPUT_SOFT_LIMIT: usize = 256 * 1024;
 /// Largest piece of screen update put in one message.
 const OUTPUT_CHUNK: usize = 1024 * 1024;
 /// How long a freshly started daemon waits for its first client before it gives up.
@@ -92,6 +96,9 @@ struct Session {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ClientState {
     New,
+    /// Spoke another protocol version; only `server.kill` is allowed, so that a new client can
+    /// still stop an old daemon.
+    Mismatched,
     Ready,
     Attached(u64),
 }
@@ -213,7 +220,10 @@ impl Server {
         let mut pane_writable: HashSet<u64> = HashSet::new();
         loop {
             // Anything left over from the last turn means we must not sleep.
-            let busy = self.clients.values().any(|c| c.read_pending)
+            let busy = self
+                .clients
+                .iter()
+                .any(|(id, c)| c.read_pending && !self.client_blocked(*id))
                 || self.sessions.values().any(|s| s.pane.read_pending)
                 || !self.exited.is_empty()
                 || self.needs_frame();
@@ -295,6 +305,13 @@ impl Server {
                 return Ok(());
             }
         }
+    }
+
+    /// A client whose pane still has a lot of unwritten input is not read from for now.
+    fn client_blocked(&self, client_id: u64) -> bool {
+        self.sessions
+            .values()
+            .any(|s| s.client == Some(client_id) && s.pane.input.len() >= PANE_INPUT_SOFT_LIMIT)
     }
 
     fn needs_frame(&self) -> bool {
@@ -432,6 +449,13 @@ impl Server {
     }
 
     fn read_client(&mut self, id: u64) {
+        if self.client_blocked(id) {
+            // Come back when the pane has taken its input.
+            if let Some(c) = self.clients.get_mut(&id) {
+                c.read_pending = true;
+            }
+            return;
+        }
         let mut messages = Vec::new();
         let mut protocol_error = None;
         {
@@ -523,8 +547,22 @@ impl Server {
                         },
                     );
                     if let Some(c) = self.clients.get_mut(&id) {
-                        c.close_after_flush = true;
+                        c.state = ClientState::Mismatched;
                     }
+                }
+            }
+            ClientMessage::Command { name, args }
+                if state == ClientState::Mismatched && name == "server.kill" =>
+            {
+                let (ok, output) = self.run_command(&name, &args);
+                self.send(id, &ServerMessage::CommandResult { ok, output });
+                if let Some(c) = self.clients.get_mut(&id) {
+                    c.close_after_flush = true;
+                }
+            }
+            _ if state == ClientState::Mismatched => {
+                if let Some(c) = self.clients.get_mut(&id) {
+                    c.close_after_flush = true;
                 }
             }
             _ if state == ClientState::New => {
@@ -638,11 +676,14 @@ impl Server {
     }
 
     fn find_or_create(&mut self, request: &AttachRequest) -> Result<u64, String> {
-        if request.create && (request.new_name.is_some() || self.pick_session(request).is_none()) {
+        if request.create == CreateMode::Always {
             return self.create_session(request);
         }
         match self.pick_session(request) {
             Some(id) => Ok(id),
+            None if request.create == CreateMode::IfNone && request.session.is_none() => {
+                self.create_session(request)
+            }
             None => match &request.session {
                 Some(name) => Err(format!("no such session: {name}")),
                 None => Err("no sessions".to_string()),
@@ -818,8 +859,16 @@ impl Server {
     }
 
     fn flush_pane_input(&mut self, pane_id: u64) {
+        let mut unblocked = None;
         if let Some(session) = self.sessions.values_mut().find(|s| s.pane.id == pane_id) {
             write_pending(&mut session.pane);
+            if session.pane.input.len() < PANE_INPUT_SOFT_LIMIT {
+                unblocked = session.client;
+            }
+        }
+        // The client was not being read; now it can be.
+        if let Some(c) = unblocked.and_then(|id| self.clients.get_mut(&id)) {
+            c.read_pending = true;
         }
     }
 

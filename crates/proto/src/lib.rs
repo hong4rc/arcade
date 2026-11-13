@@ -3,9 +3,11 @@
 //! Every message is `u32 length (little endian) | u8 tag | payload`, where the length counts the
 //! tag and the payload. Integers are little endian, strings and byte blocks carry a `u32` length.
 //!
-//! Two messages must never change layout, so that a client and a daemon of different versions can
-//! still tell each other so: the client's [`ClientMessage::Hello`] (tag 1, then the `u32`
-//! protocol version first) and the daemon's [`ServerMessage::VersionMismatch`] (tag 2).
+//! Four messages must never change layout, so that a client and a daemon of different versions
+//! can still tell each other so, and so that a new client can stop an old daemon: the client's
+//! [`ClientMessage::Hello`] (tag 1, the `u32` protocol version first) and
+//! [`ClientMessage::Command`] (tag 6), and the daemon's [`ServerMessage::VersionMismatch`]
+//! (tag 2) and [`ServerMessage::CommandResult`] (tag 7).
 
 use std::fmt;
 
@@ -76,13 +78,23 @@ pub fn check_version(daemon: u32, client: u32) -> Result<(), ProtoError> {
     }
 }
 
+/// Whether an attach may or must create a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreateMode {
+    /// Attach to an existing session; fail when there is none.
+    Never,
+    /// Attach to an existing session, or create one when there is none at all.
+    IfNone,
+    /// Always create a new session.
+    Always,
+}
+
 /// What a client asks for when it connects to work with a session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttachRequest {
     /// Name of the session to attach to; `None` means the most recently used one.
     pub session: Option<String>,
-    /// Create a session when there is none to attach to (or always, when `new_name` is set).
-    pub create: bool,
+    pub create: CreateMode,
     /// Name for a session to create; `None` uses the name of the working directory.
     pub new_name: Option<String>,
     /// Command for the first pane of a created session; empty means the user's shell.
@@ -266,7 +278,11 @@ impl Message for ClientMessage {
             }
             ClientMessage::Attach(a) => {
                 w.opt_str(&a.session);
-                w.u8(u8::from(a.create));
+                w.u8(match a.create {
+                    CreateMode::Never => 0,
+                    CreateMode::IfNone => 1,
+                    CreateMode::Always => 2,
+                });
                 w.opt_str(&a.new_name);
                 w.list(&a.command);
                 w.str(&a.cwd);
@@ -302,8 +318,9 @@ impl Message for ClientMessage {
             2 => ClientMessage::Attach(AttachRequest {
                 session: r.opt_str()?,
                 create: match r.u8()? {
-                    0 => false,
-                    1 => true,
+                    0 => CreateMode::Never,
+                    1 => CreateMode::IfNone,
+                    2 => CreateMode::Always,
                     _ => return Err(ProtoError::InvalidValue),
                 },
                 new_name: r.opt_str()?,

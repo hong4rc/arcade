@@ -32,15 +32,18 @@ pub fn default_socket_path_from(
     }
 }
 
-/// Socket to use: the explicit choice, else `ARCADE_SOCKET`, else the default.
+/// Socket to use: the explicit choice, else `ARCADE_SOCKET`, else `ARCADE` (which the daemon
+/// sets in every pane, so commands run from a pane find their own daemon), else the default.
 pub fn resolve_socket_path(explicit: Option<&Path>) -> PathBuf {
     if let Some(path) = explicit {
         return path.to_path_buf();
     }
-    match std::env::var_os("ARCADE_SOCKET").filter(|v| !v.is_empty()) {
-        Some(path) => PathBuf::from(path),
-        None => default_socket_path(),
+    for name in ["ARCADE_SOCKET", "ARCADE"] {
+        if let Some(path) = std::env::var_os(name).filter(|v| !v.is_empty()) {
+            return PathBuf::from(path);
+        }
     }
+    default_socket_path()
 }
 
 /// Create the socket's directory (mode 0700) when it is missing, and refuse one that other

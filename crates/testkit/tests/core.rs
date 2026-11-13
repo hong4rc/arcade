@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use arcade_proto::{ClientMessage, Decoder, DetachReason, PROTOCOL_VERSION, ServerMessage, encode};
-use arcade_testkit::{AttachOptions, TestClient, TestDaemon, WAIT};
+use arcade_testkit::{AttachOptions, Screened, TestClient, TestDaemon, WAIT};
 
 fn screen_has(client: &TestClient, row: &str) -> bool {
     client.screen_rows().iter().any(|r| r == row)
@@ -370,7 +370,11 @@ fn a_client_with_another_protocol_version_is_told_both_versions() {
             client: 99
         }
     );
-    // And the connection is closed afterwards.
+    // The connection stays open for one thing only, stopping the daemon, so that a new client
+    // can stop an old daemon. Anything else ends it.
+    let mut bytes = Vec::new();
+    encode(&ClientMessage::Input(b"x".to_vec()), &mut bytes).unwrap();
+    std::io::Write::write_all(&mut stream, &bytes).unwrap();
     let n = std::io::Read::read(&mut stream, &mut buf).unwrap();
     assert_eq!(n, 0);
 }
@@ -446,4 +450,27 @@ fn server_kill_stops_the_panes_and_the_daemon() {
         assert!(start.elapsed() < WAIT, "shell {pid} still running");
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// A paste far larger than the daemon is willing to hold arrives complete: the daemon stops
+/// reading from the client while the program catches up, instead of dropping bytes.
+#[test]
+fn a_large_paste_arrives_complete() {
+    const SIZE: usize = 3 * 1024 * 1024;
+    let daemon = TestDaemon::start();
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    client.type_line(
+        "stty raw -echo; printf 'armed\\r\\n'; head -c 3145728 > paste.bin; stty sane; echo stored-$(wc -c < paste.bin | tr -d ' ')",
+    );
+    client.wait_for_row("armed").unwrap();
+    let data: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8).collect();
+    // Send it in pieces the size a terminal would, the way `arcade` does.
+    for chunk in data.chunks(16 * 1024) {
+        client.send(chunk);
+    }
+    client.wait_for_row(&format!("stored-{SIZE}")).unwrap();
+    let stored = std::fs::read(daemon.dir().join("paste.bin")).unwrap();
+    assert_eq!(stored.len(), SIZE);
+    assert!(stored == data, "the pasted bytes arrived changed");
 }

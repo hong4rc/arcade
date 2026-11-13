@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use arcade_daemon::DaemonConfig;
 use arcade_proto::{
-    AttachRequest, ClientMessage, Decoder, PROTOCOL_VERSION, ServerMessage, encode,
+    AttachRequest, ClientMessage, CreateMode, Decoder, PROTOCOL_VERSION, ServerMessage, encode,
 };
 use arcade_term::{Term, TermConfig};
 
@@ -103,7 +103,7 @@ impl TestDaemon {
             if client.closed || Instant::now() >= deadline {
                 return Err("no answer to the command".to_string());
             }
-            client.pump(deadline);
+            client.read_more(deadline);
         }
     }
 
@@ -146,10 +146,10 @@ impl Drop for TestDaemon {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct AttachOptions {
     pub session: Option<String>,
-    pub create: bool,
+    pub create: CreateMode,
     pub new_name: Option<String>,
     pub command: Vec<String>,
     pub cwd: Option<String>,
@@ -158,15 +158,24 @@ pub struct AttachOptions {
     pub rows: u16,
 }
 
+impl Default for AttachOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AttachOptions {
     /// Create a session with `/bin/sh` and a 100 by 30 screen.
     pub fn new() -> Self {
         AttachOptions {
-            create: true,
+            session: None,
+            create: CreateMode::Always,
+            new_name: None,
             command: vec!["/bin/sh".to_string()],
+            cwd: None,
+            env: None,
             cols: 100,
             rows: 30,
-            ..Default::default()
         }
     }
 
@@ -188,7 +197,7 @@ impl AttachOptions {
 
     /// Attach to an existing session instead of creating one.
     pub fn existing(mut self, name: Option<&str>) -> Self {
-        self.create = false;
+        self.create = CreateMode::Never;
         self.session = name.map(str::to_string);
         self.command.clear();
         self
@@ -209,6 +218,111 @@ impl AttachOptions {
             ]);
         }
         self
+    }
+}
+
+/// Something with a screen that fills as bytes arrive: the fake client and the fake host
+/// terminal. Waiting helpers all work the same way: read until the condition holds or the
+/// deadline passes, and say what the screen shows when it does not hold.
+pub trait Screened: Sized {
+    fn term(&self) -> &Term;
+    /// Read what has arrived, waiting no longer than `deadline`.
+    fn pump(&mut self, deadline: Instant) -> bool;
+    /// The other side is gone.
+    fn is_closed(&self) -> bool;
+
+    /// The text of every row of the screen, trailing blanks removed.
+    fn screen_rows(&self) -> Vec<String> {
+        let term = self.term();
+        (0..term.rows()).map(|r| term.row_text(r)).collect()
+    }
+
+    /// The screen as one string, rows joined by newlines, empty rows at the end dropped.
+    fn screen_text(&self) -> String {
+        let mut rows = self.screen_rows();
+        while rows.last().is_some_and(String::is_empty) {
+            rows.pop();
+        }
+        rows.join("\n")
+    }
+
+    /// Keep reading until `done` is true or the time is up. Returns whether `done` became true.
+    fn wait_until(&mut self, timeout: Duration, mut done: impl FnMut(&mut Self) -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if done(self) {
+                return true;
+            }
+            if self.is_closed() || Instant::now() >= deadline {
+                return done(self);
+            }
+            self.pump(deadline);
+        }
+    }
+
+    /// Wait until some row of the screen contains `needle`.
+    fn wait_for_text(&mut self, needle: &str) -> Result<(), String> {
+        self.wait_for_text_within(needle, WAIT)
+    }
+
+    fn wait_for_text_within(&mut self, needle: &str, timeout: Duration) -> Result<(), String> {
+        let found = self.wait_until(timeout, |c| {
+            c.screen_rows().iter().any(|r| r.contains(needle))
+        });
+        if found {
+            Ok(())
+        } else {
+            Err(format!(
+                "did not see {needle:?} within {timeout:?}{}; the screen shows:\n{}",
+                if self.is_closed() { " (closed)" } else { "" },
+                self.screen_text()
+            ))
+        }
+    }
+
+    /// Wait until the shell's prompt (`$`, set by the test environment) is the last thing on
+    /// the screen: the shell is ready for the next command.
+    fn wait_for_prompt(&mut self) -> Result<(), String> {
+        let ok = self.wait_until(WAIT, |c| {
+            c.screen_rows()
+                .iter()
+                .rev()
+                .find(|r| !r.is_empty())
+                .is_some_and(|r| r == "$")
+        });
+        if ok {
+            Ok(())
+        } else {
+            Err(format!(
+                "no shell prompt; the screen shows:\n{}",
+                self.screen_text()
+            ))
+        }
+    }
+
+    /// Wait until some row of the screen is exactly `row`.
+    fn wait_for_row(&mut self, row: &str) -> Result<(), String> {
+        let ok = self.wait_until(WAIT, |c| c.screen_rows().iter().any(|r| r == row));
+        if ok {
+            Ok(())
+        } else {
+            Err(format!(
+                "no row {row:?}; the screen shows:\n{}",
+                self.screen_text()
+            ))
+        }
+    }
+}
+
+impl Screened for TestClient {
+    fn term(&self) -> &Term {
+        &self.screen
+    }
+    fn pump(&mut self, deadline: Instant) -> bool {
+        self.read_more(deadline)
+    }
+    fn is_closed(&self) -> bool {
+        self.closed
     }
 }
 
@@ -275,7 +389,7 @@ impl TestClient {
             if client.closed || Instant::now() >= deadline {
                 return Err("daemon did not accept the attach".to_string());
             }
-            client.pump(deadline);
+            client.read_more(deadline);
         }
     }
 
@@ -311,7 +425,7 @@ impl TestClient {
     }
 
     /// Read what has arrived, waiting no longer than `deadline`. Returns whether anything came.
-    pub fn pump(&mut self, deadline: Instant) -> bool {
+    pub fn read_more(&mut self, deadline: Instant) -> bool {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let remaining = remaining.max(Duration::from_millis(1));
         let _ = self.stream.set_read_timeout(Some(remaining));
@@ -354,84 +468,6 @@ impl TestClient {
         }
     }
 
-    /// Keep reading until `done` is true or the time is up. Returns whether `done` became true.
-    pub fn wait_until(
-        &mut self,
-        timeout: Duration,
-        mut done: impl FnMut(&mut TestClient) -> bool,
-    ) -> bool {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if done(self) {
-                return true;
-            }
-            if self.closed || Instant::now() >= deadline {
-                return done(self);
-            }
-            self.pump(deadline);
-        }
-    }
-
-    /// The text of every row of the screen, trailing blanks removed.
-    pub fn screen_rows(&self) -> Vec<String> {
-        (0..self.screen.rows())
-            .map(|r| self.screen.row_text(r))
-            .collect()
-    }
-
-    /// The screen as one string, rows joined by newlines, empty rows at the end dropped.
-    pub fn screen_text(&self) -> String {
-        let mut rows = self.screen_rows();
-        while rows.last().is_some_and(String::is_empty) {
-            rows.pop();
-        }
-        rows.join("\n")
-    }
-
-    /// Wait until some row of the screen contains `needle`.
-    pub fn wait_for_text(&mut self, needle: &str) -> Result<(), String> {
-        self.wait_for_text_within(needle, WAIT)
-    }
-
-    pub fn wait_for_text_within(&mut self, needle: &str, timeout: Duration) -> Result<(), String> {
-        let found = self.wait_until(timeout, |c| {
-            c.screen_rows().iter().any(|r| r.contains(needle))
-        });
-        if found {
-            Ok(())
-        } else {
-            Err(format!(
-                "did not see {needle:?} within {timeout:?}{}; the screen shows:\n{}",
-                if self.closed {
-                    " (connection closed)"
-                } else {
-                    ""
-                },
-                self.screen_text()
-            ))
-        }
-    }
-
-    /// Wait until the shell's prompt (`$`, set by the test environment) is the last thing on
-    /// the screen: the shell is ready for the next command.
-    pub fn wait_for_prompt(&mut self) -> Result<(), String> {
-        let ok = self.wait_until(WAIT, |c| {
-            c.screen_rows()
-                .iter()
-                .rev()
-                .find(|r| !r.is_empty())
-                .is_some_and(|r| r == "$")
-        });
-        if ok {
-            Ok(())
-        } else {
-            Err(format!(
-                "no shell prompt; the screen shows:\n{}",
-                self.screen_text()
-            ))
-        }
-    }
-
     /// Wait for a message that is not screen output.
     pub fn wait_message(
         &mut self,
@@ -456,5 +492,206 @@ impl TestClient {
     /// Wait until the daemon closes the connection.
     pub fn wait_closed(&mut self, timeout: Duration) -> bool {
         self.wait_until(timeout, |c| c.closed)
+    }
+}
+
+// ---- A fake host terminal ----
+
+/// The terminal state a program can change: what `arcade` must put back when it leaves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TermSettings {
+    pub input_flags: u64,
+    pub output_flags: u64,
+    pub control_flags: u64,
+    pub local_flags: u64,
+    pub control_chars: Vec<u8>,
+}
+
+/// A program running in a real pseudo terminal, with a virtual screen showing what it draws.
+/// This is how the tests run the real `arcade` command the way a person would.
+pub struct PtyHost {
+    master: std::fs::File,
+    child: std::process::Child,
+    pub pid: i32,
+    pub screen: Term,
+    closed: bool,
+    initial: TermSettings,
+}
+
+impl PtyHost {
+    /// Run `program` with `args` in a new terminal of the given size. `env` is its whole
+    /// environment.
+    pub fn spawn(
+        program: &Path,
+        args: &[&str],
+        env: Vec<String>,
+        cwd: &Path,
+        cols: u16,
+        rows: u16,
+    ) -> PtyHost {
+        let mut argv = vec![program.display().to_string()];
+        argv.extend(args.iter().map(|a| a.to_string()));
+        let spawned = arcade_daemon::pty::spawn(&arcade_daemon::pty::SpawnSpec {
+            argv,
+            cwd: cwd.display().to_string(),
+            env,
+            cols,
+            rows,
+        })
+        .expect("start the program in a terminal");
+        let mut host = PtyHost {
+            master: spawned.master,
+            child: spawned.child,
+            pid: spawned.pid,
+            screen: Term::new(TermConfig::new(cols, rows)).expect("screen"),
+            closed: false,
+            initial: TermSettings {
+                input_flags: 0,
+                output_flags: 0,
+                control_flags: 0,
+                local_flags: 0,
+                control_chars: Vec::new(),
+            },
+        };
+        host.initial = host.settings();
+        host
+    }
+
+    /// The terminal's settings right now.
+    pub fn settings(&self) -> TermSettings {
+        use std::os::fd::AsRawFd;
+        // SAFETY: tcgetattr fills a termios struct we own.
+        let mut t: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: as above; t is a live local.
+        let rc = unsafe { libc::tcgetattr(self.master.as_raw_fd(), &mut t) };
+        assert_eq!(rc, 0, "tcgetattr: {}", std::io::Error::last_os_error());
+        TermSettings {
+            input_flags: t.c_iflag as u64,
+            output_flags: t.c_oflag as u64,
+            control_flags: t.c_cflag as u64,
+            local_flags: t.c_lflag as u64,
+            control_chars: t.c_cc.to_vec(),
+        }
+    }
+
+    /// The settings the terminal had before the program ran.
+    pub fn initial_settings(&self) -> &TermSettings {
+        &self.initial
+    }
+
+    pub fn send(&mut self, bytes: &[u8]) {
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            match self.master.write(rest) {
+                Ok(n) => rest = &rest[n..],
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(e) => panic!("write to the terminal: {e}"),
+            }
+        }
+    }
+
+    pub fn type_line(&mut self, line: &str) {
+        let mut bytes = line.as_bytes().to_vec();
+        bytes.push(b'\r');
+        self.send(&bytes);
+    }
+
+    /// Resize the terminal; the program gets the window size signal.
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        arcade_daemon::pty::set_window_size(&self.master, cols, rows).expect("resize");
+        self.screen.resize(cols, rows).expect("resize screen");
+    }
+
+    /// Wait for the program to end and return its exit code.
+    pub fn wait_exit(&mut self, timeout: Duration) -> Option<i32> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            // Keep the screen up to date while waiting.
+            self.pump(Instant::now() + Duration::from_millis(5));
+            match self.child.try_wait() {
+                Ok(Some(status)) => {
+                    // Take what it wrote last.
+                    self.pump(Instant::now() + Duration::from_millis(5));
+                    use std::os::unix::process::ExitStatusExt;
+                    return Some(
+                        status
+                            .code()
+                            .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)),
+                    );
+                }
+                Ok(None) => {}
+                Err(_) => return None,
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+        }
+    }
+
+    /// Send a signal to the program.
+    pub fn signal(&self, signal: i32) {
+        // SAFETY: kill with plain integers.
+        unsafe {
+            libc::kill(self.pid, signal);
+        }
+    }
+}
+
+impl Screened for PtyHost {
+    fn term(&self) -> &Term {
+        &self.screen
+    }
+
+    fn pump(&mut self, deadline: Instant) -> bool {
+        use std::os::fd::AsRawFd;
+        if self.closed {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let mut pfd = libc::pollfd {
+            fd: self.master.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll on one live pollfd.
+        let rc = unsafe { libc::poll(&mut pfd, 1, remaining.as_millis().clamp(1, 1000) as i32) };
+        if rc <= 0 {
+            return false;
+        }
+        let mut buf = vec![0u8; 64 * 1024];
+        match self.master.read(&mut buf) {
+            Ok(0) => {
+                self.closed = true;
+                false
+            }
+            Ok(n) => {
+                self.screen.feed(&buf[..n]);
+                // Answer the program's queries the way a real terminal would.
+                for event in self.screen.drain_events() {
+                    if let arcade_term::Event::Reply(bytes) = event {
+                        let _ = self.master.write_all(&bytes);
+                    }
+                }
+                true
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => false,
+            Err(_) => {
+                self.closed = true;
+                false
+            }
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed
+    }
+}
+
+impl Drop for PtyHost {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
