@@ -456,3 +456,41 @@ fn neovim_in_a_pane_looks_the_same_as_neovim_alone() {
         );
     }
 }
+
+#[test]
+fn an_echoed_key_is_drawn_without_waiting_for_the_frame_interval() {
+    let daemon = TestDaemon::start();
+    let mut options = AttachOptions::new();
+    options.command = vec!["/bin/cat".into()];
+    let mut client = daemon.attach(options).unwrap();
+    let settle = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < settle {
+        client.pump(settle);
+    }
+    // Keys 5 ms apart, faster than the 60-a-second limit would allow if it applied to them.
+    let mut waits = Vec::new();
+    for _ in 0..100 {
+        let before = client.output_messages;
+        let sent = Instant::now();
+        client.send(b"a");
+        let deadline = sent + Duration::from_secs(2);
+        while client.output_messages == before && Instant::now() < deadline {
+            client.pump(deadline);
+        }
+        assert!(
+            client.output_messages > before,
+            "an echoed key was never drawn"
+        );
+        waits.push(sent.elapsed());
+        let next = Instant::now() + Duration::from_millis(5);
+        while Instant::now() < next {
+            client.pump(next);
+        }
+    }
+    waits.sort();
+    let median = waits[waits.len() / 2];
+    let p99 = waits[waits.len() - 2];
+    eprintln!("echo drawn after: median {median:?}, p99 {p99:?}");
+    assert!(median < Duration::from_millis(3), "median {median:?}");
+    assert!(p99 < Duration::from_millis(15), "p99 {p99:?}");
+}

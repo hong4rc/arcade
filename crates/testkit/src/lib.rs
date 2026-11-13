@@ -20,6 +20,36 @@ use arcade_proto::{
 };
 use arcade_term::{Term, TermConfig};
 
+/// Memory a process really holds, in KiB: on macOS the system's "physical footprint", which
+/// (unlike the resident size) drops when memory is compressed or given back; elsewhere the
+/// resident size.
+pub fn footprint_kib(pid: u32) -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: proc_pid_rusage fills the struct we pass for the flavor we ask for.
+        let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+        // SAFETY: as above; info is a live local of the size the flavor expects.
+        let rc = unsafe {
+            libc::proc_pid_rusage(
+                pid as i32,
+                libc::RUSAGE_INFO_V2,
+                (&raw mut info).cast::<libc::rusage_info_t>(),
+            )
+        };
+        if rc == 0 {
+            return info.ri_phys_footprint / 1024;
+        }
+    }
+    let out = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps");
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0)
+}
+
 /// How long the tests wait for something that should happen right away.
 pub const WAIT: Duration = Duration::from_secs(10);
 

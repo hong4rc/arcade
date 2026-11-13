@@ -44,8 +44,45 @@ const PANE_INPUT_LIMIT: usize = 1024 * 1024;
 const PANE_INPUT_SOFT_LIMIT: usize = 256 * 1024;
 /// Shortest time between two screen updates to one client: 60 a second at most.
 const FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
+/// Output of the pane over the last two frame intervals below which updates are not paced (see
+/// `frame_time`). A pane has to print more than this, about 120 KB per second, before the limit
+/// of 60 updates per second applies.
+const LIGHT_UPDATE_BYTES: usize = 4096;
+
+/// Bytes a pane printed in the current and the previous frame interval.
+#[derive(Default)]
+struct OutputRate {
+    window_start: Option<Instant>,
+    current: usize,
+    previous: usize,
+}
+
+impl OutputRate {
+    fn add(&mut self, bytes: usize, now: Instant) {
+        match self.window_start {
+            Some(start) if now < start + FRAME_INTERVAL => {}
+            Some(start) if now < start + 2 * FRAME_INTERVAL => {
+                self.previous = self.current;
+                self.current = 0;
+                self.window_start = Some(now);
+            }
+            _ => {
+                self.previous = 0;
+                self.current = 0;
+                self.window_start = Some(now);
+            }
+        }
+        self.current += bytes;
+    }
+
+    fn is_light(&self) -> bool {
+        self.current + self.previous < LIGHT_UPDATE_BYTES
+    }
+}
 /// Largest piece of screen update put in one message.
 const OUTPUT_CHUNK: usize = 1024 * 1024;
+/// How long a pane must be silent before its old scrollback is compressed to save memory.
+const IDLE_COMPRESS_DELAY: Duration = Duration::from_secs(1);
 /// How long a freshly started daemon waits for its first client before it gives up.
 const FIRST_CLIENT_GRACE: Duration = Duration::from_secs(10);
 /// How long panes get to react to the hangup signal when the server is stopped.
@@ -80,8 +117,15 @@ struct Pane {
     read_pending: bool,
     /// The screen changed since the last update was built.
     dirty: bool,
+    /// How much the pane printed lately: tells a light update (a typed character echoed) from
+    /// a flood.
+    rate: OutputRate,
     /// Set when the first process ended; the text goes to the client.
     exit_note: Option<String>,
+    /// When to start compressing scrollback: a moment after the last output.
+    compress_at: Option<Instant>,
+    /// Compression is in progress, one small step per turn of the loop.
+    compressing: bool,
 }
 
 struct Session {
@@ -232,6 +276,7 @@ impl Server {
                 .any(|(id, c)| c.read_pending && !self.client_blocked(*id))
                 || self.sessions.values().any(|s| s.pane.read_pending)
                 || !self.exited.is_empty()
+                || self.sessions.values().any(|s| s.pane.compressing)
                 || self.needs_frame();
             let timeout = if busy {
                 Some(Duration::ZERO)
@@ -300,6 +345,8 @@ impl Server {
             self.finish_exited_panes();
             // (4) Screen updates.
             self.send_frames();
+            // (5) Panes that have been quiet shrink their old scrollback, a little at a time.
+            self.compress_idle_panes();
             // Push out what was queued.
             let ids: Vec<u64> = self.clients.keys().copied().collect();
             for id in ids {
@@ -329,6 +376,11 @@ impl Server {
             .is_some_and(|c| c.out.is_empty() && !c.gone);
         if !(s.pane.dirty || s.need_full) || !ready {
             return None;
+        }
+        // The 60 per second limit is for floods. A light update (an echoed key) goes out at
+        // once, so typing is not delayed by the pacing of the update before it.
+        if s.pane.rate.is_light() {
+            return Some(now);
         }
         Some(s.last_frame.map_or(now, |t| t + FRAME_INTERVAL))
     }
@@ -360,6 +412,9 @@ impl Server {
                 consider(t);
             }
             if let Some(t) = self.frame_time(s, now) {
+                consider(t);
+            }
+            if let Some(t) = s.pane.compress_at {
                 consider(t);
             }
         }
@@ -811,7 +866,10 @@ impl Server {
                     input: Vec::new(),
                     read_pending: true,
                     dirty: true,
+                    rate: OutputRate::default(),
                     exit_note: None,
+                    compress_at: None,
+                    compressing: false,
                 },
                 client: None,
                 last_used: self.use_counter,
@@ -910,6 +968,10 @@ impl Server {
                 Ok(n) => {
                     pane.term.feed(&buf[..n]);
                     pane.dirty = true;
+                    pane.rate.add(n, Instant::now());
+                    // New output: whatever compression was under way starts over later.
+                    pane.compressing = false;
+                    pane.compress_at = Some(Instant::now() + IDLE_COMPRESS_DELAY);
                     total += n;
                     if total >= limit {
                         pane.read_pending = true;
@@ -1008,6 +1070,23 @@ impl Server {
             if let Some(c) = self.clients.get_mut(&client_id) {
                 c.state = ClientState::Ready;
                 c.close_after_flush = true;
+            }
+        }
+    }
+
+    // ---- Idle work ----
+
+    fn compress_idle_panes(&mut self) {
+        let now = Instant::now();
+        for session in self.sessions.values_mut() {
+            let pane = &mut session.pane;
+            if pane.compressing {
+                if pane.term.compress_step() == arcade_term::CompressProgress::Done {
+                    pane.compressing = false;
+                }
+            } else if pane.compress_at.is_some_and(|t| now >= t) {
+                pane.compress_at = None;
+                pane.compressing = true;
             }
         }
     }
