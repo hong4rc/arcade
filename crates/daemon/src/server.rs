@@ -21,22 +21,25 @@ use arcade_proto::{
     ServerMessage,
 };
 use arcade_term::{
-    Code, Cursor, CursorShape, Event as TermEvent, Key, Term, TermConfig, encode_key,
+    Code, Cursor, CursorShape, Event as TermEvent, Key, Named, Term, TermConfig, encode_key,
 };
 use mio::net::{UnixListener, UnixStream};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
 
 use crate::compose::Screen;
+use crate::keymap::{Keymap, KeysConfig};
 use crate::keys::{Input, KeyReader};
 use crate::layout::{Layout, PaneId, Rect};
 use crate::log::Log;
 use crate::paths::prepare_socket_dir;
 use crate::pty::{self, SpawnSpec};
 use crate::render::Renderer;
+use keys::KeyState;
 
 mod actions;
 mod frame;
+mod keys;
 
 const LISTENER: Token = Token(0);
 const WAKER: Token = Token(1);
@@ -107,6 +110,8 @@ pub struct DaemonConfig {
     pub log_path: Option<PathBuf>,
     /// Size at which the log file is replaced by a new one (see `log::Log`).
     pub log_limit_bytes: u64,
+    /// The keys: the prefix, the direct modifier, the movement characters.
+    pub keys: KeysConfig,
 }
 
 /// A log file of this size, plus the one before it, is the most the daemon keeps on disk.
@@ -119,6 +124,7 @@ impl DaemonConfig {
             scrollback_lines: arcade_term::DEFAULT_SCROLLBACK_LINES,
             log_path: None,
             log_limit_bytes: DEFAULT_LOG_LIMIT_BYTES,
+            keys: KeysConfig::default(),
         }
     }
 }
@@ -218,6 +224,8 @@ struct Session {
     names_checked: Option<Instant>,
     /// The attached client's keyboard bytes that are not complete yet.
     keys: KeyReader,
+    /// The prefix, the lock, the prompt and the message line.
+    key_state: KeyState,
 }
 
 /// The shortest time between two looks at the panes' directories for the windows' names.
@@ -312,6 +320,8 @@ struct Server {
     empty_since: Option<Instant>,
     started: Instant,
     log: Log,
+    keys_config: KeysConfig,
+    keymap: Keymap,
 }
 
 /// Run the daemon until its last session closes (or it is told to stop). Removes the socket
@@ -351,6 +361,8 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         ever_had_session: false,
         empty_since: None,
         started: Instant::now(),
+        keymap: Keymap::defaults(&config.keys),
+        keys_config: config.keys.clone(),
         log: config
             .log_path
             .as_deref()
@@ -544,6 +556,9 @@ impl Server {
                 consider(t);
             }
             if let Some(t) = s.keys.deadline() {
+                consider(t);
+            }
+            if let Some(t) = s.key_state.deadline() {
                 consider(t);
             }
         }
@@ -879,6 +894,7 @@ impl Server {
             };
             session.client = Some(id);
             session.keys = KeyReader::new();
+            session.key_state.prefix = keys::PrefixState::Idle;
             session.need_full = true;
             session.last_used = self.use_counter;
             session.name.clone()
@@ -1071,6 +1087,7 @@ impl Server {
                 last_frame: None,
                 names_checked: None,
                 keys: KeyReader::new(),
+                key_state: KeyState::new(),
             },
         );
         Ok(session_id)
@@ -1158,64 +1175,6 @@ impl Server {
     }
 
     // ---- Panes ----
-
-    /// Keyboard bytes from a client. They are read as keys; for now every key goes on to the
-    /// focused pane.
-    fn handle_input(&mut self, session_id: u64, bytes: &[u8]) {
-        let inputs = match self.sessions.get_mut(&session_id) {
-            Some(s) => s.keys.feed(bytes, Instant::now()),
-            None => return,
-        };
-        self.dispatch_inputs(session_id, inputs);
-    }
-
-    fn dispatch_inputs(&mut self, session_id: u64, inputs: Vec<Input>) {
-        for input in inputs {
-            let Some(pane_id) = self.focus_pane_of(session_id) else {
-                return;
-            };
-            match input {
-                Input::Key { key, raw } => self.send_key_to_pane(pane_id, key, &raw),
-                Input::Paste(text) => self.send_paste_to_pane(pane_id, &text),
-                Input::Raw(raw) => self.write_to_pane(pane_id, &raw),
-            }
-        }
-    }
-
-    /// Give a key to a pane's program in the form it asked for.
-    fn send_key_to_pane(&mut self, pane_id: u64, key: Key, raw: &[u8]) {
-        let Some(pane) = self.panes.get(&pane_id) else {
-            return;
-        };
-        let modes = pane.term.key_modes();
-        // A key the host sent in the old way reaches a program that did not ask for the new
-        // way exactly as it came: nothing is lost, even for bytes no key stands for.
-        let kitty_form = raw.starts_with(b"\x1b[") && raw.ends_with(b"u");
-        if modes.kitty_flags == 0 && matches!(key.code, Code::Char(_)) && !kitty_form {
-            self.write_to_pane(pane_id, raw);
-            return;
-        }
-        let mut bytes = encode_key(key, modes);
-        if bytes.is_empty() && !kitty_form {
-            bytes = raw.to_vec();
-        }
-        self.write_to_pane(pane_id, &bytes);
-    }
-
-    /// Give pasted text to a pane, between the paste markers when its program asked for them.
-    fn send_paste_to_pane(&mut self, pane_id: u64, text: &[u8]) {
-        let bracketed = self
-            .panes
-            .get(&pane_id)
-            .is_some_and(|p| p.term.mode(arcade_term::Mode::BracketedPaste) == Some(true));
-        if bracketed {
-            self.write_to_pane(pane_id, b"\x1b[200~");
-        }
-        self.write_to_pane(pane_id, text);
-        if bracketed {
-            self.write_to_pane(pane_id, b"\x1b[201~");
-        }
-    }
 
     fn write_to_pane(&mut self, pane_id: u64, bytes: &[u8]) {
         if let Some(pane) = self.panes.get_mut(&pane_id) {
@@ -1305,6 +1264,7 @@ impl Server {
                 p.dirty = true;
             }
         }
+        self.expire_key_states(now);
         // A lone Esc that waited long enough is the Esc key.
         let waiting: Vec<u64> = self
             .sessions

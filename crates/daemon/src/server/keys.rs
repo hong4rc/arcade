@@ -1,0 +1,365 @@
+//! What a client's keys do: the prefix, the direct and the lock layers, the prompt line, and the
+//! keys that go on to the program in the pane.
+
+use super::*;
+use crate::keymap::{self, Binding, Keymap, key_name};
+use crate::status::Prompt;
+
+/// Where the prefix table stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PrefixState {
+    Idle,
+    /// The prefix key was pressed; the next key is looked up in the prefix table.
+    Awaiting,
+    /// A repeatable binding just ran; keys are looked up in the prefix table until this time.
+    Repeating(Instant),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PromptKind {
+    /// Closing the focused pane, answered with `y` or `n`.
+    ClosePane,
+    RenameWindow,
+    RenameSession,
+}
+
+pub(super) struct PromptState {
+    pub kind: PromptKind,
+    pub label: String,
+    pub text: String,
+}
+
+/// Everything about a session's keyboard that is not in the tables.
+pub(super) struct KeyState {
+    pub prefix: PrefixState,
+    pub locked: bool,
+    pub prompt: Option<PromptState>,
+    /// A line shown in place of the status bar until the next key.
+    pub message: Option<String>,
+}
+
+impl KeyState {
+    pub fn new() -> KeyState {
+        KeyState {
+            prefix: PrefixState::Idle,
+            locked: false,
+            prompt: None,
+            message: None,
+        }
+    }
+
+    /// The prefix table is the one in effect.
+    pub fn prefix_active(&self) -> bool {
+        self.prefix != PrefixState::Idle
+    }
+
+    /// When the repeat window ends, if one is open.
+    pub fn deadline(&self) -> Option<Instant> {
+        match self.prefix {
+            PrefixState::Repeating(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    pub fn status_prompt(&self) -> Option<Prompt> {
+        self.prompt.as_ref().map(|p| Prompt {
+            label: p.label.clone(),
+            text: p.text.clone(),
+        })
+    }
+}
+
+impl Server {
+    /// Keyboard bytes from a client, read as keys.
+    pub(super) fn handle_input(&mut self, session_id: u64, bytes: &[u8]) {
+        let inputs = match self.sessions.get_mut(&session_id) {
+            Some(s) => s.keys.feed(bytes, Instant::now()),
+            None => return,
+        };
+        self.dispatch_inputs(session_id, inputs);
+    }
+
+    pub(super) fn dispatch_inputs(&mut self, session_id: u64, inputs: Vec<Input>) {
+        for input in inputs {
+            if !self.sessions.contains_key(&session_id) {
+                return;
+            }
+            match input {
+                Input::Key { key, raw } => self.handle_key(session_id, key, &raw),
+                Input::Paste(text) => self.handle_paste(session_id, &text),
+                Input::Raw(raw) => {
+                    if self.in_prompt(session_id) {
+                        continue;
+                    }
+                    if let Some(pane) = self.focus_pane_of(session_id) {
+                        self.write_to_pane(pane, &raw);
+                    }
+                }
+            }
+        }
+    }
+
+    fn in_prompt(&self, session_id: u64) -> bool {
+        self.sessions
+            .get(&session_id)
+            .is_some_and(|s| s.key_state.prompt.is_some())
+    }
+
+    /// The prefix window ended: leave the prefix table.
+    pub(super) fn expire_key_states(&mut self, now: Instant) {
+        for s in self.sessions.values_mut() {
+            if let PrefixState::Repeating(t) = s.key_state.prefix
+                && now >= t
+            {
+                s.key_state.prefix = PrefixState::Idle;
+                s.chrome_dirty = true;
+            }
+        }
+    }
+
+    fn set_message(&mut self, session_id: u64, text: &str) {
+        if let Some(s) = self.sessions.get_mut(&session_id) {
+            s.key_state.message = Some(text.to_string());
+            s.chrome_dirty = true;
+        }
+    }
+
+    fn set_prefix(&mut self, session_id: u64, state: PrefixState) {
+        if let Some(s) = self.sessions.get_mut(&session_id)
+            && s.key_state.prefix != state
+        {
+            s.key_state.prefix = state;
+            s.chrome_dirty = true;
+        }
+    }
+
+    fn handle_key(&mut self, session_id: u64, original: Key, raw: &[u8]) {
+        let now = Instant::now();
+        // Tables are looked up by the normal form; a pane gets the key as it came (`:` and
+        // not Shift and `;`).
+        let key = keymap::normalize(original);
+        let Some(s) = self.sessions.get_mut(&session_id) else {
+            return;
+        };
+        if let PrefixState::Repeating(t) = s.key_state.prefix
+            && now >= t
+        {
+            s.key_state.prefix = PrefixState::Idle;
+            s.chrome_dirty = true;
+        }
+        if s.key_state.message.take().is_some() {
+            s.chrome_dirty = true;
+        }
+        if s.key_state.prompt.is_some() {
+            self.prompt_key(session_id, key, raw);
+            return;
+        }
+        let Some(pane) = self.focus_pane_of(session_id) else {
+            return;
+        };
+        let locked = self
+            .sessions
+            .get(&session_id)
+            .is_some_and(|s| s.key_state.locked);
+        if locked {
+            match Keymap::get(&self.keymap.direct, key) {
+                Some(b) if b.command == "arcade.lock" => {
+                    let b = b.clone();
+                    self.run_binding(session_id, &b);
+                }
+                _ => self.send_key_to_pane(pane, original, raw),
+            }
+            return;
+        }
+        let state = self
+            .sessions
+            .get(&session_id)
+            .map_or(PrefixState::Idle, |s| s.key_state.prefix);
+        if state != PrefixState::Idle {
+            if let Some(b) = Keymap::get(&self.keymap.prefix, key).cloned() {
+                let next = if b.repeat {
+                    PrefixState::Repeating(now + self.keys_config.repeat_window)
+                } else {
+                    PrefixState::Idle
+                };
+                self.set_prefix(session_id, next);
+                self.run_binding(session_id, &b);
+                return;
+            }
+            if state == PrefixState::Awaiting {
+                self.set_prefix(session_id, PrefixState::Idle);
+                if key == keymap::normalize(self.keys_config.prefix) {
+                    // The prefix twice sends the prefix key itself.
+                    self.send_key_to_pane(pane, original, raw);
+                } else {
+                    self.set_message(
+                        session_id,
+                        &format!("no key {} after the prefix", key_name(key)),
+                    );
+                }
+                return;
+            }
+            // The repeat window was open and this key is not in the table: it is typing.
+            self.set_prefix(session_id, PrefixState::Idle);
+        }
+        if key == keymap::normalize(self.keys_config.prefix) {
+            self.set_prefix(session_id, PrefixState::Awaiting);
+            return;
+        }
+        if let Some(b) = Keymap::get(&self.keymap.direct, key).cloned() {
+            self.run_binding(session_id, &b);
+            return;
+        }
+        self.send_key_to_pane(pane, original, raw);
+    }
+
+    /// Run what a key is bound to. Closing a pane asks first and renaming asks for the name;
+    /// an error shows on the status bar.
+    fn run_binding(&mut self, session_id: u64, binding: &Binding) {
+        let Some(pane) = self.focus_pane_of(session_id) else {
+            return;
+        };
+        let ask = match (binding.command.as_str(), binding.args.is_empty()) {
+            ("pane.close", _) => Some((PromptKind::ClosePane, "Close this pane? (y/n) ")),
+            ("window.rename", true) => Some((PromptKind::RenameWindow, "Window name: ")),
+            ("session.rename", true) => Some((PromptKind::RenameSession, "Session name: ")),
+            _ => None,
+        };
+        if let Some((kind, label)) = ask {
+            if let Some(s) = self.sessions.get_mut(&session_id) {
+                s.key_state.prompt = Some(PromptState {
+                    kind,
+                    label: label.to_string(),
+                    text: String::new(),
+                });
+                s.chrome_dirty = true;
+            }
+            return;
+        }
+        let (ok, output) = self.run_command(&binding.command, &binding.args, Some(pane));
+        if !ok {
+            self.set_message(session_id, &output);
+        }
+    }
+
+    fn close_prompt(&mut self, session_id: u64) -> Option<PromptState> {
+        let s = self.sessions.get_mut(&session_id)?;
+        s.chrome_dirty = true;
+        s.key_state.prompt.take()
+    }
+
+    fn prompt_key(&mut self, session_id: u64, key: Key, raw: &[u8]) {
+        let Some(s) = self.sessions.get_mut(&session_id) else {
+            return;
+        };
+        let Some(prompt) = s.key_state.prompt.as_mut() else {
+            return;
+        };
+        let confirm = prompt.kind == PromptKind::ClosePane;
+        let typed = std::str::from_utf8(raw)
+            .ok()
+            .filter(|t| !t.starts_with('\x1b') && !key.mods.ctrl && !key.mods.alt);
+        match key.code {
+            Code::Named(Named::Escape) => {
+                self.close_prompt(session_id);
+            }
+            Code::Char('n') if confirm && typed.is_some() => {
+                self.close_prompt(session_id);
+            }
+            Code::Char('y') if confirm && typed.is_some() => {
+                self.accept_prompt(session_id);
+            }
+            _ if confirm => {}
+            Code::Named(Named::Enter) => self.accept_prompt(session_id),
+            Code::Named(Named::Backspace) => {
+                prompt.text.pop();
+                s.chrome_dirty = true;
+            }
+            Code::Char('u') if key.mods.ctrl => {
+                prompt.text.clear();
+                s.chrome_dirty = true;
+            }
+            _ => {
+                if let Some(text) = typed {
+                    prompt.text.push_str(text);
+                    s.chrome_dirty = true;
+                }
+            }
+        }
+    }
+
+    fn accept_prompt(&mut self, session_id: u64) {
+        let Some(prompt) = self.close_prompt(session_id) else {
+            return;
+        };
+        let Some(pane) = self.focus_pane_of(session_id) else {
+            return;
+        };
+        let (name, args): (&str, Vec<String>) = match prompt.kind {
+            PromptKind::ClosePane => ("pane.close", Vec::new()),
+            PromptKind::RenameWindow | PromptKind::RenameSession if prompt.text.is_empty() => {
+                return;
+            }
+            PromptKind::RenameWindow => ("window.rename", vec![prompt.text]),
+            PromptKind::RenameSession => ("session.rename", vec![prompt.text]),
+        };
+        let (ok, output) = self.run_command(name, &args, Some(pane));
+        if !ok {
+            self.set_message(session_id, &output);
+        }
+    }
+
+    fn handle_paste(&mut self, session_id: u64, text: &[u8]) {
+        if let Some(s) = self.sessions.get_mut(&session_id)
+            && let Some(prompt) = s.key_state.prompt.as_mut()
+        {
+            if prompt.kind != PromptKind::ClosePane {
+                let line: String = String::from_utf8_lossy(text)
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .collect();
+                prompt.text.push_str(&line);
+                s.chrome_dirty = true;
+            }
+            return;
+        }
+        if let Some(pane) = self.focus_pane_of(session_id) {
+            self.send_paste_to_pane(pane, text);
+        }
+    }
+
+    /// Give a key to a pane's program in the form it asked for.
+    pub(super) fn send_key_to_pane(&mut self, pane_id: u64, key: Key, raw: &[u8]) {
+        let Some(pane) = self.panes.get(&pane_id) else {
+            return;
+        };
+        let modes = pane.term.key_modes();
+        // A key the host sent in the old way reaches a program that did not ask for the new
+        // way exactly as it came: nothing is lost, even for bytes no key stands for.
+        let kitty_form = raw.starts_with(b"\x1b[") && raw.ends_with(b"u");
+        if modes.kitty_flags == 0 && matches!(key.code, Code::Char(_)) && !kitty_form {
+            self.write_to_pane(pane_id, raw);
+            return;
+        }
+        let mut bytes = encode_key(key, modes);
+        if bytes.is_empty() && !kitty_form {
+            bytes = raw.to_vec();
+        }
+        self.write_to_pane(pane_id, &bytes);
+    }
+
+    /// Give pasted text to a pane, between the paste markers when its program asked for them.
+    pub(super) fn send_paste_to_pane(&mut self, pane_id: u64, text: &[u8]) {
+        let bracketed = self
+            .panes
+            .get(&pane_id)
+            .is_some_and(|p| p.term.mode(arcade_term::Mode::BracketedPaste) == Some(true));
+        if bracketed {
+            self.write_to_pane(pane_id, b"\x1b[200~");
+        }
+        self.write_to_pane(pane_id, text);
+        if bracketed {
+            self.write_to_pane(pane_id, b"\x1b[201~");
+        }
+    }
+}

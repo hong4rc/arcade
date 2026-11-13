@@ -211,6 +211,10 @@ pub fn encode(mut key: Key, modes: PaneKeyModes) -> Vec<u8> {
                     c
                 };
                 event.set_utf8(Some(shown.to_string()));
+                // Shift made the text what it is, so it is not reported as a modifier too.
+                if key.mods.shift {
+                    event.set_consumed_mods(GMods::SHIFT);
+                }
             }
         }
     }
@@ -296,5 +300,18 @@ mod tests {
         };
         assert_eq!(encode(key(Code::Char('m'), ctrl()), m), b"\x1b[109;5u");
         assert_eq!(encode(key(Code::Named(Named::Enter), Mods::NONE), m), b"\r");
+    }
+
+    #[test]
+    fn a_shifted_letter_is_plain_text_under_the_kitty_protocol() {
+        let m = PaneKeyModes {
+            app_cursor_keys: false,
+            kitty_flags: 1,
+        };
+        let shift = Mods {
+            shift: true,
+            ..Mods::NONE
+        };
+        assert_eq!(encode(key(Code::Char('a'), shift), m), b"A");
     }
 }

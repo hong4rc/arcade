@@ -86,9 +86,17 @@ fn the_pane_starts_in_the_requested_directory() {
     assert!(list.starts_with("work\t"), "{list:?}");
 }
 
+/// A daemon with no key of its own in the way: every byte a test sends should reach the program.
+fn daemon_without_key_bindings() -> TestDaemon {
+    TestDaemon::start_with(|c| {
+        c.keys.prefix = arcade_daemon::parse_key("f12").unwrap();
+        c.keys.direct_modifier = None;
+    })
+}
+
 #[test]
 fn keyboard_bytes_reach_the_program_unchanged() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon_without_key_bindings();
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
     // Read exactly five raw bytes and print them in hexadecimal.
@@ -459,7 +467,7 @@ fn server_kill_stops_the_panes_and_the_daemon() {
 #[test]
 fn a_large_paste_arrives_complete() {
     const SIZE: usize = 3 * 1024 * 1024;
-    let daemon = TestDaemon::start();
+    let daemon = daemon_without_key_bindings();
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
     client.type_line(

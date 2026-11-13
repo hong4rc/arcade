@@ -3,6 +3,7 @@
 
 mod commands;
 mod compose;
+mod keymap;
 mod keys;
 mod layout;
 mod log;
@@ -13,6 +14,7 @@ mod server;
 mod status;
 mod theme;
 
+pub use keymap::{Keymap, KeysConfig, parse_key};
 pub use paths::{
     default_socket_path, default_socket_path_from, prepare_socket_dir, resolve_socket_path,
 };

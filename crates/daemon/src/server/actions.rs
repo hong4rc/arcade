@@ -181,6 +181,45 @@ impl Server {
                 Ok(String::new())
             }
             Command::SessionList => Ok(self.list_sessions()),
+            Command::SessionRename(Some(name)) => {
+                if self
+                    .sessions
+                    .values()
+                    .any(|s| s.name == name && s.id != ctx.session)
+                {
+                    return Err(format!("a session called {name} exists"));
+                }
+                if let Some(s) = self.sessions.get_mut(&ctx.session) {
+                    s.name = name;
+                    s.chrome_dirty = true;
+                }
+                Ok(String::new())
+            }
+            Command::SessionRename(None) => {
+                Err("session.rename needs a name when it is not typed at the keyboard".to_string())
+            }
+            Command::ArcadeLock => {
+                let can_unlock = self.keymap.has_lock_key();
+                let session = self
+                    .sessions
+                    .get_mut(&ctx.session)
+                    .ok_or_else(|| "no such session".to_string())?;
+                if !session.key_state.locked && !can_unlock {
+                    return Err("no key would unlock: the direct table has no lock key".to_string());
+                }
+                session.key_state.locked = !session.key_state.locked;
+                session.key_state.prefix = keys::PrefixState::Idle;
+                session.chrome_dirty = true;
+                Ok(String::new())
+            }
+            Command::ArcadeRedraw => {
+                if let Some(s) = self.sessions.get_mut(&ctx.session) {
+                    s.need_full = true;
+                    s.relayout = true;
+                    s.chrome_dirty = true;
+                }
+                Ok(String::new())
+            }
             _ => Err("this command is not available yet".to_string()),
         }
     }

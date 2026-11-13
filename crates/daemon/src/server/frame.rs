@@ -23,11 +23,11 @@ fn status_info(s: &Session) -> StatusInfo {
                 zoomed: w.zoomed,
             })
             .collect(),
-        prefix: false,
-        locked: false,
+        prefix: s.key_state.prefix_active(),
+        locked: s.key_state.locked,
         copy: false,
-        message: None,
-        prompt: None,
+        message: s.key_state.message.clone(),
+        prompt: s.key_state.status_prompt(),
     }
 }
 
