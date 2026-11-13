@@ -741,7 +741,9 @@ const AUTHOR_CONFIG: &str = "[keys]\nprefix = \"ctrl+m\"\ndirect-modifier = \"ct
 const AUTHOR_PREFIX: &[u8] = b"\x1b[109;5u";
 
 fn wait_row_has(host: &mut PtyHost, row: usize, text: &str) {
-    let ok = host.wait_until(WAIT, |h| h.screen_rows()[row].contains(text));
+    let ok = host.wait_until(WAIT, |h| {
+        format!("{} ", h.screen_rows()[row]).contains(text)
+    });
     assert!(ok, "row {row} lacks {text:?}:\n{}", host.screen_text());
 }
 
@@ -794,11 +796,12 @@ fn a_working_session_with_the_authors_settings() {
     other.send(b"d");
     assert_eq!(other.wait_exit(WAIT), Some(0));
 
-    // The list of sessions: `n` is down with these settings; Enter goes there.
+    // The list of sessions (`other` is above `work`, which is chosen): `e` is up with these
+    // settings; Enter goes there.
     host.send(AUTHOR_PREFIX);
     host.send(b"s");
     wait_screen_has(&mut host, "Sessions");
-    host.send(b"n");
+    host.send(b"e");
     host.send(b"\r");
     wait_row_has(&mut host, 0, " other ");
     wait_screen_has(&mut host, "only-other");
