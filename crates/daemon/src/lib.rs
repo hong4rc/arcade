@@ -1,6 +1,7 @@
 //! The Arcade daemon: sessions, panes, their processes and terminals, and the socket clients
 //! attach through.
 
+mod layout;
 mod log;
 mod paths;
 pub mod pty;
