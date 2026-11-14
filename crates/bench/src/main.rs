@@ -982,6 +982,8 @@ const DAEMON_SOCKET_WRITTEN: u8 = 13;
 const CLIENT_WAKE: u8 = 14;
 const CLIENT_STDOUT_WRITTEN: u8 = 15;
 const DAEMON_FRAME_START: u8 = 16;
+const DAEMON_BEFORE_READ: u8 = 17;
+const CLIENT_BEFORE_WRITE: u8 = 18;
 
 fn read_marks(path: &Path) -> Vec<Mark> {
     let Ok(text) = fs::read_to_string(path) else {
@@ -1017,23 +1019,25 @@ fn last_between(marks: &[Mark], point: u8, from: u64, until: u64) -> Option<Mark
 }
 
 /// The stretches between points that a key and its echo pass, in order.
-const STRETCHES: [(&str, &str); 17] = [
+const STRETCHES: [(&str, &str); 19] = [
     (
         "bench_write_to_client_read",
         "operating system: the test's terminal to the client's read",
     ),
     (
-        "client_read_to_sent",
-        "client: key read, message written to the socket",
+        "client_read_to_write_call",
+        "client: key read, message encoded, up to the write call",
     ),
+    ("client_write_call", "client: the write call to the socket"),
     (
         "sent_to_daemon_wake",
         "operating system: socket write to the daemon's wakeup",
     ),
     (
-        "daemon_wake_to_socket_read",
-        "daemon: wakeup to socket read",
+        "daemon_wake_to_read_call",
+        "daemon: wakeup to the first read call (events, tables, checks)",
     ),
+    ("daemon_read_call", "daemon: the read call(s) on the socket"),
     ("socket_read_to_decoded", "daemon: message decoded"),
     ("decoded_to_key_handled", "daemon: key found in the tables"),
     (
@@ -1116,9 +1120,11 @@ fn stages_table(dir: &Path, socket_name: &str, sent: &[u64], seen: &[u64]) -> R<
     for (i, k1) in key_reads.iter().enumerate().take(keys) {
         let end = key_reads.get(i + 1).map_or(u64::MAX, |m| m.ns);
         let chain = (|| {
-            let k2 = first_after(&client, CLIENT_KEY_SENT, k1.ns)?;
+            let kw = first_after(&client, CLIENT_BEFORE_WRITE, k1.ns)?;
+            let k2 = first_after(&client, CLIENT_KEY_SENT, kw.ns)?;
             let k4 = first_after(&daemon, DAEMON_SOCKET_READ, k1.ns)?;
-            let k3 = last_between(&daemon, DAEMON_WAKE, k1.ns, k4.ns)?;
+            let kr = last_between(&daemon, DAEMON_BEFORE_READ, k1.ns, k4.ns)?;
+            let k3 = last_between(&daemon, DAEMON_WAKE, k1.ns, kr.ns)?;
             let k5 = first_after(&daemon, DAEMON_DECODED, k4.ns)?;
             let k6 = first_after(&daemon, DAEMON_KEY_HANDLED, k5.ns)?;
             let k7 = first_after(&daemon, DAEMON_PTY_WRITTEN, k6.ns)?;
@@ -1136,19 +1142,22 @@ fn stages_table(dir: &Path, socket_name: &str, sent: &[u64], seen: &[u64]) -> R<
                 return None;
             }
             Some((
-                k2, k3, k4, k5, k6, k7, w2, o2, o3, o3b, o4, o5, o6, o7, c1, c2,
+                kw, kr, k2, k3, k4, k5, k6, k7, w2, o2, o3, o3b, o4, o5, o6, o7, c1, c2,
             ))
         })();
-        let Some((k2, k3, k4, k5, k6, k7, w2, o2, o3, o3b, o4, o5, o6, o7, c1, c2)) = chain else {
+        let Some((kw, kr, k2, k3, k4, k5, k6, k7, w2, o2, o3, o3b, o4, o5, o6, o7, c1, c2)) = chain
+        else {
             continue;
         };
         used += 1;
         let d = |a: u64, b: u64| b.saturating_sub(a);
         let values = [
             d(sent[i], k1.ns),
-            d(k1.ns, k2.ns),
+            d(k1.ns, kw.ns),
+            d(kw.ns, k2.ns),
             d(k2.ns, k3.ns),
-            d(k3.ns, k4.ns),
+            d(k3.ns, kr.ns),
+            d(kr.ns, k4.ns),
             d(k4.ns, k5.ns),
             d(k5.ns, k6.ns),
             d(k6.ns, k7.ns),

@@ -12,6 +12,7 @@ use arcade_proto::{AttachRequest, ClientMessage, ServerMessage};
 
 use crate::connection::Connection;
 use crate::host::{ENTER_SEQUENCE, RESTORE_SEQUENCE, RawMode, Signals, window_size};
+use crate::wait::{Ready, Waiter};
 
 pub enum Outcome {
     /// Left on purpose or because the session ended; the text is a line for the user.
@@ -146,37 +147,25 @@ fn run(connection: &mut Connection, signals: &Signals, stdin_fd: i32, stdout_fd:
     if let Some(outcome) = handle_messages(connection, stdout_fd) {
         return outcome;
     }
+    let waiter = Waiter::new([stdin_fd, socket_fd, signals.read_fd]);
     loop {
-        let mut fds = [
-            libc::pollfd {
-                fd: stdin_fd,
-                events: libc::POLLIN,
-                revents: 0,
+        let ready = match &waiter {
+            Some(waiter) => match waiter.wait() {
+                Ok(Some(ready)) => ready,
+                Ok(None) => continue,
+                Err(_) => return Outcome::Lost("[lost terminal]".to_string()),
             },
-            libc::pollfd {
-                fd: socket_fd,
-                events: libc::POLLIN,
-                revents: 0,
+            None => match poll_ready(stdin_fd, socket_fd, signals.read_fd) {
+                Ok(Some(ready)) => ready,
+                Ok(None) => continue,
+                Err(_) => return Outcome::Lost("[lost terminal]".to_string()),
             },
-            libc::pollfd {
-                fd: signals.read_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        // SAFETY: poll on three live pollfds, waiting with no timeout.
-        let rc = unsafe { libc::poll(fds.as_mut_ptr(), 3, -1) };
+        };
         stage_mark!(ClientWake);
         stage_count!(Poll);
-        if rc < 0 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Outcome::Lost("[lost terminal]".to_string());
-        }
 
         // Signals first: a hangup or termination ends the client at once (the session lives on).
-        if fds[2].revents != 0 {
+        if ready[2] {
             for signal in signals.take() {
                 match signal {
                     libc::SIGWINCH => {
@@ -197,7 +186,7 @@ fn run(connection: &mut Connection, signals: &Signals, stdin_fd: i32, stdout_fd:
         }
 
         // The keyboard.
-        if fds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+        if ready[0] {
             // SAFETY: read into a live buffer of the stated length.
             let n = unsafe { libc::read(stdin_fd, key_buf.as_mut_ptr().cast(), key_buf.len()) };
             stage_count!(Read);
@@ -220,7 +209,7 @@ fn run(connection: &mut Connection, signals: &Signals, stdin_fd: i32, stdout_fd:
         }
 
         // The daemon.
-        if fds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+        if ready[1] {
             stage_count!(Read);
             match connection.stream.read(&mut net_buf) {
                 Ok(0) => return Outcome::Lost("[lost server]".to_string()),
@@ -233,6 +222,32 @@ fn run(connection: &mut Connection, signals: &Signals, stdin_fd: i32, stdout_fd:
             }
         }
     }
+}
+
+/// Wait with `poll` for the keyboard, the socket and the signal pipe: for terminals the event
+/// queue of `wait::Waiter` cannot take. `Ok(None)` when a signal interrupted the wait.
+fn poll_ready(stdin_fd: i32, socket_fd: i32, signal_fd: i32) -> std::io::Result<Option<Ready>> {
+    let mut fds = [stdin_fd, socket_fd, signal_fd].map(|fd| libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    });
+    // SAFETY: poll on three live pollfds, waiting with no timeout.
+    let rc = unsafe { libc::poll(fds.as_mut_ptr(), 3, -1) };
+    if rc < 0 {
+        let e = std::io::Error::last_os_error();
+        return if e.kind() == std::io::ErrorKind::Interrupted {
+            Ok(None)
+        } else {
+            Err(e)
+        };
+    }
+    let any = libc::POLLIN | libc::POLLHUP | libc::POLLERR;
+    Ok(Some([
+        fds[0].revents & any != 0,
+        fds[1].revents & any != 0,
+        fds[2].revents != 0,
+    ]))
 }
 
 /// Handle every complete message the decoder holds. `Some` ends the client.

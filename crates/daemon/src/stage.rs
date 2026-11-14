@@ -50,6 +50,10 @@ pub enum Point {
     ClientStdoutWritten,
     /// The daemon begins to build the frame (after the work of the turn that came before it).
     DaemonFrameStart,
+    /// The daemon is about to make its first read from a client socket in this turn.
+    DaemonBeforeRead,
+    /// The client is about to write the key message to the socket.
+    ClientBeforeWrite,
 }
 
 #[derive(Clone, Copy)]

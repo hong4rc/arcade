@@ -800,6 +800,7 @@ impl Server {
             let mut buf = [0u8; 16 * 1024];
             let mut total = 0;
             client.read_pending = false;
+            stage_mark!(DaemonBeforeRead);
             loop {
                 stage_count!(Read);
                 match client.stream.read(&mut buf) {

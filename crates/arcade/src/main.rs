@@ -3,6 +3,7 @@
 mod client;
 mod connection;
 mod host;
+mod wait;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

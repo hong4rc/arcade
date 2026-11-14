@@ -47,6 +47,10 @@ impl Connection {
         let mut bytes = Vec::new();
         encode(message, &mut bytes).map_err(|e| e.to_string())?;
         stage_count!(Write);
+        #[cfg(feature = "stage-timing")]
+        if matches!(message, ClientMessage::Input(_)) {
+            arcade_daemon::stage_mark!(ClientBeforeWrite);
+        }
         let sent = self
             .stream
             .write_all(&bytes)
