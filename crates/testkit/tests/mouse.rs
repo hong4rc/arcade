@@ -72,9 +72,7 @@ fn left_copy_mode(client: &mut TestClient) -> bool {
 /// Split the pane in two, side by side; the new pane on the right has the focus. Returns the
 /// column of the divider.
 fn split(client: &mut TestClient) -> u16 {
-    client.send(PREFIX);
-    client.send(b"|");
-    assert!(client.wait_until(WAIT, |c| c.screen_text().contains('│')));
+    client.split_right();
     let row = client
         .screen_rows()
         .into_iter()

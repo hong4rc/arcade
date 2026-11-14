@@ -503,3 +503,39 @@ fn an_echoed_key_is_drawn_without_waiting_for_the_frame_interval() {
     assert!(median < Duration::from_millis(3), "median {median:?}");
     assert!(p99 < Duration::from_millis(15), "p99 {p99:?}");
 }
+
+/// A line typed into a pane before its shell has drawn the prompt is echoed by the terminal
+/// first and the prompt comes after it, so the screen can show the prompt on the row below the
+/// typed line. That is what the shell did; the screen built from the updates must be the same as
+/// the one a client gets from a full redraw.
+#[test]
+fn typing_into_a_new_pane_before_its_shell_is_ready_shows_what_a_full_redraw_shows() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon
+        .attach(AttachOptions::new().size(100, 30).named("w"))
+        .unwrap();
+    client.wait_for_prompt().unwrap();
+    client.send(b"\x1b[109;5u|");
+    client.type_line("echo late-text");
+    // Everything the shell does settles.
+    let end = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < end {
+        client.read_more(end);
+    }
+    let late_shape = client
+        .screen_rows()
+        .iter()
+        .any(|r| r.contains("│echo late-text"));
+    if late_shape {
+        eprintln!("late-shell shape seen");
+    }
+    let before = client.screen_text();
+    let mut fresh = daemon
+        .attach(AttachOptions::new().size(100, 30).existing(Some("w")))
+        .unwrap();
+    let end = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < end {
+        fresh.read_more(end);
+    }
+    assert_eq!(before, fresh.screen_text());
+}

@@ -47,9 +47,7 @@ fn world_sized(daemon: &TestDaemon, cols: u16, rows: u16) -> TestClient {
     alpha.wait_for_prompt().unwrap();
     name_pane(&mut alpha, "nvim");
     assert!(run(daemon, "window.rename", &["editor"]).0);
-    alpha.send(PREFIX);
-    alpha.send(b"|");
-    assert!(alpha.wait_until(WAIT, |c| c.screen_text().contains('│')));
+    alpha.split_right();
     name_pane(&mut alpha, "zsh");
     alpha.send(PREFIX);
     alpha.send(b"c");

@@ -545,6 +545,29 @@ impl TestClient {
 
     /// The number of the pane that has the focus (its `ARCADE_PANE` variable), asked of the
     /// shell running in it.
+    /// How many panes show nothing but a shell prompt on a row of their own (a pane that waits
+    /// for a command shows one).
+    fn idle_prompts(&self) -> usize {
+        self.content_rows()
+            .iter()
+            .map(|r| r.split('│').filter(|part| part.trim() == "$").count())
+            .sum()
+    }
+
+    /// Split the pane that has the focus into left and right with the default prefix, and wait
+    /// until the shell in the new pane has drawn its prompt. A line typed before that is echoed
+    /// by the terminal first and the prompt comes after it, which puts the lines of the two
+    /// panes on different rows.
+    pub fn split_right(&mut self) {
+        let before = self.idle_prompts();
+        self.send(b"\x1b[109;5u");
+        self.send(b"|");
+        let ok = self.wait_until(WAIT, |c| {
+            c.screen_text().contains('│') && c.idle_prompts() > before
+        });
+        assert!(ok, "the new pane shows no prompt:\n{}", self.screen_text());
+    }
+
     pub fn focused_pane_id(&mut self) -> u64 {
         let marker = format!("pane-id{}=", MARKER.fetch_add(1, Ordering::Relaxed));
         self.type_line(&format!("echo {marker}$ARCADE_PANE."));
