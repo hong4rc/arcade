@@ -16,8 +16,10 @@ usage: arcade [--socket <path>] [command]
 
 commands:
   (none)                          attach to the session used last, or create one
-  new [-s <name>] [<command>...]  create a session and attach to it
+  new [-d] [-s <name>] [<command>...]
+                                  create a session and attach to it (-d: do not attach)
   attach [-t <session>]           attach to a session
+                                  (inside a pane: switch this screen to it)
   ls                              list sessions
   kill-session [-t <session>]     close a session
   kill-server                     stop the daemon and every session
@@ -63,9 +65,14 @@ fn run(mut args: Vec<String>) -> u8 {
         "__daemon" => daemon_command(&options),
         "new" => {
             let mut name = None;
+            let mut detached = false;
             let mut index = 0;
             while index < rest.len() {
                 match rest[index].as_str() {
+                    "-d" => {
+                        detached = true;
+                        index += 1;
+                    }
                     "-s" => {
                         let Some(value) = rest.get(index + 1) else {
                             return usage_error("-s needs a session name");
@@ -83,13 +90,19 @@ fn run(mut args: Vec<String>) -> u8 {
                     _ => break,
                 }
             }
-            attach_command(
-                &options,
-                None,
-                CreateMode::Always,
-                name,
-                rest[index..].to_vec(),
-            )
+            let command = rest[index..].to_vec();
+            if detached || in_own_pane(&options) {
+                let created = match create_detached(&options, name, command) {
+                    Ok(created) => created,
+                    Err(code) => return code,
+                };
+                if detached {
+                    return 0;
+                }
+                // Inside a pane of this daemon: the screen goes to the new session.
+                return switch_from_pane(&options, &created);
+            }
+            attach_command(&options, None, CreateMode::Always, name, command)
         }
         "attach" => {
             let mut target = None;
@@ -105,6 +118,12 @@ fn run(mut args: Vec<String>) -> u8 {
                     }
                     other => return usage_error(&format!("unexpected argument {other}")),
                 }
+            }
+            if in_own_pane(&options) {
+                let Some(target) = target else {
+                    return usage_error("inside a pane, attach needs -t <session>");
+                };
+                return switch_from_pane(&options, &target);
             }
             attach_command(&options, target, CreateMode::Never, None, Vec::new())
         }
@@ -265,6 +284,80 @@ fn attach_command(
         rows: 0,
     };
     client::attach(connection, request) as u8
+}
+
+/// Running in a pane of the very daemon this command talks to: attaching here would draw an
+/// Arcade inside Arcade.
+fn in_own_pane(options: &Options) -> bool {
+    std::env::var_os("ARCADE_PANE").is_some()
+        && std::env::var_os("ARCADE").is_some_and(|v| PathBuf::from(v) == options.socket)
+}
+
+/// Move the screen that shows this pane to another session.
+fn switch_from_pane(options: &Options, session: &str) -> u8 {
+    let pane = std::env::var("ARCADE_PANE")
+        .ok()
+        .and_then(|p| p.parse::<u64>().ok());
+    simple_command(
+        options,
+        "session.switch",
+        &[session.to_string()],
+        pane,
+        false,
+    )
+}
+
+/// Create a session without showing it: attach, wait for the answer, and let go. Needs no
+/// terminal. Returns the name of the new session.
+fn create_detached(
+    options: &Options,
+    new_name: Option<String>,
+    command: Vec<String>,
+) -> Result<String, u8> {
+    let mut connection = match open_connection(options, true) {
+        Ok(Handshake::Ok(connection)) => connection,
+        Ok(Handshake::Mismatch { daemon, client, .. }) => {
+            eprintln!("{}", mismatch_message(daemon, client));
+            return Err(1);
+        }
+        Err(code) => return Err(code),
+    };
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let env = std::env::vars().map(|(k, v)| format!("{k}={v}")).collect();
+    let request = AttachRequest {
+        session: None,
+        create: CreateMode::Always,
+        new_name,
+        command,
+        cwd,
+        env,
+        cols: 80,
+        rows: 24,
+    };
+    if let Err(e) = connection.send(&ClientMessage::Attach(request)) {
+        eprintln!("arcade: {e}");
+        return Err(1);
+    }
+    loop {
+        match connection.receive() {
+            Ok(Some(ServerMessage::Attached { session })) => return Ok(session),
+            Ok(Some(ServerMessage::CommandResult { ok: false, output })) => {
+                eprintln!("arcade: {output}");
+                return Err(1);
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                eprintln!("arcade: the server closed the connection");
+                return Err(1);
+            }
+            Err(e) => {
+                eprintln!("arcade: {e}");
+                return Err(1);
+            }
+        }
+    }
 }
 
 fn command_result(

@@ -479,6 +479,54 @@ fn the_pane_can_run_a_command_back_on_its_own_daemon() {
         .unwrap();
 }
 
+/// Inside a pane, `arcade new` and `arcade attach` move the screen to another session of the
+/// same daemon instead of drawing an Arcade inside the pane.
+#[test]
+fn new_and_attach_inside_a_pane_switch_the_screen_instead_of_nesting() {
+    let env = Env::new();
+    let mut host = env.host(&["new", "-s", "a"]);
+    host.wait_for_prompt().unwrap();
+    host.type_line("arcade new -s b; echo code-$?");
+    // The screen now belongs to `b`, and has one status bar.
+    let ok = host.wait_until(WAIT, |h| {
+        h.screen_rows().last().is_some_and(|r| r.contains(" b "))
+    });
+    assert!(ok, "{}", host.screen_text());
+    let ls = env.sessions();
+    assert!(ls.contains("a: ") && ls.contains("b: "), "{ls}");
+    let bars = host
+        .screen_rows()
+        .iter()
+        .filter(|r| r.contains(" b ") && r.contains(" 1 "))
+        .count();
+    assert_eq!(bars, 1, "{}", host.screen_text());
+    host.wait_for_prompt().unwrap();
+    host.type_line("arcade attach -t a");
+    let ok = host.wait_until(WAIT, |h| {
+        h.screen_rows().last().is_some_and(|r| r.contains(" a "))
+    });
+    assert!(ok, "{}", host.screen_text());
+    // The command that was typed in `a` first is still there, and it ended with code 0.
+    host.wait_for_text("code-0").unwrap();
+}
+
+/// `arcade new -d` creates a session and does not attach, with or without a terminal.
+#[test]
+fn new_with_d_creates_a_session_without_attaching() {
+    let env = Env::new();
+    let out = env.plain(&["new", "-d", "-s", "c"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // The daemon notices the connection closing a moment after the command ends.
+    let start = Instant::now();
+    let mut ls = env.sessions();
+    while ls.contains("(attached)") && start.elapsed() < WAIT {
+        std::thread::sleep(Duration::from_millis(10));
+        ls = env.sessions();
+    }
+    assert!(ls.contains("c: 1 window, 1 pane"), "{ls}");
+    assert!(!ls.contains("(attached)"), "{ls}");
+}
+
 /// Core scenario 11: `arcade run pane.split-right` from a shell in a pane splits that pane.
 #[test]
 fn a_command_run_from_a_pane_acts_on_that_panes_window() {
