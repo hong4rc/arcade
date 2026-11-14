@@ -259,6 +259,8 @@ struct Session {
 
 /// The shortest time between two looks at the panes' directories for the windows' names.
 const NAME_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+/// How long, at most, to wait for the last output of a pane whose process has ended.
+const EXIT_OUTPUT_WAIT_MS: i32 = 50;
 
 /// The size of the area the windows have, inside a client terminal of this size: the status bar
 /// takes one row when it shows (and there is more than one row).
@@ -1414,7 +1416,12 @@ impl Server {
         let exited = std::mem::take(&mut self.exited);
         for pane_id in exited {
             // What the process wrote just before it ended is still in the terminal's buffer.
-            // Bounded, so a background job that keeps the terminal open cannot hold us here.
+            // Bounded, so a background job that keeps the terminal open cannot hold us here: the
+            // wait is short, and so is the number of reads. The output can reach the master a
+            // moment after the exit notice does, so a first look waits for it.
+            if let Some(pane) = self.panes.get(&pane_id) {
+                pty::wait_readable(pane.master.as_raw_fd(), EXIT_OUTPUT_WAIT_MS);
+            }
             for _ in 0..16 {
                 self.read_pane(pane_id, PANE_READ_LIMIT);
                 let more = self.panes.get(&pane_id).is_some_and(|p| p.read_pending);

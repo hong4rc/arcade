@@ -200,3 +200,17 @@ pub fn process_cwd(pid: i32) -> Option<String> {
         .ok()
         .map(|p| p.display().to_string())
 }
+
+/// Wait up to `millis` for `fd` to have something to read or to be hung up. Used for a pane
+/// whose process has ended: its last output may reach the master a moment after the exit.
+pub fn wait_readable(fd: std::os::fd::RawFd, millis: i32) {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: poll on one live pollfd.
+    unsafe {
+        libc::poll(&mut pfd, 1, millis);
+    }
+}
