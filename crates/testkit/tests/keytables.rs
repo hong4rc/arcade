@@ -604,13 +604,14 @@ fn a_prefix_set_to_ctrl_b_works_with_the_old_byte() {
 }
 
 fn hint_is_shown(client: &TestClient) -> bool {
-    client.screen_text().contains("After ctrl+m")
+    client.status_row().contains("all keys")
 }
 
 #[test]
-fn the_prefix_with_no_key_after_it_shows_the_hint_and_a_key_closes_it_and_runs() {
+fn the_prefix_with_no_key_after_it_puts_the_hint_on_the_status_bar_and_a_key_restores_it() {
     let daemon = TestDaemon::start();
     let mut client = raw_pane(&daemon);
+    let panes_before = client.content_rows();
     client.send(PREFIX);
     // Not at once: the hint waits for half a second.
     std::thread::sleep(Duration::from_millis(100));
@@ -622,32 +623,80 @@ fn the_prefix_with_no_key_after_it_shows_the_hint_and_a_key_closes_it_and_runs()
         "{}",
         client.screen_text()
     );
-    let text = client.screen_text();
+    let line = client.status_row();
     assert!(
-        text.contains("pane.split-right") && text.contains("window.new"),
-        "{text}"
+        line.contains("| - split") && line.contains("c new") && line.contains("1-9 win"),
+        "{line}"
     );
-    let row_of = |needle: &str| {
-        text.lines()
-            .find(|l| l.contains(needle))
-            .unwrap()
-            .to_string()
-    };
-    assert!(row_of("pane.split-right").contains("| "), "{text}");
-    assert!(row_of("window.new").contains("c "), "{text}");
-    // The nine numbered window keys are one line, and the whole box is on the screen.
-    assert!(row_of("window.select").contains("1-9"), "{text}");
-    assert_eq!(text.matches("window.select").count(), 1, "{text}");
-    assert!(text.contains('└'), "{text}");
-    // A key closes it and its action runs as it always does.
+    assert!(line.trim_end().ends_with("? all keys"), "{line}");
+    // Nothing is drawn over the panes: every cell of that area is as it was.
+    assert_eq!(client.content_rows(), panes_before);
+    // A key brings the bar back and its action runs as it always does.
     client.send(b"c");
     assert!(
         client.wait_until(WAIT, |c| !hint_is_shown(c)),
         "{}",
         client.screen_text()
     );
+    assert!(
+        client.status_row().contains("2 "),
+        "{}",
+        client.status_row()
+    );
     let (_, windows) = daemon.command("window.list", &[]).unwrap();
     assert_eq!(windows.lines().count(), 2, "{windows}");
+}
+
+#[test]
+fn the_hint_fits_a_narrow_terminal_and_still_ends_with_the_key_list() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon
+        .attach(
+            arcade_testkit::AttachOptions::new()
+                .size(40, 12)
+                .named("narrow"),
+        )
+        .unwrap();
+    client.wait_for_prompt().unwrap();
+    client.send(PREFIX);
+    std::thread::sleep(Duration::from_millis(560));
+    assert!(
+        client.wait_until(WAIT, |c| hint_is_shown(c)),
+        "{}",
+        client.screen_text()
+    );
+    let line = client.status_row();
+    assert!(line.chars().count() <= 40, "{line:?}");
+    assert!(line.trim_end().ends_with("? all keys"), "{line}");
+}
+
+#[test]
+fn rebinding_a_key_changes_the_hint() {
+    let dir = std::env::temp_dir().join(format!("arc-hint-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("config.toml");
+    std::fs::write(
+        &file,
+        "[keys.prefix]\n\"b\" = \"pane.zoom\"\n\"z\" = false\n",
+    )
+    .unwrap();
+    let path = file.clone();
+    let daemon = TestDaemon::start_with(move |c| c.config_path = Some(path));
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    client.send(PREFIX);
+    std::thread::sleep(Duration::from_millis(560));
+    assert!(
+        client.wait_until(WAIT, |c| hint_is_shown(c)),
+        "{}",
+        client.screen_text()
+    );
+    let line = client.status_row();
+    assert!(
+        line.contains("b zoom") && !line.contains("z zoom"),
+        "{line}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

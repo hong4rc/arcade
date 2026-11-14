@@ -187,11 +187,16 @@ impl Server {
             keytools::Reply::Keyboard => s.host_probe = Some(true),
             keytools::Reply::Attributes => {
                 s.host_probe = None;
-                s.host_keyboard = Some(if kitty {
+                let host = if kitty {
                     keytools::Host::Kitty
                 } else {
                     keytools::Host::Legacy
-                });
+                };
+                s.host_keyboard = Some(host);
+                let client = s.client;
+                if let Some(c) = client.and_then(|id| self.clients.get_mut(&id)) {
+                    c.host_keyboard = Some(host);
+                }
                 if let Some(line) = self.key_warning_line(session_id) {
                     self.set_message(session_id, &line);
                 }
@@ -266,10 +271,8 @@ impl Server {
                 s.key_state.hint_shown = false;
             } else if was_awaiting {
                 s.key_state.hint_at = None;
-                if std::mem::take(&mut s.key_state.hint_shown) {
-                    // What the hint covered is drawn again.
-                    s.relayout = true;
-                }
+                // The bar the hint replaced is drawn again (chrome_dirty is set above).
+                s.key_state.hint_shown = false;
             }
         }
     }

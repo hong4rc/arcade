@@ -51,7 +51,7 @@ The four default movement keys are `h` (left), `j` (down), `k` (up), `l` (right)
 
 ### 3.1 After the prefix (Ctrl+m)
 
-If half a second after the prefix nothing else is pressed, a small panel appears that lists the keys of this table (keys with the same action share one line, for example `h/left`). Pressing a key closes the panel and the action runs as usual. There is no way to turn this panel off yet.
+If half a second after the prefix nothing else is pressed, the status bar is replaced by one line of hints taken from the key table in force, for example `| - split  hjkl focus  HJKL size  c new  1-9 win  t tree  a notes  z zoom  [ copy  ? all keys`. A line that is too narrow is cut from the end but always keeps `? all keys`, which opens the full list. Pressing a key brings the bar back and the action runs as usual. The panes are never drawn over. Rebinding a key changes the line; with `[status] position = "off"` there is no bar and so no hint.
 
 "Repeat" means that after the key, the prefix key table stays open for `repeat-window-ms` (600 ms by default), so the next key can be pressed at once without the prefix.
 

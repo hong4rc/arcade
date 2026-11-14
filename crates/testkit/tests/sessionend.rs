@@ -124,3 +124,35 @@ fn closing_the_session_from_outside_follows_the_same_rule() {
     client.wait_for_row("only-in-beta").unwrap();
     assert!(!client.is_closed());
 }
+
+/// A terminal with old key codes answers the keyboard question once; moving to another session
+/// does not ask again, and the line about keys that cannot work does not cover the news.
+#[test]
+fn the_news_of_the_move_is_not_covered_by_the_line_about_keys_that_cannot_work() {
+    let daemon = TestDaemon::start();
+    detached_session(&daemon, "beta");
+    let mut client = attached_session(&daemon, "alpha");
+    client.send(b"\x1b[?62;22c");
+    assert!(
+        client.wait_until(WAIT, |c| c.status_row().contains("cannot work here")),
+        "{}",
+        client.status_row()
+    );
+    end_the_session(&mut client);
+    client.wait_for_row("only-in-beta").unwrap();
+    assert!(
+        client.wait_until(WAIT, |c| c
+            .status_row()
+            .contains("session alpha ended; now in beta")),
+        "{}",
+        client.status_row()
+    );
+    // No second question was sent: the line stays the news until it goes away by itself.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    client.read_more(std::time::Instant::now() + std::time::Duration::from_millis(50));
+    assert!(
+        client.status_row().contains("now in beta"),
+        "{}",
+        client.status_row()
+    );
+}

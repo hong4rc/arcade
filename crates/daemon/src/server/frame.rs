@@ -11,6 +11,7 @@ fn status_info(
     copy: bool,
     unlock_key: Option<String>,
     notices: &crate::notify::Store,
+    hint: Option<String>,
 ) -> StatusInfo {
     StatusInfo {
         session: s.name.clone(),
@@ -32,6 +33,7 @@ fn status_info(
         notices: notices.counts(s.all_panes()),
         message: s.key_state.message.clone(),
         prompt: s.key_state.status_prompt(),
+        hint,
     }
 }
 
@@ -283,9 +285,13 @@ impl Server {
             session.screen.draw_dividers(&dividers, origin, focus_rect);
             if let Some(y) = status_row(rows, status_position) {
                 let copy_on = self.panes.get(&focus).is_some_and(|p| p.copy.is_some());
+                let hint = (session.picker.is_none()
+                    && session.tree.is_none()
+                    && session.key_state.hint_visible())
+                .then(|| crate::keymap::hint_line(&self.keymap.prefix, usize::from(cols)));
                 let (cells, prompt_cursor) = status::build(
                     cols,
-                    &status_info(session, copy_on, unlock_key, &self.notices),
+                    &status_info(session, copy_on, unlock_key, &self.notices, hint),
                 );
                 session.screen.set_row(y, cells);
                 cursor_override = prompt_cursor.map(|x| (x, y));
@@ -299,15 +305,6 @@ impl Server {
         }
         if let Some(tree) = &session.tree {
             let drawn = tree.draw(cols, rows);
-            session.screen.overlay(drawn.x, drawn.y, &drawn.rows);
-        }
-        if !picker_open && session.key_state.hint_visible() {
-            let lines = crate::keymap::hint_lines(&self.keymap.prefix);
-            let title = format!(
-                "After {}",
-                crate::keymap::typed_name(self.config.keys.prefix)
-            );
-            let drawn = crate::picker::draw_hint(&title, &lines, cols, rows);
             session.screen.overlay(drawn.x, drawn.y, &drawn.rows);
         }
         let cursor_override = if picker_open {

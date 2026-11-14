@@ -370,6 +370,9 @@ struct Client {
     close_after_flush: bool,
     read_pending: bool,
     gone: bool,
+    /// What this client's terminal can send, once it answered; kept when the client moves to
+    /// another session, so the question is asked once for each time a client attaches.
+    host_keyboard: Option<crate::keytools::Host>,
 }
 
 enum Target {
@@ -768,6 +771,7 @@ impl Server {
                             out_pos: 0,
                             state: ClientState::New,
                             close_after_flush: false,
+                            host_keyboard: None,
                             read_pending: false,
                             gone: false,
                         },
@@ -1074,6 +1078,7 @@ impl Server {
                 "detached: another client attached to this session",
             );
         }
+        let known_host = self.clients.get(&id).and_then(|c| c.host_keyboard);
         self.use_counter += 1;
         let name = {
             let Some(session) = self.sessions.get_mut(&session_id) else {
@@ -1087,9 +1092,10 @@ impl Server {
             session.tree = None;
             // A person who attaches is looking at the terminal.
             session.host_focused = true;
-            // What this terminal can send is asked again for every client.
-            session.host_keyboard = None;
-            session.host_probe = Some(false);
+            // What this terminal can send is asked once for each client; a client that moves
+            // over from another session has answered already.
+            session.host_keyboard = known_host;
+            session.host_probe = known_host.is_none().then_some(false);
             if let Some(message) = self.startup_message.take() {
                 session.key_state.show_message(message, Instant::now());
             }
@@ -1105,7 +1111,9 @@ impl Server {
             session.drag = None;
         }
         self.send(id, &ServerMessage::Attached { session: name });
-        self.send_output(id, crate::keytools::HOST_QUERY);
+        if known_host.is_none() {
+            self.send_output(id, crate::keytools::HOST_QUERY);
+        }
         self.resize_session(session_id, cols, rows);
     }
 

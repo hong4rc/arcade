@@ -175,58 +175,108 @@ pub fn parse_key(text: &str) -> Result<Key, String> {
 /// The words for a key, as `parse_key` reads them.
 /// The key as a person would say it: what was typed (`?`, `A`, `|`) for a shifted symbol or
 /// letter, and `key_name` for the rest. The symbols are those of the US layout, as in `normalize`.
-/// The lines of the key hint: one for each thing the table does, with the keys that do it
-/// (`h/left`), in the order of the things.
-pub fn hint_lines(table: &Table) -> Vec<String> {
-    let mut by_action: Vec<(String, Vec<String>)> = Vec::new();
-    for (key, b) in table {
-        let action = if b.args.is_empty() {
-            b.command.clone()
+/// One word of the hint line: the commands whose keys are shown, and what to call them.
+const HINT_ITEMS: &[(&[&str], &str)] = &[
+    (&["pane.split-right", "pane.split-down"], "split"),
+    (
+        &[
+            "pane.focus-left",
+            "pane.focus-down",
+            "pane.focus-up",
+            "pane.focus-right",
+        ],
+        "focus",
+    ),
+    (
+        &[
+            "pane.resize-left",
+            "pane.resize-down",
+            "pane.resize-up",
+            "pane.resize-right",
+        ],
+        "size",
+    ),
+    (&["window.new"], "new"),
+    (&["window.select"], "win"),
+    (&["tree.open"], "tree"),
+    (&["notification.list"], "notes"),
+    (&["pane.zoom"], "zoom"),
+    (&["copy.enter"], "copy"),
+];
+
+/// The key of `table` that runs `command` (with `arg` when given), as a person types it. A key
+/// without modifiers comes first, then the shortest name.
+fn hint_key(table: &Table, command: &str, arg: Option<&str>) -> Option<String> {
+    let mut found: Vec<(bool, String)> = table
+        .iter()
+        .filter(|(_, b)| {
+            b.command == command
+                && match arg {
+                    Some(a) => b.args.len() == 1 && b.args[0] == a,
+                    None => b.args.is_empty(),
+                }
+        })
+        .map(|(k, _)| {
+            let plain_key = !k.mods.ctrl && !k.mods.alt && !k.mods.super_key;
+            (!plain_key, typed_name(*k))
+        })
+        .collect();
+    found.sort_by(|a, b| (a.0, a.1.chars().count(), &a.1).cmp(&(b.0, b.1.chars().count(), &b.1)));
+    found.into_iter().next().map(|(_, name)| name)
+}
+
+/// The keys of one item of the hint line, or `None` when one of its commands has no key.
+fn hint_keys(table: &Table, commands: &[&str]) -> Option<String> {
+    if commands == ["window.select"] {
+        let digits: Vec<u32> = (1..=9u32)
+            .filter(|n| hint_key(table, "window.select", Some(&n.to_string())).is_some())
+            .collect();
+        let (first, last) = (digits.first()?, digits.last()?);
+        return Some(if digits.len() == 1 {
+            first.to_string()
         } else {
-            format!("{} {}", b.command, b.args.join(" "))
-        };
-        match by_action.iter_mut().find(|(a, _)| *a == action) {
-            Some((_, keys)) => keys.push(typed_name(*key)),
-            None => by_action.push((action, vec![typed_name(*key)])),
+            format!("{first}-{last}")
+        });
+    }
+    let keys: Vec<String> = commands
+        .iter()
+        .map(|c| hint_key(table, c, None))
+        .collect::<Option<_>>()?;
+    // Single characters run together (`hnei`); longer names (`left`) are told apart by spaces.
+    let sep = if keys.iter().all(|k| k.chars().count() == 1) && commands.len() > 2 {
+        ""
+    } else {
+        " "
+    };
+    Some(keys.join(sep))
+}
+
+/// The hint that takes the place of the status bar after the prefix: the commonly used keys of
+/// `table` in a fixed order, cut from the end to fit in `width` cells, always ending with the key
+/// that lists every key. Taken from the table, so a rebound key shows as it is bound now.
+pub fn hint_line(table: &Table, width: usize) -> String {
+    let last = hint_key(table, "keys.list", None).map(|k| format!("{k} all keys"));
+    let items: Vec<String> = HINT_ITEMS
+        .iter()
+        .filter_map(|(commands, label)| {
+            hint_keys(table, commands).map(|keys| format!("{keys} {label}"))
+        })
+        .collect();
+    let join = |count: usize| {
+        let mut parts: Vec<&str> = items.iter().take(count).map(String::as_str).collect();
+        if let Some(last) = &last {
+            parts.push(last);
+        }
+        format!(" {}", parts.join("  "))
+    };
+    for count in (0..=items.len()).rev() {
+        let line = join(count);
+        if line.chars().count() <= width {
+            return line;
         }
     }
-    // The keys that select a window by number, when they are one run of digits, are one line.
-    let numbered: Vec<(String, Vec<String>)> = by_action
-        .iter()
-        .filter(|(a, _)| a.starts_with("window.select "))
-        .cloned()
-        .collect();
-    let digits: Vec<u32> = numbered
-        .iter()
-        .filter_map(|(_, keys)| match keys.as_slice() {
-            [k] => k.parse().ok(),
-            _ => None,
-        })
-        .collect();
-    if numbered.len() > 1
-        && digits.len() == numbered.len()
-        && let (Some(&first), Some(&last)) = (digits.iter().min(), digits.iter().max())
-        && (last - first) as usize + 1 == digits.len()
-    {
-        by_action.retain(|(a, _)| !a.starts_with("window.select "));
-        by_action.push(("window.select".to_string(), vec![format!("{first}-{last}")]));
-    }
-    by_action.sort();
-    let keys: Vec<(String, String)> = by_action
-        .into_iter()
-        .map(|(action, mut keys)| {
-            keys.sort();
-            (keys.join("/"), action)
-        })
-        .collect();
-    let width = keys
-        .iter()
-        .map(|(k, _)| k.chars().count())
-        .max()
-        .unwrap_or(0);
-    keys.into_iter()
-        .map(|(k, action)| format!("{k:<width$}  {action}"))
-        .collect()
+    // Not even the last item fits: what fits of it.
+    join(0).chars().take(width).collect()
 }
 
 pub fn typed_name(key: Key) -> String {
@@ -662,25 +712,67 @@ impl Keymap {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+
+    fn default_map() -> Keymap {
+        Keymap::defaults(&KeysConfig::default())
+    }
 
     #[test]
-    fn the_hint_joins_the_keys_that_select_a_window_by_number_into_one_line() {
-        let map = Keymap::defaults(&KeysConfig::default());
-        let lines = hint_lines(&map.prefix);
-        let numbered: Vec<&String> = lines
-            .iter()
-            .filter(|l| l.contains("window.select"))
-            .collect();
-        assert_eq!(numbered.len(), 1, "{numbered:?}");
-        assert!(numbered[0].starts_with("1-9 "), "{numbered:?}");
-        // The other lines keep every key of their action.
-        assert!(
-            lines
-                .iter()
-                .any(|l| l.starts_with("h/left") && l.contains("pane.focus-left"))
+    fn the_hint_line_names_the_common_keys_and_ends_with_the_key_list() {
+        let line = hint_line(&default_map().prefix, 200);
+        assert_eq!(
+            line,
+            " | - split  hjkl focus  HJKL size  c new  1-9 win  t tree  a notes  z zoom  [ copy  ? all keys"
         );
     }
+
+    #[test]
+    fn a_narrow_hint_line_is_cut_from_the_end_but_keeps_the_key_list() {
+        for width in [20usize, 40, 60, 79] {
+            let line = hint_line(&default_map().prefix, width);
+            assert!(line.chars().count() <= width, "{width}: {line}");
+            assert!(line.ends_with("? all keys"), "{width}: {line}");
+            if width >= 30 {
+                assert!(line.starts_with(" | - split"), "{width}: {line}");
+            }
+        }
+        assert!(hint_line(&default_map().prefix, 12).chars().count() <= 12);
+    }
+
+    #[test]
+    fn the_hint_line_follows_a_rebound_key() {
+        let mut map = default_map();
+        let zoom = Key {
+            code: Code::Char('z'),
+            mods: Mods::NONE,
+        };
+        map.prefix.remove(&zoom);
+        let new_zoom = Key {
+            code: Code::Char('b'),
+            mods: Mods::NONE,
+        };
+        bind(&mut map.prefix, new_zoom, "pane.zoom", &[], false);
+        let line = hint_line(&map.prefix, 200);
+        assert!(line.contains("b zoom"), "{line}");
+        assert!(!line.contains("z zoom"), "{line}");
+        // A command with no key at all is left out.
+        map.prefix.remove(&new_zoom);
+        assert!(!hint_line(&map.prefix, 200).contains("zoom"));
+    }
+
+    #[test]
+    fn the_hint_line_uses_the_movement_letters_of_the_configuration() {
+        let config = KeysConfig {
+            nav: ['h', 'n', 'e', 'i'],
+            ..KeysConfig::default()
+        };
+        let line = hint_line(&Keymap::defaults(&config).prefix, 200);
+        assert!(
+            line.contains("hnei focus") && line.contains("HNEI size"),
+            "{line}"
+        );
+    }
+    use super::*;
 
     fn k(text: &str) -> Key {
         parse_key(text).unwrap()

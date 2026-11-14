@@ -39,6 +39,8 @@ pub struct StatusInfo {
     /// A line shown in place of the bar until the next key.
     pub message: Option<String>,
     pub prompt: Option<Prompt>,
+    /// The key hint, shown in place of the bar while the prefix is waiting for a key.
+    pub hint: Option<String>,
 }
 
 /// The cells of the bar, and the column the host's cursor should go to while a prompt is open.
@@ -51,6 +53,10 @@ pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
         let cursor = cells.len().min(width.saturating_sub(1));
         cells = fit(cells, width, style);
         return (cells, Some(cursor as u16));
+    }
+    if let Some(hint) = &info.hint {
+        let style = theme::style(Role::StatusBar);
+        return (fit(text_cells(hint, style), width, style), None);
     }
     if let Some(message) = &info.message {
         let style = theme::style(Role::Message);
@@ -176,6 +182,7 @@ mod tests {
             notices: [0; 4],
             message: None,
             prompt: None,
+            hint: None,
         }
     }
 
