@@ -15,6 +15,11 @@ pub trait Source {
     /// Rows in all: the scrollback and the visible rows.
     fn total(&self) -> usize;
     fn line(&self, y: usize) -> Option<Line>;
+    /// The row that was marked as the one to follow (see `Term::anchor_last_row`), where it is
+    /// now. A source that cannot say leaves copy mode to compare what the rows say.
+    fn anchor_row(&self) -> Option<usize> {
+        None
+    }
 }
 
 impl Source for arcade_term::Term {
@@ -24,6 +29,10 @@ impl Source for arcade_term::Term {
 
     fn line(&self, y: usize) -> Option<Line> {
         arcade_term::Term::line(self, y)
+    }
+
+    fn anchor_row(&self) -> Option<usize> {
+        arcade_term::Term::anchor_row(self)
     }
 }
 
@@ -77,6 +86,8 @@ pub struct Copy {
     /// What the oldest row, the cursor's row and the selected row said when copy mode last
     /// looked, to find them again when old lines have been cut off the top of the scrollback.
     marks: Marks,
+    /// Where the followed row (see `Source::anchor_row`) was when copy mode last looked.
+    anchor: Option<usize>,
 }
 
 #[derive(Default)]
@@ -300,6 +311,7 @@ impl Copy {
             dirty: true,
             by_wheel: false,
             marks: Marks::default(),
+            anchor: None,
         }
         .remembered(src)
     }
@@ -310,6 +322,7 @@ impl Copy {
     }
 
     fn remember<S: Source>(&mut self, src: &S) {
+        self.anchor = src.anchor_row();
         self.marks = Marks {
             first: signature(src, 0),
             cursor: signature(src, self.row),
@@ -318,25 +331,38 @@ impl Copy {
     }
 
     /// A full scrollback loses its oldest lines as the program prints, and every row number
-    /// moves up by that many. When the oldest row no longer says what it said, find the cursor's
-    /// line again and move the cursor, the view and the selection with it. A selection whose
-    /// line is gone is dropped, and the message says so.
+    /// moves up by that many. The followed row says how many exactly; a source that cannot say
+    /// is read for it: when the oldest row no longer says what it said, the cursor's line is
+    /// found again by its text (which cannot tell identical lines apart). The cursor, the view
+    /// and the selection move with their lines. A selection whose line is gone is dropped, and
+    /// the message says so.
     fn follow<S: Source>(&mut self, src: &S) -> Option<String> {
-        if signature(src, 0) == self.marks.first {
+        let exact = match (self.anchor, src.anchor_row()) {
+            (Some(was), Some(now)) if now == was => return None,
+            // A followed row at the very top may be one whose line was cut off itself.
+            (Some(was), Some(now)) if now > 0 && now < was => Some(was - now),
+            _ => None,
+        };
+        if exact.is_none() && signature(src, 0) == self.marks.first {
             return None;
         }
         let gone = || "the selected text is no longer in the scrollback".to_string();
         let mut message = None;
-        let cut = (1..=self.row.min(FOLLOW_LIMIT))
-            .find(|k| signature(src, self.row - k) == self.marks.cursor);
+        let cut = match exact {
+            Some(k) if k <= self.row => Some(k),
+            Some(_) => None,
+            None => (1..=self.row.min(FOLLOW_LIMIT))
+                .find(|k| signature(src, self.row - k) == self.marks.cursor),
+        };
         match cut {
             Some(k) => {
                 self.row -= k;
                 self.top = self.top.saturating_sub(k);
                 if let Some(selection) = self.selection.as_mut() {
                     let same = selection.row >= k
-                        && self.marks.selection.as_deref()
-                            == Some(signature(src, selection.row - k).as_str());
+                        && (exact.is_some()
+                            || self.marks.selection.as_deref()
+                                == Some(signature(src, selection.row - k).as_str()));
                     if same {
                         selection.row -= k;
                     } else {
@@ -845,6 +871,76 @@ mod tests {
         // is row 3.
         assert_eq!(c.row, 5);
         assert_eq!(c.selection.map(|s| s.row), Some(3));
+    }
+
+    /// A real terminal whose scrollback is full of the same line, with one line that is unique
+    /// and a cursor a fixed distance below it.
+    fn identical_lines_with_a_mark() -> (arcade_term::Term, Copy, usize) {
+        let mut config = arcade_term::TermConfig::new(20, 5);
+        config.scrollback_lines = 100;
+        let mut term = arcade_term::Term::new(config).unwrap();
+        feed_lines(&mut term, "same", 2500);
+        feed_lines(&mut term, "MARK", 1);
+        feed_lines(&mut term, "same", 100);
+        let distance = 50;
+        let at = mark_row(&term).unwrap() + distance;
+        term.anchor_last_row();
+        let mut c = Copy::enter(&term, term.cursor_position(), 20, 5);
+        c.go(&term, at, 0);
+        (term, c, distance)
+    }
+
+    fn feed_lines(term: &mut arcade_term::Term, text: &str, count: usize) {
+        for _ in 0..count {
+            term.feed(format!("{text}\r\n").as_bytes());
+        }
+    }
+
+    fn mark_row(term: &arcade_term::Term) -> Option<usize> {
+        (0..term.total_rows()).find(|y| {
+            term.line(*y)
+                .is_some_and(|l| cells_text(&l.cells).trim_end() == "MARK")
+        })
+    }
+
+    #[test]
+    fn the_cursor_keeps_its_line_when_identical_lines_are_cut_off_the_top() {
+        let (mut term, mut c, distance) = identical_lines_with_a_mark();
+        let before = mark_row(&term).unwrap();
+        // Print the same line until the library has cut old lines off the top (it does so a
+        // page at a time).
+        let mut cut = 0;
+        for _ in 0..60 {
+            feed_lines(&mut term, "same", 200);
+            cut = before - mark_row(&term).unwrap_or(before);
+            if cut > 0 {
+                break;
+            }
+        }
+        assert!(cut > 0, "no line was cut off the top");
+        c.scroll(&term, 0);
+        assert_eq!(
+            c.row - mark_row(&term).unwrap(),
+            distance,
+            "{cut} lines were cut off the top"
+        );
+    }
+
+    #[test]
+    fn the_selection_keeps_its_line_when_identical_lines_are_cut_off_the_top() {
+        let (mut term, mut c, distance) = identical_lines_with_a_mark();
+        c.apply(&term, CopyCommand::SelectLine);
+        let before = mark_row(&term).unwrap();
+        for _ in 0..60 {
+            feed_lines(&mut term, "same", 200);
+            if mark_row(&term).is_some_and(|m| m < before) {
+                break;
+            }
+        }
+        c.scroll(&term, 0);
+        let mark = mark_row(&term).unwrap();
+        assert_eq!(c.selection.map(|s| s.row), Some(mark + distance));
+        assert_eq!(c.row, mark + distance);
     }
 
     #[test]

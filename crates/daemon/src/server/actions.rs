@@ -432,6 +432,7 @@ impl Server {
             .ok_or_else(|| "no such pane".to_string())?;
         if pane.copy.is_none() {
             let (cols, rows) = (pane.term.cols(), pane.term.rows());
+            pane.term.anchor_last_row();
             pane.copy = Some(Copy::enter(
                 &pane.term,
                 pane.term.cursor_position(),

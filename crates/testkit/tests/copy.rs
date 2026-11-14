@@ -488,3 +488,46 @@ fn a_selected_line_that_was_cut_off_is_dropped_with_a_message() {
         client.clipboard_writes
     );
 }
+
+/// Identical lines printed while copy mode is open: when old lines are cut off the top, the
+/// cursor stays on its line, a fixed distance under the one line that is different.
+#[test]
+fn the_cursor_stays_on_its_line_when_identical_lines_are_cut_from_a_full_scrollback() {
+    let daemon = TestDaemon::start_with(|c| c.scrollback_lines = 200);
+    let dir = scratch();
+    let marker = dir.join("printed");
+    // A wide terminal makes the library cut off few lines at a time.
+    let mut client = daemon
+        .attach(AttachOptions::new().size(400, 30).named("copy"))
+        .unwrap();
+    client.wait_for_prompt().unwrap();
+    client.type_line(&format!(
+        "{{ yes same | head -n 600; echo MARK; yes same | head -n 12; }}; (sleep 1; yes same | head -n 200; touch '{}') &",
+        marker.display()
+    ));
+    client.wait_until(WAIT, |c| row_of(c, "MARK").is_some());
+    enter(&mut client);
+    // Three lines under the line that is different.
+    search(&mut client, false, "MARK");
+    client.wait_until(WAIT, |c| row_of(c, "MARK").is_some());
+    for _ in 0..3 {
+        client.send(b"j");
+    }
+    let cursor_row = |c: &TestClient| usize::from(c.screen.cursor_position().1);
+    assert!(client.wait_until(WAIT, |c| {
+        row_of(c, "MARK").is_some_and(|m| cursor_row(c) == m + 3)
+    }));
+    late_output_taken_in(&mut client, &marker);
+    // The next key is the first that looks again.
+    client.send(b"j");
+    assert!(
+        client.wait_until(WAIT, |c| {
+            row_of(c, "MARK").is_some_and(|m| cursor_row(c) == m + 4)
+        }),
+        "mark at {:?}, cursor at {}\n{}",
+        row_of(&client, "MARK"),
+        cursor_row(&client),
+        client.screen_text()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

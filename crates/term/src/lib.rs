@@ -17,8 +17,9 @@ use std::fmt;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use libghostty_vt::grid_ref::TrackedGridRef;
 use libghostty_vt::mode::Mode as GMode;
-use libghostty_vt::point::{Coordinate, Point};
+use libghostty_vt::point::{Coordinate, Point, Space};
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
 use libghostty_vt::screen::{CellContentTag, CellWide};
 use libghostty_vt::style::{Style as GStyle, StyleColor, Underline as GUnderline};
@@ -255,6 +256,9 @@ pub struct Term {
     string_timeout: Duration,
     /// When set, the parser was left in the middle of a sequence at this time + timeout.
     stuck_deadline: Option<Instant>,
+    /// A row the library keeps track of as lines are cut off the top of a full scrollback, so
+    /// that a reader of the rows can tell how far they moved.
+    anchor: Option<TrackedGridRef>,
 }
 
 impl Term {
@@ -328,6 +332,7 @@ impl Term {
             scrollback_lines: config.scrollback_lines,
             string_timeout: config.string_timeout,
             stuck_deadline: None,
+            anchor: None,
         })
     }
 
@@ -430,6 +435,35 @@ impl Term {
             }
         }
         text.trim_end().to_string()
+    }
+
+    /// Start following the last row of the whole screen. The library moves the followed row up as
+    /// old lines are cut off the top of a full scrollback, whatever those lines say, so
+    /// [`Term::anchor_row`] tells exactly how many were cut.
+    pub fn anchor_last_row(&mut self) {
+        let last = u32::try_from(self.total_rows().saturating_sub(1)).unwrap_or(u32::MAX);
+        let point = Point::Screen(Coordinate { x: 0, y: last });
+        let placed = match self.anchor.as_mut() {
+            Some(anchor) => anchor.set(&mut self.term, point).is_ok(),
+            None => match self.term.track_grid_ref(point) {
+                Ok(anchor) => {
+                    self.anchor = Some(anchor);
+                    true
+                }
+                Err(_) => false,
+            },
+        };
+        if !placed {
+            self.anchor = None;
+        }
+    }
+
+    /// The row, counted from the oldest scrollback line, of the row [`Term::anchor_last_row`]
+    /// chose; `None` when nothing is followed or the row is gone (cut off, or the screen was
+    /// reset).
+    pub fn anchor_row(&self) -> Option<usize> {
+        let point = self.anchor.as_ref()?.point(Space::Screen).ok()??;
+        usize::try_from(point.y).ok()
     }
 
     /// Rows of the whole screen: the scrollback and the visible rows.

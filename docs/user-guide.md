@@ -316,4 +316,3 @@ Things that belong to Phase 1 or to the design but are not in the current build:
 
 - Mouse: double click to select a word, triple click to select a line, an option to copy on release, scrolling by itself when dragging past a pane edge, dragging a border to resize, clicking a tab on the status bar.
 - For after Phase 1: several clients on one session (a second client entering replaces the first), saving and restoring sessions after the daemon stops, rectangle selection, changing layouts by mouse, themes.
-- Copy mode has one known limit: two identical lines next to each other can be off by one line while the content is scrolling.

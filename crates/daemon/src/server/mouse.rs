@@ -215,6 +215,7 @@ impl Server {
         let opened = pane.copy.is_none();
         if opened {
             let (cols, rows) = (pane.term.cols(), pane.term.rows());
+            pane.term.anchor_last_row();
             pane.copy = Some(Copy::enter(
                 &pane.term,
                 pane.term.cursor_position(),
@@ -245,6 +246,7 @@ impl Server {
                 return;
             }
             let (cols, height) = (pane.term.cols(), pane.term.rows());
+            pane.term.anchor_last_row();
             let mut copy = Copy::enter(&pane.term, pane.term.cursor_position(), cols, height);
             copy.by_wheel = true;
             pane.copy = Some(copy);
