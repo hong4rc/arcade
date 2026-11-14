@@ -178,6 +178,9 @@ impl Server {
         match name {
             "server.ping" => return (true, "pong".to_string()),
             "server.check" => return self.check_consistency(),
+            "notify.send" => return self.notify_send(args),
+            "notify.clear" => return self.notify_clear(args),
+            "notify.log" => return self.notify_log(),
             "server.kill" => {
                 self.stopping = Some(Instant::now() + KILL_GRACE);
                 for p in self.panes.values() {

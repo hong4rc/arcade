@@ -104,6 +104,26 @@ pub enum Outcome {
     Superseded,
     /// Dropped: too many signals for this pane within the second; the last one is kept for later.
     RateLimited,
+    /// Dropped by the settings: an `info` signal for a pane that is being looked at.
+    Blocked,
+}
+
+impl Outcome {
+    /// What the log says of it.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Outcome::Created => "created",
+            Outcome::Replaced => "replaced",
+            Outcome::Superseded => "dropped: a higher class from another source stands",
+            Outcome::RateLimited => "dropped: too many signals for the pane in a second",
+            Outcome::Blocked => "blocked: an info signal for the pane in focus",
+        }
+    }
+
+    /// The signal made or changed the notification.
+    pub fn took_effect(self) -> bool {
+        matches!(self, Outcome::Created | Outcome::Replaced)
+    }
 }
 
 #[derive(Default)]

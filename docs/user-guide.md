@@ -250,16 +250,25 @@ A program in a pane can also set the clipboard with OSC 52 when `allow-pane-writ
 - A program that asks for the old xterm mouse reporting forms 1005 or 1015 is recognised. A program that asks for all motion without a button (mode 1003) only receives motion while a button is held.
 
 **5.8 Notifications.** A program in a pane can ask for your attention with a bell (BEL), with `ESC ] 9 ; <message> ST` (OSC 9) or with `ESC ] 777 ; notify ; <title> ; <body> ST` (OSC 777). Each of these makes a notification of the class `info` for that pane, with the source `terminal`. A progress report (`ESC ] 9 ; 4 ; ...`) is not a notification and is ignored, and the kitty notification protocol (OSC 99) is swallowed without making one.
-- A pane has at most one notification. Its mark shows on the tab of its window, at the top right of the pane (when the pane is at least 12 columns wide), and in a counter at the right end of the status bar that counts panes, not signals. Four classes, most urgent first, each with a mark of its own and a colour: `[!]` approval, `[?]` input, `[x]` error, `[i]` info. A window shows its most urgent mark. The class `info` is the only one a program in a pane can make for now; the other three come from `arcade notify` (not built yet).
+- A pane has at most one notification. Its mark shows on the tab of its window, at the top right of the pane (when the pane is at least 12 columns wide), and in a counter at the right end of the status bar that counts panes, not signals. Four classes, most urgent first, each with a mark of its own and a colour: `[!]` approval, `[?]` input, `[x]` error, `[i]` info. A window shows its most urgent mark. A program in a pane can only make `info`; the other three come from `arcade notify` (see 5.9).
 - An `info` notification goes away as soon as you look at the pane (it takes the focus), and is not kept at all for the pane you are looking at. A notification of another class stays until you type into the pane.
 - A notification goes away with its pane, and stays when you detach and attach again.
 - A pane that sends more than 20 signals in a second keeps only the last of the excess.
+- When a pane already has a notification, a new one from the same source replaces it; one from another source replaces it only when its class is at least as urgent, and is dropped otherwise.
+- Good to know: an `ESC ] 777 ; notify ; ; <body> ST` with an empty title counts as a message without a title (the same as OSC 9).
+
+**5.9 `arcade notify`.** For hooks and scripts of other programs: it tells Arcade that a pane needs you.
+- `arcade notify [--class info|input|approval|error] [--title <text>] [--message <text>] [--target <pane>] [--source <name>] [--strict]`. The class is `info` when not given. The pane is the one named by `--target`, or else the one the command runs in (the `ARCADE_PANE` variable that every pane has).
+- `arcade notify clear [--target <pane> | --all]` takes one notification, or all of them, away.
+- `arcade notify check [--target <pane>]` is for you to run by hand: it says which pane and which socket would be used and where the pane came from, tells whether the daemon answers, sends a test `info` notification, and exits with a non-zero code when any step fails.
+- `arcade notify log` lists what became of the last 100 signals (how long ago, from where, class, source, pane, and what happened). It keeps no title and no message.
+- It is made not to disturb the program that calls it: it waits at most 200 milliseconds, never retries, never starts a daemon, never prints, and exits with 0 whatever goes wrong. With `--strict` it prints the reason on the error output and exits with 1. Control characters in the title and message are removed, and the title, message and source are cut to 64, 256 and 32 characters.
 
 ## 6. Not built yet
 
 Things that belong to Phase 1 or to the design but are not in the current build:
 
-- Notification: `arcade notify` (and with it the classes `approval`, `input` and `error`), jumping to the pane that needs you and the list of notifications, passing BEL and OSC on to the outer terminal, jumping back to the pane when the terminal gets the focus again, and the `[notification]` settings.
+- Notification: jumping to the pane that needs you and the list of notifications, passing BEL and OSC on to the outer terminal, jumping back to the pane when the terminal gets the focus again, and the `[notification]` settings.
 - Mouse: double click to select a word, triple click to select a line, an option to copy on release, scrolling by itself when dragging past a pane edge, dragging a border to resize, clicking a tab on the status bar.
 - `arcade keys list` and `arcade keys test` on the command line (inside Arcade, use the prefix then `?`).
 - A warning for bindings that cannot work (beyond the errors of `config check`).

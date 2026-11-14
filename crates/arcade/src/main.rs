@@ -3,6 +3,7 @@
 mod client;
 mod connection;
 mod host;
+mod notify;
 mod wait;
 
 use std::path::PathBuf;
@@ -25,6 +26,14 @@ commands:
   kill-server                     stop the daemon and every session
   run <command> [<argument>...]   run a command, for scripts (for example session.detach)
   config check [<file>]           check the configuration file and list its mistakes
+  notify [--class <info|input|approval|error>] [--title <text>] [--message <text>]
+         [--target <pane>] [--source <name>] [--strict]
+                                  tell Arcade that a pane needs attention (for hooks: it
+                                  stays quiet and exits 0 unless --strict is given)
+  notify clear [--target <pane> | --all] [--strict]
+                                  take a notification away
+  notify check [--target <pane>]  show which pane and socket would be used, and send a test
+  notify log                      show what became of the latest signals
 ";
 
 fn main() -> ExitCode {
@@ -138,6 +147,7 @@ fn run(mut args: Vec<String>) -> u8 {
             [word, file] if word == "check" => config_check(Some(PathBuf::from(file))),
             _ => usage_error("usage: config check [<file>]"),
         },
+        "notify" => notify::run(&options.socket, rest),
         "kill-server" => simple_command(&options, "server.kill", &[], None, true),
         "kill-session" => {
             let mut args_out = Vec::new();

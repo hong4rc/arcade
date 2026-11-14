@@ -383,6 +383,8 @@ struct Server {
     pending_clipboard: HashMap<u64, Vec<u8>>,
     /// The notifications of the panes.
     notices: crate::notify::Store,
+    /// What became of the latest signals, for `arcade notify log`.
+    notice_log: std::collections::VecDeque<notices::LogEntry>,
     stopping: Option<Instant>,
     killed_hard: bool,
     ever_had_session: bool,
@@ -453,6 +455,7 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         exited: Vec::new(),
         pending_clipboard: HashMap::new(),
         notices: crate::notify::Store::default(),
+        notice_log: notices::new_log(),
         stopping: None,
         killed_hard: false,
         ever_had_session: false,
@@ -1474,7 +1477,7 @@ impl Server {
             self.pending_clipboard.insert(pane_id, data);
         }
         for signal in signals {
-            self.signal_pane(pane_id, signal);
+            self.signal_pane(pane_id, signal, notices::Channel::Terminal);
         }
     }
 
