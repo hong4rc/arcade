@@ -5,7 +5,7 @@ use std::time::Duration;
 use arcade_proto::{DetachReason, ServerMessage};
 use arcade_testkit::{AttachOptions, Screened, TestClient, TestDaemon, WAIT};
 
-const CTRL_A: &[u8] = b"\x01";
+const PREFIX: &[u8] = b"\x1b[109;5u";
 
 fn run(daemon: &TestDaemon, name: &str, args: &[&str]) -> (bool, String) {
     daemon.command(name, args).unwrap()
@@ -54,7 +54,7 @@ fn cells(client: &mut TestClient) -> String {
 fn the_session_list_shows_every_session_and_choosing_one_switches_to_it() {
     let daemon = TestDaemon::start();
     let mut client = two_sessions(&daemon);
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"s");
     screen_has(&mut client, "Sessions");
     screen_has(&mut client, "> alpha");
@@ -91,7 +91,7 @@ fn escape_closes_the_list_and_the_screen_is_as_it_was() {
     let daemon = TestDaemon::start();
     let mut client = two_sessions(&daemon);
     let before = cells(&mut client);
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"s");
     screen_has(&mut client, "Sessions");
     assert_ne!(cells(&mut client), before);
@@ -106,7 +106,7 @@ fn escape_closes_the_list_and_the_screen_is_as_it_was() {
 fn the_list_follows_the_movement_keys_of_the_settings() {
     let daemon = TestDaemon::start_with(|c| c.config.keys.nav = ['h', 'n', 'e', 'i']);
     let mut client = two_sessions(&daemon);
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"s");
     screen_has(&mut client, "> alpha");
     client.send(b"n");
@@ -214,7 +214,7 @@ fn the_last_window_of_a_session_cannot_be_moved() {
     assert!(!ok);
     assert!(message.contains("last window"), "{message}");
     // From the keys, the same refusal shows on the status bar and no list opens.
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"m");
     assert!(client.wait_until(WAIT, |c| c.status_row().contains("last window")));
     assert!(!client.screen_text().contains("Move window to"));
@@ -226,7 +226,7 @@ fn the_move_list_leaves_out_the_current_session_and_moves_the_window_on_enter() 
     let mut client = two_sessions(&daemon);
     run(&daemon, "window.new", &[]);
     assert!(client.wait_until(WAIT, |c| c.status_row().contains(" 2 ")));
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"m");
     screen_has(&mut client, "Move window to");
     assert!(

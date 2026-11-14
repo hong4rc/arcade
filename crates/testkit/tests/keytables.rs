@@ -6,10 +6,10 @@ use std::time::Duration;
 use arcade_daemon::parse_key;
 use arcade_testkit::{Screened, TestClient, TestDaemon, WAIT};
 
-const CTRL_A: &[u8] = b"\x01";
-const ALT_LEFT: &[u8] = b"\x1b[1;3D";
-const ALT_RIGHT: &[u8] = b"\x1b[1;3C";
-const ALT_G: &[u8] = b"\x1bg";
+const PREFIX: &[u8] = b"\x1b[109;5u";
+const CTRL_ALT_LEFT: &[u8] = b"\x1b[1;7D";
+const CTRL_ALT_RIGHT: &[u8] = b"\x1b[1;7C";
+const CTRL_ALT_G: &[u8] = b"\x1b[103;7u";
 
 fn run(daemon: &TestDaemon, name: &str, args: &[&str]) {
     let (ok, output) = daemon.command(name, args).unwrap();
@@ -90,7 +90,7 @@ fn direct_keys_move_focus_and_windows_with_one_press() {
     run(&daemon, "pane.split-right", &[]);
     wait_panes(&mut client, &daemon, 2);
     let right = client.focused_pane_id();
-    client.send(ALT_LEFT);
+    client.send(CTRL_ALT_LEFT);
     let left = {
         let mut id = right;
         let ok = client.wait_until(WAIT, |c| {
@@ -101,12 +101,12 @@ fn direct_keys_move_focus_and_windows_with_one_press() {
         id
     };
     assert_ne!(left, right);
-    client.send(ALT_RIGHT);
+    client.send(CTRL_ALT_RIGHT);
     assert!(client.wait_until(Duration::from_secs(5), |c| c.focused_pane_id() == right));
-    // Windows by number: a second window, then back to the first with Alt+1.
+    // Windows by number: a second window, then back to the first with Ctrl+Alt+1.
     run(&daemon, "window.new", &[]);
     assert!(client.wait_until(WAIT, |c| !c.screen_text().contains("mark-one")));
-    client.send(b"\x1b1");
+    client.send(b"\x1b[49;7u");
     screen_has(&mut client, "mark-one");
 }
 
@@ -133,19 +133,19 @@ fn the_prefix_runs_prefix_commands_and_shows_on_the_status_bar() {
     let daemon = TestDaemon::start();
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
-    client.send(CTRL_A);
+    client.send(PREFIX);
     status_has(&mut client, "PREFIX");
     client.send(b"|");
     status_lacks(&mut client, "PREFIX");
     wait_panes(&mut client, &daemon, 2);
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"-");
     wait_panes(&mut client, &daemon, 3);
     // A new window, then back to the first by number.
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"c");
     assert!(client.wait_until(WAIT, |c| c.status_row().contains(" 2 ")));
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"1");
     assert!(client.wait_until(WAIT, |_| pane_count(&daemon) == 4));
 }
@@ -157,13 +157,13 @@ fn closing_a_pane_asks_first() {
     client.wait_for_prompt().unwrap();
     run(&daemon, "pane.split-right", &[]);
     wait_panes(&mut client, &daemon, 2);
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"x");
     status_has(&mut client, "Close this pane? (y/n)");
     client.send(b"n");
     status_lacks(&mut client, "Close this pane");
     assert_eq!(pane_count(&daemon), 2);
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"x");
     status_has(&mut client, "Close this pane? (y/n)");
     // A key that is neither answer changes nothing.
@@ -178,7 +178,7 @@ fn renaming_a_window_is_typed_on_the_prompt_line() {
     let daemon = TestDaemon::start();
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b",");
     status_has(&mut client, "Window name: ");
     client.send(b"buildx\x7f");
@@ -186,7 +186,7 @@ fn renaming_a_window_is_typed_on_the_prompt_line() {
     client.send(b"\r");
     status_has(&mut client, " build ");
     // Esc leaves the name as it was.
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b",");
     status_has(&mut client, "Window name: ");
     client.send(b"other");
@@ -218,7 +218,7 @@ fn move_with_prefix(forms: &[&[u8]], gap: Duration) {
         )
         .unwrap();
     six_windows(&daemon, &mut client);
-    client.send(CTRL_A);
+    client.send(PREFIX);
     for form in forms {
         client.send(form);
         std::thread::sleep(gap);
@@ -256,13 +256,13 @@ fn the_repeat_window_ends_and_typing_after_it_goes_to_the_pane() {
     client.wait_for_prompt().unwrap();
     run(&daemon, "pane.split-right", &[]);
     wait_panes(&mut client, &daemon, 2);
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"h");
     status_has(&mut client, "PREFIX");
     // The window ends by itself, without a key.
     status_lacks(&mut client, "PREFIX");
     // A key typed inside the window that is not in the table is typing.
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"h");
     client.send(b"echo typed-after");
     client.send(b"\r");
@@ -288,10 +288,10 @@ fn the_command_run_from_a_pane_gives_the_same_result_as_the_key() {
 fn the_prefix_twice_sends_the_prefix_to_the_program_once() {
     let daemon = TestDaemon::start();
     let mut client = raw_pane(&daemon);
-    client.send(CTRL_A);
-    client.send(CTRL_A);
+    client.send(PREFIX);
+    client.send(PREFIX);
     client.send(b"|");
-    wait_shown(&mut client, "^A|");
+    wait_shown(&mut client, "^M|");
 }
 
 #[test]
@@ -305,7 +305,7 @@ fn a_key_that_is_in_no_table_reaches_the_program_exactly_once() {
 
 #[test]
 fn an_old_style_enter_never_starts_a_prefix_of_ctrl_m() {
-    let daemon = TestDaemon::start_with(|c| c.config.keys.prefix = parse_key("ctrl+m").unwrap());
+    let daemon = TestDaemon::start();
     let mut client = raw_pane(&daemon);
     client.send(b"\r");
     client.send(b"|");
@@ -320,17 +320,17 @@ fn an_old_style_enter_never_starts_a_prefix_of_ctrl_m() {
 fn the_lock_sends_every_key_to_the_program_but_the_unlock_key() {
     let daemon = TestDaemon::start();
     let mut client = raw_pane(&daemon);
-    client.send(ALT_G);
+    client.send(CTRL_ALT_G);
     status_has(&mut client, "LOCK");
-    client.send(CTRL_A);
-    client.send(ALT_LEFT);
+    client.send(PREFIX);
+    client.send(CTRL_ALT_LEFT);
     client.send(b"|");
-    wait_shown(&mut client, "^A^[[1;3D|");
+    wait_shown(&mut client, "^M^[[1;7D|");
     assert_eq!(pane_count(&daemon), 1);
-    client.send(ALT_G);
+    client.send(CTRL_ALT_G);
     status_lacks(&mut client, "LOCK");
     // Unlocked, the prefix works again.
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"|");
     wait_panes(&mut client, &daemon, 2);
 }
@@ -340,7 +340,7 @@ fn the_lock_is_refused_when_nothing_could_unlock_it() {
     let daemon = TestDaemon::start_with(|c| c.config.keys.direct_modifier = None);
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"g");
     status_has(&mut client, "no key would unlock");
     assert!(!client.status_row().contains("LOCK"));
@@ -353,7 +353,7 @@ fn the_lock_is_refused_when_nothing_could_unlock_it() {
 fn a_key_after_the_prefix_that_means_nothing_says_so_and_is_not_passed_on() {
     let daemon = TestDaemon::start();
     let mut client = raw_pane(&daemon);
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"~");
     status_has(&mut client, "no key");
     client.send(b"|");

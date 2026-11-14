@@ -11,7 +11,7 @@ use std::time::Duration;
 use arcade_daemon::config::ClipboardMode;
 use arcade_testkit::{AttachOptions, Screened, TestClient, TestDaemon, WAIT};
 
-const CTRL_A: &[u8] = b"\x01";
+const PREFIX: &[u8] = b"\x1b[109;5u";
 const ESC: &[u8] = b"\x1b[27u";
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -47,7 +47,7 @@ fn left_copy_mode(client: &mut TestClient) -> bool {
 }
 
 fn enter(client: &mut TestClient) {
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"[");
     assert!(in_copy_mode(client), "{}", client.screen_text());
 }
@@ -190,11 +190,11 @@ fn the_screen_stands_still_in_copy_mode_while_the_program_goes_on_printing() {
 fn another_pane_goes_on_updating_while_this_one_is_in_copy_mode() {
     let daemon = TestDaemon::start();
     let mut client = client(&daemon);
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"|");
     client.wait_until(WAIT, |c| c.screen_text().contains('│'));
     client.type_line("sleep 1; echo OTHER-PANE-LINE");
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"h");
     enter(&mut client);
     client.wait_for_text("OTHER-PANE-LINE").unwrap();
@@ -256,7 +256,7 @@ fn the_paste_key_writes_what_was_copied_into_the_pane() {
     client.send(b"Vy");
     wait_clipboard(&mut client, 1);
     assert!(left_copy_mode(&mut client));
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"]");
     // The shell has not seen Enter, so the text stands at its prompt.
     let ok = client.wait_until(WAIT, |c| {
@@ -279,7 +279,7 @@ fn a_program_that_asked_for_bracketed_paste_gets_the_markers_and_others_do_not()
     client.type_line(r"printf '\033[?2004h'; stty raw -echo; cat -v");
     client.wait_for_text("cat -v").unwrap();
     std::thread::sleep(Duration::from_millis(200));
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"]");
     client.wait_for_text("^[[200~marked-text^[[201~").unwrap();
 }
@@ -288,7 +288,7 @@ fn a_program_that_asked_for_bracketed_paste_gets_the_markers_and_others_do_not()
 fn pasting_with_nothing_copied_says_so() {
     let daemon = TestDaemon::start();
     let mut client = client(&daemon);
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"]");
     message_has(&mut client, "nothing has been copied");
 }
@@ -304,7 +304,7 @@ fn a_program_writing_the_clipboard_is_heard_only_when_the_settings_allow_it() {
     std::thread::sleep(Duration::from_millis(200));
     client.read_more(std::time::Instant::now() + Duration::from_millis(50));
     assert!(client.clipboard_writes.is_empty());
-    client.send(CTRL_A);
+    client.send(PREFIX);
     client.send(b"]");
     message_has(&mut client, "nothing has been copied");
     // Allowed: it is sent the way a copy is.

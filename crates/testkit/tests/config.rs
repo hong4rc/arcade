@@ -91,9 +91,9 @@ fn reloading_replaces_the_key_tables_and_a_file_with_mistakes_changes_nothing() 
         .unwrap();
     client.wait_for_prompt().unwrap();
     run(&daemon, "pane.split-right", &[]);
-    client.send(b"\x01q");
+    client.send(b"\x1b[109;5uq");
     assert!(client.wait_until(WAIT, |c| c.status_row().contains("[Z]")));
-    client.send(b"\x01q");
+    client.send(b"\x1b[109;5uq");
     assert!(client.wait_until(WAIT, |c| !c.status_row().contains("[Z]")));
 
     // A file with two mistakes: the old tables stay, and the lines are named.
@@ -106,20 +106,20 @@ fn reloading_replaces_the_key_tables_and_a_file_with_mistakes_changes_nothing() 
     assert!(!ok);
     assert!(message.contains("line 2"), "{message}");
     assert!(message.contains("1 more"), "{message}");
-    client.send(b"\x01q");
+    client.send(b"\x1b[109;5uq");
     assert!(client.wait_until(WAIT, |c| c.status_row().contains("[Z]")));
-    client.send(b"\x01q");
+    client.send(b"\x1b[109;5uq");
     assert!(client.wait_until(WAIT, |c| !c.status_row().contains("[Z]")));
 
     // A fixed file replaces the tables: `w` zooms now and `q` does nothing more.
     std::fs::write(&file, "[keys.prefix]\n\"w\" = \"pane.zoom\"\n").unwrap();
     let (ok, message) = run(&daemon, "arcade.reload-config", &[]);
     assert!(ok, "{message}");
-    client.send(b"\x01w");
+    client.send(b"\x1b[109;5uw");
     assert!(client.wait_until(WAIT, |c| c.status_row().contains("[Z]")));
-    client.send(b"\x01w");
+    client.send(b"\x1b[109;5uw");
     assert!(client.wait_until(WAIT, |c| !c.status_row().contains("[Z]")));
-    client.send(b"\x01q");
+    client.send(b"\x1b[109;5uq");
     assert!(client.wait_until(WAIT, |c| c.status_row().contains("no key")));
 }
 
@@ -131,11 +131,11 @@ fn the_reload_key_says_so_on_the_status_bar() {
     let daemon = daemon_with(&file);
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
-    client.send(b"\x01r");
+    client.send(b"\x1b[109;5ur");
     assert!(client.wait_until(WAIT, |c| c.status_row().contains("configuration reloaded")));
     std::fs::write(&file, "bogus = 1\n").unwrap();
     client.send(b"x");
-    client.send(b"\x01r");
+    client.send(b"\x1b[109;5ur");
     assert!(client.wait_until(WAIT, |c| c.status_row().contains("line 1")));
 }
 

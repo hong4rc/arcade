@@ -38,9 +38,14 @@ const FORMS: &[(&[u8], &str)] = &[
     (b"\x1b[15~", "^[[15~"),
 ];
 
+/// These tests send every kind of key, Ctrl+m among them, so the prefix must be one they do not use.
+fn daemon_with_a_free_prefix() -> TestDaemon {
+    TestDaemon::start_with(|c| c.config.keys.prefix = arcade_daemon::parse_key("f12").unwrap())
+}
+
 #[test]
 fn every_host_form_reaches_the_pane_as_its_legacy_bytes() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon_with_a_free_prefix();
     let mut client = raw_pane(&daemon, "cat -vt");
     let mut expected = String::new();
     for (bytes, shown) in FORMS {
@@ -61,7 +66,7 @@ fn every_host_form_reaches_the_pane_as_its_legacy_bytes() {
 
 #[test]
 fn a_lone_esc_reaches_the_pane_after_its_short_wait() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon_with_a_free_prefix();
     let mut client = raw_pane(&daemon, "cat -vt");
     let sent = Instant::now();
     client.send(b"\x1b");
@@ -100,7 +105,7 @@ fn paste_payload(len: usize) -> Vec<u8> {
 /// Paste `payload` into a pane that reads exactly the bytes it should get into a file, and
 /// compare the file.
 fn paste_and_compare(bracketed: bool) {
-    let daemon = TestDaemon::start();
+    let daemon = daemon_with_a_free_prefix();
     let payload = paste_payload(1024 * 1024);
     let file = daemon.dir().join("pasted.out");
     let markers: &[u8] = if bracketed { b"\x1b[200~" } else { b"" };
@@ -160,7 +165,7 @@ fn a_megabyte_paste_arrives_whole_between_markers_when_the_pane_asked_for_them()
 
 #[test]
 fn a_pane_that_asked_for_the_kitty_protocol_gets_keys_in_that_form() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon_with_a_free_prefix();
     let mut client = raw_pane(&daemon, "printf '\\033[>1u'; cat -vt");
     // The pane has read the request once it has echoed a first key.
     client.send(b"x");

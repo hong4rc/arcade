@@ -660,12 +660,12 @@ position = "top"
             vec!["3".to_string()]
         );
         assert_eq!(
-            Keymap::get(&m.direct, parse_key("alt+a").unwrap())
+            Keymap::get(&m.direct, parse_key("ctrl+alt+a").unwrap())
                 .unwrap()
                 .command,
             "window.next"
         );
-        assert!(Keymap::get(&m.direct, parse_key("alt+left").unwrap()).is_none());
+        assert!(Keymap::get(&m.direct, parse_key("ctrl+alt+left").unwrap()).is_none());
     }
 
     fn lines(text: &str) -> Vec<String> {

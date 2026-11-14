@@ -29,7 +29,7 @@ impl Default for KeysConfig {
     fn default() -> Self {
         KeysConfig {
             prefix: Key {
-                code: Code::Char('a'),
+                code: Code::Char('m'),
                 mods: Mods {
                     ctrl: true,
                     ..Mods::NONE
@@ -37,6 +37,7 @@ impl Default for KeysConfig {
             },
             direct_modifier: Some(Mods {
                 alt: true,
+                ctrl: true,
                 ..Mods::NONE
             }),
             nav: ['h', 'j', 'k', 'l'],
