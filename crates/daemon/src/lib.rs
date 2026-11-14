@@ -33,6 +33,7 @@ mod keymap;
 mod keys;
 mod layout;
 mod log;
+mod notify;
 mod paths;
 mod picker;
 mod power;

@@ -156,6 +156,7 @@ impl Server {
                         continue;
                     }
                     if let Some(pane) = self.focus_pane_of(session_id) {
+                        self.typed_into(pane);
                         self.write_to_pane(pane, &raw);
                     }
                 }
@@ -535,6 +536,7 @@ impl Server {
 
     /// Give a key to a pane's program in the form it asked for.
     pub(super) fn send_key_to_pane(&mut self, pane_id: u64, key: Key, raw: &[u8]) {
+        self.typed_into(pane_id);
         let Some(pane) = self.panes.get(&pane_id) else {
             return;
         };
@@ -555,6 +557,7 @@ impl Server {
 
     /// Give pasted text to a pane, between the paste markers when its program asked for them.
     pub(super) fn send_paste_to_pane(&mut self, pane_id: u64, text: &[u8]) {
+        self.typed_into(pane_id);
         let bracketed = self
             .panes
             .get(&pane_id)

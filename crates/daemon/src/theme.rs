@@ -32,6 +32,11 @@ pub enum Role {
     PickerSelected,
     /// The cells of copy mode that are selected or found by a search.
     Selection,
+    /// The mark of a notification, one role for each class.
+    NoticeApproval,
+    NoticeInput,
+    NoticeError,
+    NoticeInfo,
 }
 
 fn fg(color: u8) -> Style {
@@ -98,6 +103,49 @@ pub fn style(role: Role) -> Style {
             bg: Color::Indexed(6),
             ..Style::default()
         },
+        Role::NoticeApproval => Style {
+            fg: Color::Indexed(0),
+            bg: Color::Indexed(1),
+            bold: true,
+            ..Style::default()
+        },
+        Role::NoticeInput => Style {
+            fg: Color::Indexed(0),
+            bg: Color::Indexed(3),
+            bold: true,
+            ..Style::default()
+        },
+        Role::NoticeError => Style {
+            fg: Color::Indexed(0),
+            bg: Color::Indexed(5),
+            bold: true,
+            ..Style::default()
+        },
+        Role::NoticeInfo => Style {
+            fg: Color::Indexed(0),
+            bg: Color::Indexed(6),
+            ..Style::default()
+        },
+    }
+}
+
+/// How the mark of a class of notification looks: a colour and, because a colour alone is not
+/// enough on a terminal with few of them, a symbol of its own.
+pub fn notice_style(class: crate::notify::Class) -> Style {
+    style(match class {
+        crate::notify::Class::Approval => Role::NoticeApproval,
+        crate::notify::Class::Input => Role::NoticeInput,
+        crate::notify::Class::Error => Role::NoticeError,
+        crate::notify::Class::Info => Role::NoticeInfo,
+    })
+}
+
+pub fn notice_symbol(class: crate::notify::Class) -> &'static str {
+    match class {
+        crate::notify::Class::Approval => "[!]",
+        crate::notify::Class::Input => "[?]",
+        crate::notify::Class::Error => "[x]",
+        crate::notify::Class::Info => "[i]",
     }
 }
 

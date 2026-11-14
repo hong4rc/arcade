@@ -45,6 +45,7 @@ mod actions;
 mod frame;
 mod keys;
 mod mouse;
+mod notices;
 mod treeview;
 
 const LISTENER: Token = Token(0);
@@ -380,6 +381,8 @@ struct Server {
     exited: Vec<u64>,
     /// The latest clipboard write of each pane, handled once the screen updates are out.
     pending_clipboard: HashMap<u64, Vec<u8>>,
+    /// The notifications of the panes.
+    notices: crate::notify::Store,
     stopping: Option<Instant>,
     killed_hard: bool,
     ever_had_session: bool,
@@ -449,6 +452,7 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         waker,
         exited: Vec::new(),
         pending_clipboard: HashMap::new(),
+        notices: crate::notify::Store::default(),
         stopping: None,
         killed_hard: false,
         ever_had_session: false,
@@ -1434,6 +1438,7 @@ impl Server {
         // Answers the terminal wants to give to the program go back to it at once.
         let mut clipboard_writes = Vec::new();
         let mut new_title = None;
+        let mut signals = Vec::new();
         if pane.term.has_events() {
             let mut replies = Vec::new();
             for event in pane.term.drain_events() {
@@ -1441,7 +1446,20 @@ impl Server {
                     TermEvent::Reply(bytes) => replies.extend_from_slice(&bytes),
                     TermEvent::ClipboardWrite(data) => clipboard_writes.push(data),
                     TermEvent::Title(title) => new_title = Some(title),
-                    _ => {}
+                    TermEvent::Bell => signals.push(crate::notify::Signal::new(
+                        crate::notify::Class::Info,
+                        crate::notify::TERMINAL_SOURCE,
+                        "",
+                        "",
+                    )),
+                    TermEvent::Notification { title, body } => {
+                        signals.push(crate::notify::Signal::new(
+                            crate::notify::Class::Info,
+                            crate::notify::TERMINAL_SOURCE,
+                            &title,
+                            &body,
+                        ));
+                    }
                 }
             }
             if !replies.is_empty() {
@@ -1454,6 +1472,9 @@ impl Server {
         // Only the latest write counts, and it waits until the output has been passed on.
         if let Some(data) = clipboard_writes.pop() {
             self.pending_clipboard.insert(pane_id, data);
+        }
+        for signal in signals {
+            self.signal_pane(pane_id, signal);
         }
     }
 
@@ -1578,6 +1599,7 @@ impl Server {
     /// Stop watching a pane and hang up what runs in it. The pane's window must already have let
     /// go of it.
     fn drop_pane(&mut self, pane_id: u64) {
+        self.notices.forget(pane_id);
         if let Some(pane) = self.panes.remove(&pane_id) {
             let fd = pane.master.as_raw_fd();
             let _ = self.poll.registry().deregister(&mut SourceFd(&fd));

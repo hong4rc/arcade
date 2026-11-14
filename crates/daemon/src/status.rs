@@ -4,6 +4,7 @@
 use arcade_term::Cell;
 
 use crate::compose::{blank, fit, text_cells};
+use crate::notify::Class;
 use crate::theme::{self, Role, Symbol};
 
 pub struct Tab {
@@ -12,6 +13,8 @@ pub struct Tab {
     pub name: String,
     pub current: bool,
     pub zoomed: bool,
+    /// The most urgent notification among the window's panes.
+    pub notice: Option<Class>,
 }
 
 /// A line the user types into.
@@ -30,6 +33,9 @@ pub struct StatusInfo {
     pub unlock_key: Option<String>,
     /// The focused pane is in copy mode.
     pub copy: bool,
+    /// How many panes of the session have a notification, per class in the order of
+    /// `Class::BY_URGENCY`.
+    pub notices: [usize; 4],
     /// A line shown in place of the bar until the next key.
     pub message: Option<String>,
     pub prompt: Option<Prompt>,
@@ -69,10 +75,19 @@ pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
         } else {
             Role::Tab
         };
+        let style = theme::style(role);
         cells.extend(text_cells(
-            &format!(" {} {}{zoom} ", tab.number, tab.name),
-            theme::style(role),
+            &format!(" {} {}{zoom}", tab.number, tab.name),
+            style,
         ));
+        if let Some(class) = tab.notice {
+            cells.extend(text_cells(" ", style));
+            cells.extend(text_cells(
+                theme::notice_symbol(class),
+                theme::notice_style(class),
+            ));
+        }
+        cells.extend(text_cells(" ", style));
     }
     let mut words: Vec<String> = Vec::new();
     if info.prefix {
@@ -90,10 +105,24 @@ pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
     if info.copy {
         words.push("COPY".to_string());
     }
-    let right: Vec<Cell> = words
-        .iter()
-        .flat_map(|w| text_cells(&format!(" {w} "), theme::style(Role::Indicator)))
-        .collect();
+    let mut right: Vec<Cell> = Vec::new();
+    for (class, count) in Class::BY_URGENCY.iter().zip(info.notices) {
+        if count > 0 {
+            right.push(blank(bar));
+            right.extend(text_cells(
+                &format!("{}{count}", theme::notice_symbol(*class)),
+                theme::notice_style(*class),
+            ));
+        }
+    }
+    if !right.is_empty() {
+        right.push(blank(bar));
+    }
+    right.extend(
+        words
+            .iter()
+            .flat_map(|w| text_cells(&format!(" {w} "), theme::style(Role::Indicator))),
+    );
     if cells.len() + right.len() < width {
         cells = fit(cells, width - right.len(), bar);
         cells.extend(right);
@@ -129,18 +158,21 @@ mod tests {
                     name: "sh".into(),
                     current: false,
                     zoomed: false,
+                    notice: None,
                 },
                 Tab {
                     number: 2,
                     name: "vim".into(),
                     current: true,
                     zoomed: true,
+                    notice: None,
                 },
             ],
             prefix: false,
             locked: false,
             unlock_key: None,
             copy: false,
+            notices: [0; 4],
             message: None,
             prompt: None,
         }
@@ -199,6 +231,35 @@ mod tests {
         let (cells, cursor) = build(40, &i);
         assert!(text(&cells).starts_with("rename: abc"));
         assert_eq!(cursor, Some(11));
+    }
+
+    #[test]
+    fn a_tab_with_a_notice_shows_the_mark_of_its_class_and_the_counters_are_at_the_right() {
+        let mut i = info();
+        i.tabs[0].notice = Some(Class::Approval);
+        i.notices = [2, 0, 1, 3];
+        let (cells, _) = build(80, &i);
+        let line = text(&cells);
+        assert!(line.contains(" 1 sh [!] "), "{line}");
+        assert!(line.trim_end().ends_with("[!]2 [x]1 [i]3"), "{line:?}");
+        let at = |needle: &str| cells[line.find(needle).unwrap()].style;
+        assert_eq!(at("[!]2"), theme::notice_style(Class::Approval));
+        assert_ne!(
+            theme::notice_style(Class::Approval),
+            theme::notice_style(Class::Info)
+        );
+        // Four classes, four different marks, so that colour is not all that tells them apart.
+        let marks: Vec<&str> = Class::BY_URGENCY
+            .iter()
+            .map(|c| theme::notice_symbol(*c))
+            .collect();
+        for (n, a) in marks.iter().enumerate() {
+            for b in &marks[n + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        let quiet = text(&build(80, &info()).0);
+        assert!(!quiet.contains("[!]") && !quiet.contains("[i]"));
     }
 
     #[test]

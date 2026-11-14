@@ -1,10 +1,17 @@
 //! Building the screen update for a client: when it may go out, and what goes in it.
 
 use super::*;
+use crate::compose::text_cells;
 use crate::render::HostModes;
 use crate::status::{self, StatusInfo, Tab};
+use crate::theme;
 
-fn status_info(s: &Session, copy: bool, unlock_key: Option<String>) -> StatusInfo {
+fn status_info(
+    s: &Session,
+    copy: bool,
+    unlock_key: Option<String>,
+    notices: &crate::notify::Store,
+) -> StatusInfo {
     StatusInfo {
         session: s.name.clone(),
         tabs: s
@@ -15,16 +22,21 @@ fn status_info(s: &Session, copy: bool, unlock_key: Option<String>) -> StatusInf
                 name: w.name.clone(),
                 current: w.id == s.current,
                 zoomed: w.zoomed,
+                notice: notices.highest(w.layout.rects().into_iter().map(|(p, _)| p)),
             })
             .collect(),
         prefix: s.key_state.prefix_active(),
         locked: s.key_state.locked,
         unlock_key,
         copy,
+        notices: notices.counts(s.all_panes()),
         message: s.key_state.message.clone(),
         prompt: s.key_state.status_prompt(),
     }
 }
+
+/// A pane narrower than this has no room for the mark of its notification.
+const MARK_MIN_WIDTH: u16 = 12;
 
 /// The longest pane title that goes to the host terminal, in characters.
 const TITLE_LIMIT: usize = 200;
@@ -140,6 +152,7 @@ impl Server {
         let status_position = self.config.status_position;
         let unlock_key = self.unlock_key_name();
         self.refresh_tree(session_id);
+        self.settle_notices(session_id);
         let Some(session) = self.sessions.get_mut(&session_id) else {
             return;
         };
@@ -244,6 +257,19 @@ impl Server {
             }
         }
         stage_mark!(DaemonSnapshot);
+        // A pane with a notification wears its mark at the top right, over what the program drew.
+        if !self.notices.is_empty() {
+            for (pane_id, rect) in &visible {
+                if let Some(n) = self.notices.get(*pane_id)
+                    && rect.w >= MARK_MIN_WIDTH
+                {
+                    let mark =
+                        text_cells(theme::notice_symbol(n.class), theme::notice_style(n.class));
+                    let x = rect.x + rect.w - mark.len() as u16;
+                    session.screen.overlay(x, rect.y, &[mark]);
+                }
+            }
+        }
         let window = session.current_window();
         let focus = window.focus;
         let focus_rect = visible.iter().find(|(p, _)| *p == focus).map(|(_, r)| *r);
@@ -257,8 +283,10 @@ impl Server {
             session.screen.draw_dividers(&dividers, origin, focus_rect);
             if let Some(y) = status_row(rows, status_position) {
                 let copy_on = self.panes.get(&focus).is_some_and(|p| p.copy.is_some());
-                let (cells, prompt_cursor) =
-                    status::build(cols, &status_info(session, copy_on, unlock_key));
+                let (cells, prompt_cursor) = status::build(
+                    cols,
+                    &status_info(session, copy_on, unlock_key, &self.notices),
+                );
                 session.screen.set_row(y, cells);
                 cursor_override = prompt_cursor.map(|x| (x, y));
             }
