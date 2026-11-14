@@ -488,3 +488,37 @@ fn a_large_paste_arrives_complete() {
     assert_eq!(stored.len(), SIZE);
     assert!(stored == data, "the pasted bytes arrived changed");
 }
+
+/// The last output of a program that ends right after a key reaches the screen before the
+/// session ends, however the two events line up. The count can be raised with `ARCADE_LOOPS`.
+#[test]
+fn the_last_output_of_a_program_is_shown_before_the_session_ends() {
+    let loops: usize = std::env::var("ARCADE_LOOPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
+    for round in 0..loops {
+        let mut daemon = TestDaemon::start();
+        let mut client = daemon
+            .attach(AttachOptions::new().command(&[
+                "sh",
+                "-c",
+                "printf READY; read x; printf MARK",
+            ]))
+            .unwrap();
+        if let Err(e) = client.wait_for_text("READY") {
+            panic!("round {round}: {e}\nmessages: {:?}", client.messages);
+        }
+        client.send(b"\r");
+        client
+            .wait_message(|m| matches!(m, ServerMessage::SessionEnded { .. }), WAIT)
+            .unwrap();
+        assert!(
+            client.screen_text().contains("MARK"),
+            "round {round}: the session ended without MARK on the screen:\n{}\nmessages: {:?}",
+            client.screen_text(),
+            client.messages
+        );
+        daemon.wait_stopped(WAIT).unwrap();
+    }
+}
