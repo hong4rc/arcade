@@ -18,5 +18,9 @@ libc = "0.2"
 arcade-testkit = { path = "../testkit" }
 arcade-term = { path = "../term" }
 
+[features]
+# Timestamps along the key and output paths (see the daemon's `stage` module). Off by default.
+stage-timing = ["arcade-daemon/stage-timing"]
+
 [lints]
 workspace = true

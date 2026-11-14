@@ -1,6 +1,29 @@
 //! The Arcade daemon: sessions, panes, their processes and terminals, and the socket clients
 //! attach through.
 
+/// Take a stage-timing mark when the feature is on; nothing at all when it is off. The macros
+/// are always defined, so the marks can stay in the code.
+#[macro_export]
+macro_rules! stage_mark {
+    ($point:ident) => {
+        #[cfg(feature = "stage-timing")]
+        {
+            $crate::stage::mark($crate::stage::Point::$point);
+        }
+    };
+}
+
+/// Count a system call when the feature is on; nothing at all when it is off.
+#[macro_export]
+macro_rules! stage_count {
+    ($call:ident) => {
+        #[cfg(feature = "stage-timing")]
+        {
+            $crate::stage::count($crate::stage::Call::$call);
+        }
+    };
+}
+
 mod clipboard;
 mod commands;
 mod compose;
@@ -15,6 +38,8 @@ mod picker;
 pub mod pty;
 mod render;
 mod server;
+#[cfg(feature = "stage-timing")]
+pub mod stage;
 mod status;
 mod theme;
 

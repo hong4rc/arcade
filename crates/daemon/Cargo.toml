@@ -13,5 +13,9 @@ mio = { version = "1", features = ["os-poll", "net", "os-ext"] }
 libc = "0.2"
 toml = { version = "1", default-features = false, features = ["parse"] }
 
+[features]
+# Timestamps along the key and output paths, written to files at exit. Off by default.
+stage-timing = []
+
 [lints]
 workspace = true

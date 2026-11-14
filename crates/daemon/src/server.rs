@@ -463,6 +463,8 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         Err(e) => server.log.line(&format!("daemon failed: {:?}", e.kind())),
     }
     server.shutdown_cleanup();
+    #[cfg(feature = "stage-timing")]
+    crate::stage::dump(&config.socket_path.with_extension("stages-daemon"));
     result
 }
 
@@ -516,7 +518,10 @@ impl Server {
                 self.next_deadline()
             };
             match self.poll.poll(&mut events, timeout) {
-                Ok(()) => {}
+                Ok(()) => {
+                    stage_mark!(DaemonWake);
+                    stage_count!(Poll);
+                }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
             }
@@ -751,9 +756,13 @@ impl Server {
             return;
         };
         while client.out_pos < client.out.len() && !client.gone {
+            stage_count!(Write);
             match client.stream.write(&client.out[client.out_pos..]) {
                 Ok(0) => client.gone = true,
-                Ok(n) => client.out_pos += n,
+                Ok(n) => {
+                    client.out_pos += n;
+                    stage_mark!(DaemonSocketWritten);
+                }
                 Err(e) if would_block(&e) => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(_) => client.gone = true,
@@ -792,6 +801,7 @@ impl Server {
             let mut total = 0;
             client.read_pending = false;
             loop {
+                stage_count!(Read);
                 match client.stream.read(&mut buf) {
                     Ok(0) => {
                         client.gone = true;
@@ -813,6 +823,7 @@ impl Server {
                     }
                 }
             }
+            stage_mark!(DaemonSocketRead);
             loop {
                 match client.decoder.next_message() {
                     Ok(Some(m)) => messages.push(m),
@@ -824,6 +835,7 @@ impl Server {
                 }
             }
         }
+        stage_mark!(DaemonDecoded);
         for message in messages {
             if self.clients.get(&id).is_none_or(|c| c.gone) {
                 break;
@@ -1346,11 +1358,14 @@ impl Server {
         let mut buf = [0u8; 16 * 1024];
         let mut total = 0;
         loop {
+            stage_count!(Read);
             match pane.master.read(&mut buf) {
                 // End of output: the process side closed. The exit notice does the closing.
                 Ok(0) => break,
                 Ok(n) => {
+                    stage_mark!(DaemonPtyRead);
                     pane.term.feed(&buf[..n]);
+                    stage_mark!(DaemonFed);
                     pane.dirty = true;
                     pane.rate.add(n, Instant::now());
                     // New output: whatever compression was under way starts over later.
@@ -1520,12 +1535,15 @@ fn queue_pane_input(pane: &mut Pane, bytes: &[u8]) {
         return;
     }
     pane.input.extend_from_slice(bytes);
+    stage_mark!(DaemonKeyHandled);
     write_pending(pane);
+    stage_mark!(DaemonPtyWritten);
 }
 
 fn write_pending(pane: &mut Pane) {
     let mut written = 0;
     while written < pane.input.len() {
+        stage_count!(Write);
         match pane.master.write(&pane.input[written..]) {
             Ok(0) => break,
             Ok(n) => written += n,

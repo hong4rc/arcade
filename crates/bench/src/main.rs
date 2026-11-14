@@ -797,6 +797,16 @@ fn latency_run(client: &mut Client, log: &Path, samples: usize) -> R<Value> {
 
 /// The measurement itself, once the probe is known to be running in the pane that has focus.
 fn latency_measure(client: &mut Client, log: &Path, samples: usize) -> R<Value> {
+    Ok(latency_samples(client, log, samples)?.0)
+}
+
+/// The measurement, with the time every key was written and every echo seen (nanoseconds on the
+/// monotonic clock), for the stage-timing run to line its marks up with.
+fn latency_samples(
+    client: &mut Client,
+    log: &Path,
+    samples: usize,
+) -> R<(Value, Vec<u64>, Vec<u64>)> {
     drain_for(client, Duration::from_millis(300))?;
     let mut sent = Vec::with_capacity(samples);
     let mut seen = Vec::with_capacity(samples);
@@ -838,11 +848,12 @@ fn latency_measure(client: &mut Client, log: &Path, samples: usize) -> R<Value> 
         .map(|n| seen[n].saturating_sub(rows[n].2))
         .collect();
     let round_trip: Vec<u64> = (0..samples).map(|n| seen[n] - sent[n]).collect();
-    Ok(json!({
+    let summary = json!({
         "key_to_pane": summary_us(&key_in),
         "pane_to_client": summary_us(&echo_out),
         "round_trip": summary_us(&round_trip),
-    }))
+    });
+    Ok((summary, sent, seen))
 }
 
 fn run_latency(config: &Config) -> R<Value> {
@@ -942,6 +953,320 @@ fn run_latency(config: &Config) -> R<Value> {
         );
     }
     Ok(Value::Object(out))
+}
+
+// ---------------------------------------------------------------- stages
+
+/// One mark of the stage-timing build: point, nanoseconds, then reads, writes and polls so far.
+#[derive(Clone, Copy)]
+struct Mark {
+    point: u8,
+    ns: u64,
+    calls: [u32; 3],
+}
+
+/// The points, as numbered in the daemon's `stage::Point`.
+const CLIENT_KEY_READ: u8 = 1;
+const CLIENT_KEY_SENT: u8 = 2;
+const DAEMON_WAKE: u8 = 3;
+const DAEMON_SOCKET_READ: u8 = 4;
+const DAEMON_DECODED: u8 = 5;
+const DAEMON_KEY_HANDLED: u8 = 6;
+const DAEMON_PTY_WRITTEN: u8 = 7;
+const DAEMON_PTY_READ: u8 = 8;
+const DAEMON_FED: u8 = 9;
+const DAEMON_SNAPSHOT: u8 = 10;
+const DAEMON_COMPOSED: u8 = 11;
+const DAEMON_ENCODED: u8 = 12;
+const DAEMON_SOCKET_WRITTEN: u8 = 13;
+const CLIENT_WAKE: u8 = 14;
+const CLIENT_STDOUT_WRITTEN: u8 = 15;
+
+fn read_marks(path: &Path) -> Vec<Mark> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let mut p = line.split_whitespace().map(|x| x.parse::<u64>().ok());
+            Some(Mark {
+                point: p.next()?? as u8,
+                ns: p.next()??,
+                calls: [p.next()?? as u32, p.next()?? as u32, p.next()?? as u32],
+            })
+        })
+        .collect()
+}
+
+/// The first mark of `point` at or after `from`.
+fn first_after(marks: &[Mark], point: u8, from: u64) -> Option<Mark> {
+    marks
+        .iter()
+        .copied()
+        .find(|m| m.point == point && m.ns >= from)
+}
+
+/// The last mark of `point` at or before `until` and not before `from`.
+fn last_between(marks: &[Mark], point: u8, from: u64, until: u64) -> Option<Mark> {
+    marks
+        .iter()
+        .copied()
+        .rev()
+        .find(|m| m.point == point && m.ns <= until && m.ns >= from)
+}
+
+/// The stretches between points that a key and its echo pass, in order.
+const STRETCHES: [(&str, &str); 16] = [
+    (
+        "bench_write_to_client_read",
+        "operating system: the test's terminal to the client's read",
+    ),
+    (
+        "client_read_to_sent",
+        "client: key read, message written to the socket",
+    ),
+    (
+        "sent_to_daemon_wake",
+        "operating system: socket write to the daemon's wakeup",
+    ),
+    (
+        "daemon_wake_to_socket_read",
+        "daemon: wakeup to socket read",
+    ),
+    ("socket_read_to_decoded", "daemon: message decoded"),
+    ("decoded_to_key_handled", "daemon: key found in the tables"),
+    (
+        "key_handled_to_pty_written",
+        "daemon: key written to the pane's terminal",
+    ),
+    (
+        "pane_program",
+        "pane program (not Arcade): read the key, wrote the echo, wakeup",
+    ),
+    ("wake_to_pty_read", "daemon: wakeup to read of the echo"),
+    (
+        "pty_read_to_fed",
+        "daemon: terminal emulation takes the echo in",
+    ),
+    ("fed_to_snapshot", "daemon: panes' screens read out"),
+    ("snapshot_to_composed", "daemon: grid composed"),
+    (
+        "composed_to_encoded",
+        "daemon: difference found and frame encoded",
+    ),
+    (
+        "encoded_to_client_wake",
+        "daemon write plus operating system: to the client's wakeup",
+    ),
+    (
+        "client_wake_to_stdout",
+        "client: frame written to its terminal",
+    ),
+    (
+        "stdout_to_bench_read",
+        "operating system: the client's terminal to the test's read",
+    ),
+];
+
+/// Cut the files of a stage-timing run into the stretches of every key and print the medians.
+fn stages_table(dir: &Path, socket_name: &str, sent: &[u64], seen: &[u64]) -> R<Value> {
+    let keys = sent.len();
+    let mut daemon = Vec::new();
+    let mut client = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if name == format!("{socket_name}.stages-daemon") {
+            daemon = read_marks(&path);
+        } else if name.starts_with(&format!("{socket_name}.stages-client-")) {
+            let marks = read_marks(&path);
+            // The client that attached is the one that read keys.
+            if marks.iter().any(|m| m.point == CLIENT_KEY_READ) {
+                client = marks;
+            }
+        }
+    }
+    if daemon.is_empty() || client.is_empty() {
+        let listing: Vec<String> = fs::read_dir(dir)?
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+            .collect();
+        return Err(format!(
+            "the stage-timing files are missing (daemon {} marks, client {} marks; the directory holds {listing:?}): is the build made with the feature?",
+            daemon.len(),
+            client.len()
+        )
+        .into());
+    }
+    let key_reads: Vec<Mark> = client
+        .iter()
+        .copied()
+        .filter(|m| m.point == CLIENT_KEY_READ)
+        .collect();
+    let mut columns: Vec<Vec<u64>> = vec![Vec::new(); STRETCHES.len()];
+    let mut calls: [Vec<u64>; 6] = Default::default();
+    let mut used = 0;
+    for (i, k1) in key_reads.iter().enumerate().take(keys) {
+        let end = key_reads.get(i + 1).map_or(u64::MAX, |m| m.ns);
+        let chain = (|| {
+            let k2 = first_after(&client, CLIENT_KEY_SENT, k1.ns)?;
+            let k4 = first_after(&daemon, DAEMON_SOCKET_READ, k1.ns)?;
+            let k3 = last_between(&daemon, DAEMON_WAKE, k1.ns, k4.ns)?;
+            let k5 = first_after(&daemon, DAEMON_DECODED, k4.ns)?;
+            let k6 = first_after(&daemon, DAEMON_KEY_HANDLED, k5.ns)?;
+            let k7 = first_after(&daemon, DAEMON_PTY_WRITTEN, k6.ns)?;
+            let o2 = first_after(&daemon, DAEMON_PTY_READ, k7.ns)?;
+            let w2 = last_between(&daemon, DAEMON_WAKE, k7.ns, o2.ns)?;
+            let o3 = first_after(&daemon, DAEMON_FED, o2.ns)?;
+            let o4 = first_after(&daemon, DAEMON_SNAPSHOT, o3.ns)?;
+            let o5 = first_after(&daemon, DAEMON_COMPOSED, o4.ns)?;
+            let o6 = first_after(&daemon, DAEMON_ENCODED, o5.ns)?;
+            let o7 = first_after(&daemon, DAEMON_SOCKET_WRITTEN, o6.ns)?;
+            let c1 = first_after(&client, CLIENT_WAKE, o6.ns)?;
+            let c2 = first_after(&client, CLIENT_STDOUT_WRITTEN, c1.ns)?;
+            if c2.ns >= end {
+                return None;
+            }
+            Some((k2, k3, k4, k5, k6, k7, w2, o2, o3, o4, o5, o6, o7, c1, c2))
+        })();
+        let Some((k2, k3, k4, k5, k6, k7, w2, o2, o3, o4, o5, o6, o7, c1, c2)) = chain else {
+            continue;
+        };
+        used += 1;
+        let d = |a: u64, b: u64| b.saturating_sub(a);
+        let values = [
+            d(sent[i], k1.ns),
+            d(k1.ns, k2.ns),
+            d(k2.ns, k3.ns),
+            d(k3.ns, k4.ns),
+            d(k4.ns, k5.ns),
+            d(k5.ns, k6.ns),
+            d(k6.ns, k7.ns),
+            d(k7.ns, w2.ns),
+            d(w2.ns, o2.ns),
+            d(o2.ns, o3.ns),
+            d(o3.ns, o4.ns),
+            d(o4.ns, o5.ns),
+            d(o5.ns, o6.ns),
+            d(o6.ns, c1.ns),
+            d(c1.ns, c2.ns),
+            d(c2.ns, seen[i]),
+        ];
+        for (column, value) in columns.iter_mut().zip(values) {
+            column.push(value);
+        }
+        // System calls of this key: the client from the key read to the echo on its terminal,
+        // the daemon from the wakeup that took the key to the write of the frame.
+        let diff = |a: &Mark, b: &Mark, n: usize| u64::from(b.calls[n].saturating_sub(a.calls[n]));
+        for n in 0..3 {
+            calls[n].push(diff(k1, &c2, n));
+            calls[3 + n].push(diff(&k3, &o7, n));
+        }
+    }
+    if used == 0 {
+        return Err("no key could be followed through all the points".into());
+    }
+    let names = ["read", "write", "poll"];
+    let mut stretches = serde_json::Map::new();
+    println!("  {used} of {keys} keys followed through every point");
+    println!("  {:<28} {:>8} {:>8}", "stretch", "p50 us", "p90 us");
+    let mut arcade_total = 0.0;
+    let mut total_with_pane = 0.0;
+    for ((key, what), column) in STRETCHES.iter().zip(&mut columns) {
+        column.sort_unstable();
+        let p50 = percentile(column, 50.0) as f64 / 1000.0;
+        let p90 = percentile(column, 90.0) as f64 / 1000.0;
+        println!("  {key:<28} {p50:>8.1} {p90:>8.1}   {what}");
+        total_with_pane += p50;
+        if *key != "pane_program" {
+            arcade_total += p50;
+        }
+        stretches.insert(
+            (*key).into(),
+            json!({"p50_us": round1(p50), "p90_us": round1(p90), "what": what}),
+        );
+    }
+    println!("  sum of the stretches except the pane program: {arcade_total:.1} us");
+    println!("  sum of all the stretches: {total_with_pane:.1} us");
+    let mut per_key = serde_json::Map::new();
+    for (n, name) in names.iter().enumerate() {
+        calls[n].sort_unstable();
+        calls[3 + n].sort_unstable();
+        let (c, dm) = (percentile(&calls[n], 50.0), percentile(&calls[3 + n], 50.0));
+        println!("  per key, system calls: client {name} {c}, daemon {name} {dm}");
+        per_key.insert(format!("client_{name}"), json!(c));
+        per_key.insert(format!("daemon_{name}"), json!(dm));
+    }
+    Ok(json!({
+        "keys_followed": used,
+        "stretches": stretches,
+        "sum_without_pane_program_us": round1(arcade_total),
+        "sum_of_all_us": round1(total_with_pane),
+        "system_calls_per_key": per_key,
+    }))
+}
+
+/// Build the stage-timing binary apart from the normal one, run the latency probe against it,
+/// and cut the marks it wrote into the stretches of every key.
+fn run_stages(config: &Config) -> R<Value> {
+    let root = find_root();
+    let status = Command::new("cargo")
+        .args([
+            "build",
+            "--release",
+            "-q",
+            "-p",
+            "arcade",
+            "--features",
+            "stage-timing",
+            "--target-dir",
+        ])
+        .arg(root.join("target/stage-timing"))
+        .current_dir(&root)
+        .status()?;
+    if !status.success() {
+        return Err("cannot build the stage-timing binary of arcade".into());
+    }
+    let exe = root.join("target/stage-timing/release/arcade");
+    let samples = if config.quick { 200 } else { 1000 };
+    let log = config.dir.join("probe.log");
+    let script = probe_script(config, &log);
+    let _ = fs::remove_file(&log);
+    let subject = Subject::new(Kind::Arcade, &exe, &config.dir);
+    subject.start(&script)?;
+    let mut client = Client::open(&subject.attach_argv())?;
+    read_until(
+        &mut client,
+        b"PROBE-READY",
+        Duration::from_secs(20),
+        Vec::new(),
+    )?;
+    let (latency, sent, seen) = latency_samples(&mut client, &log, samples)?;
+    let socket_name = subject
+        .socket
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    // The probe ended the session, so the client leaves by itself and writes its marks; wait
+    // for them before letting the client go.
+    let prefix = format!("{socket_name}.stages-client-");
+    wait_for("the client's marks", Duration::from_secs(10), || {
+        fs::read_dir(&config.dir).is_ok_and(|mut d| {
+            d.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().starts_with(&prefix)))
+        })
+    })?;
+    drop(client);
+    subject.stop();
+    let table = stages_table(&config.dir, &socket_name, &sent, &seen)?;
+    println!(
+        "  the latency test of the same run: round trip p50 {} us (key to pane {}, pane to client {})",
+        latency["round_trip"]["p50_us"],
+        latency["key_to_pane"]["p50_us"],
+        latency["pane_to_client"]["p50_us"]
+    );
+    Ok(json!({"latency": latency, "stages": table}))
 }
 
 // ---------------------------------------------------------------- idle
@@ -1296,15 +1621,18 @@ fn run() -> R<()> {
     }
 
     type Test = fn(&Config) -> R<Value>;
-    let tests: [(&str, &str, Test); 5] = [
+    let tests: [(&str, &str, Test); 6] = [
         ("throughput", "Throughput", run_throughput),
         ("latency", "Key latency", run_latency),
         ("idle", "Idle", run_idle),
         ("memory", "Memory", run_memory),
         ("startup", "Startup", run_startup),
+        ("stages", "Stages of a key and its echo", run_stages),
     ];
     for (key, title, test) in tests {
-        if !config.runs(key) {
+        // The stage-timing run is made only when asked for by name.
+        let asked = config.tests.iter().any(|t| t == key);
+        if !config.runs(key) || (key == "stages" && !asked) {
             continue;
         }
         println!("{title}:");

@@ -7,6 +7,9 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use arcade_daemon::stage_count;
+#[cfg(feature = "stage-timing")]
+use arcade_daemon::stage_mark;
 use arcade_proto::{ClientMessage, Decoder, PROTOCOL_VERSION, ServerMessage, encode};
 
 pub enum ConnectError {
@@ -43,9 +46,16 @@ impl Connection {
     pub fn send(&mut self, message: &ClientMessage) -> Result<(), String> {
         let mut bytes = Vec::new();
         encode(message, &mut bytes).map_err(|e| e.to_string())?;
-        self.stream
+        stage_count!(Write);
+        let sent = self
+            .stream
             .write_all(&bytes)
-            .map_err(|e| format!("lost the server: {e}"))
+            .map_err(|e| format!("lost the server: {e}"));
+        #[cfg(feature = "stage-timing")]
+        if matches!(message, ClientMessage::Input(_)) {
+            stage_mark!(ClientKeySent);
+        }
+        sent
     }
 
     /// Wait for the next message. `Ok(None)` means the daemon closed the connection.

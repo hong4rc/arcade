@@ -238,6 +238,7 @@ impl Server {
                 }
             }
         }
+        stage_mark!(DaemonSnapshot);
         let window = session.current_window();
         let focus = window.focus;
         let focus_rect = visible.iter().find(|(p, _)| *p == focus).map(|(_, r)| *r);
@@ -330,7 +331,9 @@ impl Server {
         session.need_full = false;
         session.relayout = false;
         session.chrome_dirty = false;
+        stage_mark!(DaemonComposed);
         let bytes = session.renderer.render(&mut session.screen, &cursor, modes);
+        stage_mark!(DaemonEncoded);
         if !bytes.is_empty() {
             session.last_frame = Some(Instant::now());
             self.send_output(client_id, &bytes);

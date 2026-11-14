@@ -7,6 +7,7 @@
 use std::io::Read;
 use std::os::fd::AsRawFd;
 
+use arcade_daemon::{stage_count, stage_mark};
 use arcade_proto::{AttachRequest, ClientMessage, ServerMessage};
 
 use crate::connection::Connection;
@@ -67,7 +68,13 @@ pub fn attach(mut connection: Connection, mut request: AttachRequest) -> i32 {
         }
     };
     let _ = write_all(stdout_fd, ENTER_SEQUENCE);
+    #[cfg(feature = "stage-timing")]
+    let stage_file = stage_file();
     let outcome = run(&mut connection, &signals, stdin_fd, stdout_fd);
+    #[cfg(feature = "stage-timing")]
+    if let Some(path) = stage_file {
+        arcade_daemon::stage::dump(&path);
+    }
     // Back to the terminal the way it was, before saying anything.
     let _ = write_all(stdout_fd, RESTORE_SEQUENCE);
     drop(raw);
@@ -86,6 +93,16 @@ pub fn attach(mut connection: Connection, mut request: AttachRequest) -> i32 {
             1
         }
     }
+}
+
+/// Where this process writes its stage-timing marks: next to the daemon's socket, in a file of
+/// its own. The socket is the one given with `--socket` (the measurement always gives one).
+#[cfg(feature = "stage-timing")]
+fn stage_file() -> Option<std::path::PathBuf> {
+    let args: Vec<String> = std::env::args().collect();
+    let at = args.iter().position(|a| a == "--socket")?;
+    let socket = std::path::PathBuf::from(args.get(at + 1)?);
+    Some(socket.with_extension(format!("stages-client-{}", std::process::id())))
 }
 
 fn write_all(fd: i32, mut bytes: &[u8]) -> std::io::Result<()> {
@@ -149,6 +166,8 @@ fn run(connection: &mut Connection, signals: &Signals, stdin_fd: i32, stdout_fd:
         ];
         // SAFETY: poll on three live pollfds, waiting with no timeout.
         let rc = unsafe { libc::poll(fds.as_mut_ptr(), 3, -1) };
+        stage_mark!(ClientWake);
+        stage_count!(Poll);
         if rc < 0 {
             if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
                 continue;
@@ -181,6 +200,8 @@ fn run(connection: &mut Connection, signals: &Signals, stdin_fd: i32, stdout_fd:
         if fds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
             // SAFETY: read into a live buffer of the stated length.
             let n = unsafe { libc::read(stdin_fd, key_buf.as_mut_ptr().cast(), key_buf.len()) };
+            stage_count!(Read);
+            stage_mark!(ClientKeyRead);
             if n == 0 {
                 return Outcome::Left("[detached: terminal closed]".to_string());
             }
@@ -200,6 +221,7 @@ fn run(connection: &mut Connection, signals: &Signals, stdin_fd: i32, stdout_fd:
 
         // The daemon.
         if fds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+            stage_count!(Read);
             match connection.stream.read(&mut net_buf) {
                 Ok(0) => return Outcome::Lost("[lost server]".to_string()),
                 Ok(n) => connection.decoder.push(&net_buf[..n]),
@@ -218,9 +240,11 @@ fn handle_messages(connection: &mut Connection, stdout_fd: i32) -> Option<Outcom
     loop {
         match connection.decoder.next_message() {
             Ok(Some(ServerMessage::Output(bytes))) => {
+                stage_count!(Write);
                 if write_all(stdout_fd, &bytes).is_err() {
                     return Some(Outcome::Left("[detached: terminal closed]".to_string()));
                 }
+                stage_mark!(ClientStdoutWritten);
             }
             Ok(Some(ServerMessage::Detached { message, .. })) => {
                 return Some(Outcome::Left(format!("[{message}]")));
