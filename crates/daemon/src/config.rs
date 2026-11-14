@@ -286,6 +286,47 @@ fn suggestion(name: &str) -> String {
     }
 }
 
+/// How many single-character edits turn one word into the other.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (diagonal + usize::from(ca != *cb))
+                .min(row[j] + 1)
+                .min(above + 1);
+            diagonal = above;
+        }
+    }
+    row[b.len()]
+}
+
+/// The message for a key that is not known: `unknown key "section.key"`, and the closest known
+/// key when one is at most two edits away.
+fn unknown_key(section: &str, key: &str, known: &[&str]) -> String {
+    let full = |k: &str| {
+        if section.is_empty() {
+            k.to_string()
+        } else {
+            format!("{section}.{k}")
+        }
+    };
+    let kind = if section.is_empty() { "section" } else { "key" };
+    let mut message = format!("unknown {kind} \"{}\"", full(key));
+    let closest = known
+        .iter()
+        .map(|k| (edit_distance(key, k), *k))
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, _)| *d);
+    if let Some((_, k)) = closest {
+        message.push_str(&format!(", did you mean \"{}\"?", full(k)));
+    }
+    message
+}
+
 fn nav_chars(text: &str) -> Result<[char; 4], String> {
     let chars: Vec<char> = text.chars().collect();
     let Ok(four) = <[char; 4]>::try_from(chars) else {
@@ -335,7 +376,23 @@ fn read_keys(r: &mut Reader<'_>, table: &DeTable<'_>, config: &mut Config) {
                 }
             }
             "direct" | "after-prefix" | "copy" | "list" => {}
-            _ => r.error(name.span().start, format!("unknown key \"keys.{key}\"")),
+            _ => r.error(
+                name.span().start,
+                unknown_key(
+                    "keys",
+                    key,
+                    &[
+                        "prefix",
+                        "direct-modifier",
+                        "nav",
+                        "repeat-window-ms",
+                        "direct",
+                        "after-prefix",
+                        "copy",
+                        "list",
+                    ],
+                ),
+            ),
         }
     }
     // `prefix` is a setting (a string) and may also be the table of bindings (a table), but a
@@ -502,7 +559,9 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                                 None => config.status_position,
                             };
                         }
-                        other => r.error(n.span().start, format!("unknown key \"status.{other}\"")),
+                        other => {
+                            r.error(n.span().start, unknown_key("status", other, &["position"]))
+                        }
                     }
                 }
             }
@@ -519,7 +578,10 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                                 config.renumber = b;
                             }
                         }
-                        other => r.error(n.span().start, format!("unknown key \"window.{other}\"")),
+                        other => r.error(
+                            n.span().start,
+                            unknown_key("window", other, &["base-index", "renumber"]),
+                        ),
                     }
                 }
             }
@@ -528,10 +590,7 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                     match n.get_ref().as_ref() {
                         "lines" => config.scrollback_lines = r.integer("lines", v),
                         other => {
-                            r.error(
-                                n.span().start,
-                                format!("unknown key \"scrollback.{other}\""),
-                            );
+                            r.error(n.span().start, unknown_key("scrollback", other, &["lines"]));
                         }
                     }
                 }
@@ -558,7 +617,14 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                             }
                         }
                         other => {
-                            r.error(n.span().start, format!("unknown key \"clipboard.{other}\""));
+                            r.error(
+                                n.span().start,
+                                unknown_key(
+                                    "clipboard",
+                                    other,
+                                    &["mode", "command", "allow-pane-write"],
+                                ),
+                            );
                         }
                     }
                 }
@@ -571,7 +637,14 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                     );
                 }
             }
-            other => r.error(name.span().start, format!("unknown section \"{other}\"")),
+            other => r.error(
+                name.span().start,
+                unknown_key(
+                    "",
+                    other,
+                    &["keys", "status", "window", "scrollback", "clipboard"],
+                ),
+            ),
         }
     }
     config.keys.prefix = normalize(config.keys.prefix);
@@ -682,6 +755,16 @@ position = "top"
         assert_eq!(got, vec!["line 3: unknown key \"keys.bogus\""]);
         let got = lines("\n\n[nothing]\na = 1\n");
         assert_eq!(got, vec!["line 3: unknown section \"nothing\""]);
+        // A near miss gets the closest name; a name like nothing known gets none.
+        let got = lines("[keys]\nprefx = \"ctrl+b\"\nzzzzzz = 1\n[statu]\nposition = \"top\"\n");
+        assert_eq!(
+            got,
+            vec![
+                "line 2: unknown key \"keys.prefx\", did you mean \"keys.prefix\"?",
+                "line 3: unknown key \"keys.zzzzzz\"",
+                "line 4: unknown section \"statu\", did you mean \"status\"?",
+            ]
+        );
         let got = lines("[keys.prefix]\n\"z\" = \"pane.fly\"\n");
         assert_eq!(got.len(), 1);
         assert!(
