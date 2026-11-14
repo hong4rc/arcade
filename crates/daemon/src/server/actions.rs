@@ -855,6 +855,7 @@ impl Server {
             self.scrollback_lines = lines;
         }
         self.config = new;
+        self.sync_sleep_guard();
         let (base_index, renumber) = (self.config.base_index, self.config.renumber);
         let mut resize = Vec::new();
         for s in self.sessions.values_mut() {

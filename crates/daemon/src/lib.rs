@@ -35,6 +35,7 @@ mod layout;
 mod log;
 mod paths;
 mod picker;
+mod power;
 pub mod pty;
 mod render;
 mod server;

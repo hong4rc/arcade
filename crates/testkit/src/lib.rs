@@ -92,6 +92,9 @@ impl TestDaemon {
         std::fs::write(dir.join(".profile"), "PS1='$ '\n").expect("write the test profile");
         let socket = dir.join("s");
         let mut config = DaemonConfig::new(&socket);
+        // Hundreds of tests start a daemon: none of them should start a process that holds the
+        // machine awake. The tests of that feature turn it on.
+        config.config.prevent_sleep = false;
         adjust(&mut config);
         let handle = std::thread::spawn(move || arcade_daemon::run(config));
         let mut daemon = TestDaemon {

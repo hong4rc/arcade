@@ -38,6 +38,14 @@ impl Env {
             format!("PS1='$ '\nPATH={bin_dir}:$PATH\nexport PATH\n"),
         )
         .unwrap();
+        // The daemon this starts reads the home directory's file: it must not start a process
+        // that holds the machine awake for every test.
+        std::fs::create_dir_all(dir.join(".config/arcade")).unwrap();
+        std::fs::write(
+            dir.join(".config/arcade/config.toml"),
+            "[power]\nprevent-sleep = false\n",
+        )
+        .unwrap();
         let socket = dir.join("s");
         Env { dir, socket }
     }
@@ -589,6 +597,7 @@ fn config_check_reports_mistakes_with_lines() {
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(stdout(&out).starts_with("ok:"), "{}", stdout(&out));
     // Without a file at the usual place (the test's home is its own directory).
+    std::fs::remove_file(env.dir.join(".config/arcade/config.toml")).unwrap();
     let out = env.plain(&["config", "check"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(stdout(&out).contains("defaults"), "{}", stdout(&out));
@@ -602,7 +611,7 @@ fn the_daemon_reads_the_file_in_the_home_directory() {
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(
         config_dir.join("config.toml"),
-        "[status]\nposition = \"top\"\n",
+        "[status]\nposition = \"top\"\n[power]\nprevent-sleep = false\n",
     )
     .unwrap();
     let mut host = env.host(&["new", "-s", "homefile"]);
@@ -826,7 +835,11 @@ fn a_working_session_with_the_authors_settings() {
     let env = Env::new();
     let config_dir = env.dir.join(".config/arcade");
     std::fs::create_dir_all(&config_dir).unwrap();
-    std::fs::write(config_dir.join("config.toml"), AUTHOR_CONFIG).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!("{AUTHOR_CONFIG}\n[power]\nprevent-sleep = false\n"),
+    )
+    .unwrap();
 
     let mut host = env.host_sized(&["new", "-s", "work"], 100, 30);
     host.wait_for_prompt().unwrap();
@@ -917,4 +930,60 @@ fn a_socket_path_that_is_too_long_is_named_in_plain_words() {
         "{text}"
     );
     assert!(!text.contains("SUN_LEN"), "{text}");
+}
+
+/// The process that keeps the machine awake leaves with the daemon even when the daemon is
+/// killed with signal 9 and cannot say goodbye. The daemon is the real one the `arcade` command
+/// starts; the process is found by the number the daemon logged, never by name.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_daemon_killed_hard_leaves_no_process_holding_the_machine_awake() {
+    let env = Env::new();
+    std::fs::write(
+        env.dir.join(".config/arcade/config.toml"),
+        "[power]\nprevent-sleep = true\n",
+    )
+    .unwrap();
+    let out = env.plain(&["new", "-d", "-s", "guarded"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let log_path = env.socket.with_extension("log");
+    let number_after = |text: &str, marker: &str| -> Option<u32> {
+        text.lines()
+            .find_map(|l| l.split(marker).nth(1))
+            .and_then(|n| {
+                let digits: String = n.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse().ok()
+            })
+    };
+    let start = Instant::now();
+    let (daemon, guard) = loop {
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let daemon = number_after(&log, "daemon started, process ");
+        let guard = number_after(&log, "keeping the machine awake, process ");
+        if let (Some(d), Some(g)) = (daemon, guard) {
+            break (d, g);
+        }
+        assert!(start.elapsed() < WAIT, "the log says:\n{log}");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let alive = |pid: u32| {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    };
+    assert!(alive(guard));
+    let status = Command::new("kill")
+        .args(["-9", &daemon.to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let start = Instant::now();
+    while alive(guard) {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "process {guard} is still holding the machine awake after the daemon was killed"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

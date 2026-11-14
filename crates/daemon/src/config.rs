@@ -80,6 +80,8 @@ pub struct Config {
     pub renumber: bool,
     pub scrollback_lines: Option<usize>,
     pub clipboard: ClipboardConfig,
+    /// Whether the daemon keeps the machine from sleeping because it sat idle.
+    pub prevent_sleep: bool,
 }
 
 impl Default for Config {
@@ -91,6 +93,7 @@ impl Default for Config {
             base_index: 1,
             renumber: true,
             scrollback_lines: None,
+            prevent_sleep: true,
             clipboard: ClipboardConfig {
                 mode: ClipboardMode::Osc52,
                 command: None,
@@ -585,6 +588,23 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                     }
                 }
             }
+            "power" => {
+                for (n, v) in table.iter() {
+                    match n.get_ref().as_ref() {
+                        "prevent-sleep" => {
+                            if let Some(b) = r.boolean("prevent-sleep", v) {
+                                config.prevent_sleep = b;
+                            }
+                        }
+                        other => {
+                            r.error(
+                                n.span().start,
+                                unknown_key("power", other, &["prevent-sleep"]),
+                            );
+                        }
+                    }
+                }
+            }
             "scrollback" => {
                 for (n, v) in table.iter() {
                     match n.get_ref().as_ref() {
@@ -642,7 +662,14 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                 unknown_key(
                     "",
                     other,
-                    &["keys", "status", "window", "scrollback", "clipboard"],
+                    &[
+                        "keys",
+                        "status",
+                        "window",
+                        "scrollback",
+                        "clipboard",
+                        "power",
+                    ],
                 ),
             ),
         }
@@ -747,6 +774,37 @@ position = "top"
             .iter()
             .map(ToString::to_string)
             .collect()
+    }
+
+    #[test]
+    fn the_machine_is_kept_awake_unless_the_file_says_not() {
+        assert!(Config::default().prevent_sleep);
+        assert!(parse("").unwrap().prevent_sleep);
+        assert!(parse("[power]\n").unwrap().prevent_sleep);
+        assert!(
+            parse("[power]\nprevent-sleep = true\n")
+                .unwrap()
+                .prevent_sleep
+        );
+        assert!(
+            !parse("[power]\nprevent-sleep = false\n")
+                .unwrap()
+                .prevent_sleep
+        );
+        let got = lines("[power]\nprevent-sleep = \"no\"\n");
+        assert!(got[0].starts_with("line 2:"), "{got:?}");
+        let got = lines("[power]\nprevent-slep = false\n");
+        assert_eq!(
+            got,
+            vec![
+                "line 2: unknown key \"power.prevent-slep\", did you mean \"power.prevent-sleep\"?"
+            ]
+        );
+        let got = lines("[powr]\nprevent-sleep = false\n");
+        assert_eq!(
+            got,
+            vec!["line 1: unknown section \"powr\", did you mean \"power\"?"]
+        );
     }
 
     #[test]

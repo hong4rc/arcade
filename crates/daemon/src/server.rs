@@ -388,7 +388,13 @@ struct Server {
     startup_message: Option<String>,
     /// What the last copy held.
     clipboard: Clipboard,
+    /// The process that keeps the machine awake, while there is one; and whether it was asked
+    /// to end (so that its ending is not a surprise).
+    sleep_guard: Option<(crate::power::SleepGuard, bool)>,
 }
+
+/// The number the exit of the sleep guard is reported under, in place of a pane's.
+const SLEEP_GUARD_EXIT: u64 = u64::MAX;
 
 /// Run the daemon until its last session closes (or it is told to stop). Removes the socket
 /// file on the way out.
@@ -447,6 +453,7 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         config_path: config.config_path.clone(),
         startup_message,
         clipboard: Clipboard::default(),
+        sleep_guard: None,
         log: config
             .log_path
             .as_deref()
@@ -462,6 +469,7 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         std::process::id(),
         arcade_proto::PROTOCOL_VERSION
     ));
+    server.sync_sleep_guard();
     let result = server.event_loop();
     match &result {
         Ok(()) => server.log.line("daemon stopped"),
@@ -1436,8 +1444,72 @@ impl Server {
         }
     }
 
+    /// Start or stop the process that keeps the machine awake, to match the settings. A failure
+    /// is a line in the log and nothing else.
+    pub(super) fn sync_sleep_guard(&mut self) {
+        let wanted = self.config.prevent_sleep;
+        // One that was asked to end and has not been heard of since makes way for a new one.
+        if wanted
+            && self
+                .sleep_guard
+                .as_ref()
+                .is_some_and(|(_, stopping)| *stopping)
+        {
+            self.sleep_guard = None;
+        }
+        match (&mut self.sleep_guard, wanted) {
+            (None, true) => {
+                let tx = self.exits_tx.clone();
+                let waker = self.waker.clone();
+                match crate::power::start(move |pid, how| {
+                    let _ = tx.send((SLEEP_GUARD_EXIT, format!("{pid} {how}")));
+                    let _ = waker.wake();
+                }) {
+                    Ok(guard) => {
+                        self.log.line(&format!(
+                            "keeping the machine awake, process {}",
+                            guard.pid()
+                        ));
+                        self.sleep_guard = Some((guard, false));
+                    }
+                    Err(why) => self
+                        .log
+                        .line(&format!("the machine is not kept awake: {why}")),
+                }
+            }
+            (Some((guard, stopping)), false) if !*stopping => {
+                guard.stop();
+                *stopping = true;
+                self.log.line("no longer keeping the machine awake");
+            }
+            _ => {}
+        }
+    }
+
+    /// The sleep guard's process ended: if it was not asked to, say so once and carry on.
+    fn sleep_guard_exited(&mut self, note: &str) {
+        let (pid, how) = note.split_once(' ').unwrap_or((note, ""));
+        let Some((guard, stopping)) = &self.sleep_guard else {
+            return;
+        };
+        if guard.pid().to_string() != pid {
+            return;
+        }
+        let asked = *stopping;
+        self.sleep_guard = None;
+        if !asked {
+            self.log.line(&format!(
+                "the process that keeps the machine awake ended ({how}); it stays ended until the configuration is loaded again"
+            ));
+        }
+    }
+
     fn collect_exits(&mut self) {
         while let Ok((pane_id, note)) = self.exits_rx.try_recv() {
+            if pane_id == SLEEP_GUARD_EXIT {
+                self.sleep_guard_exited(&note);
+                continue;
+            }
             if let Some(pane) = self.panes.get_mut(&pane_id) {
                 pane.exit_note = Some(note);
                 self.exited.push(pane_id);
@@ -1521,6 +1593,9 @@ impl Server {
     // ---- Shutdown ----
 
     fn shutdown_cleanup(&mut self) {
+        if let Some((guard, _)) = self.sleep_guard.take() {
+            guard.stop();
+        }
         for p in self.panes.values() {
             pty::signal_group(p.pid, libc::SIGKILL);
         }
