@@ -296,11 +296,17 @@ fn a_key_that_does_not_repeat_is_typing_inside_the_repeat_window() {
     wait_panes(&mut client, &daemon, 2);
     client.send(PREFIX);
     client.send(b"h");
-    // `c` and `e` are prefix keys (new window, a pane command) that do not repeat: inside the
-    // window they are letters for the pane, not commands.
-    client.send(b"echo typed-c-e");
+    // `c` is a prefix key (new window) that does not repeat: inside the window it is a letter
+    // for the pane, not a command.
+    client.send(b"cd /; echo typed-c-e");
     client.send(b"\r");
-    screen_has(&mut client, "typed-c-e");
+    // The whole line reached the pane, with its first `c`, and no window was made.
+    let ok = client.wait_until(WAIT, |c| {
+        c.content_rows()
+            .iter()
+            .any(|r| r.trim_start().starts_with("typed-c-e"))
+    });
+    assert!(ok, "{}", client.screen_text());
     assert!(
         !client.status_row().contains(" 2 "),
         "a window was made: {}",
