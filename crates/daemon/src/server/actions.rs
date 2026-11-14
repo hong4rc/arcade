@@ -399,7 +399,7 @@ impl Server {
                 session.chrome_dirty = true;
                 Ok(String::new())
             }
-            Command::ArcadeReloadConfig => self.reload_config(),
+            Command::ArcadeReloadConfig => self.reload_config(ctx.session),
             Command::List(command) => self.list_command(ctx.session, command),
             Command::SessionSwitch(name) => self.switch_session(ctx.session, &name),
             Command::WindowMoveToSession(Some(name)) => self.move_window_to_session(ctx, &name),
@@ -912,7 +912,7 @@ impl Server {
 
     /// Read the configuration file again and replace the settings and the key tables with it.
     /// A file with a mistake changes nothing and says what is wrong.
-    fn reload_config(&mut self) -> Result<String, String> {
+    fn reload_config(&mut self, session_id: u64) -> Result<String, String> {
         let path = self
             .config_path
             .clone()
@@ -921,7 +921,10 @@ impl Server {
             Ok(new) => {
                 self.apply_config(new);
                 self.log.line("configuration reloaded");
-                Ok("configuration reloaded".to_string())
+                Ok(match self.key_warning_line(session_id) {
+                    Some(line) => format!("configuration reloaded; {line}"),
+                    None => "configuration reloaded".to_string(),
+                })
             }
             Err(errors) => {
                 for e in &errors {

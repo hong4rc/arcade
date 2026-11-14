@@ -51,7 +51,7 @@ pub enum TableName {
 }
 
 impl TableName {
-    fn word(self) -> &'static str {
+    pub fn word(self) -> &'static str {
         match self {
             TableName::Direct => "direct",
             TableName::Prefix => "prefix",

@@ -274,6 +274,11 @@ struct Session {
     jump_candidate: Option<u64>,
     /// After such a jump: the pane it left and the pane it went to; the return key goes back.
     return_to: Option<(u64, u64)>,
+    /// What the host terminal can send, once it has answered the question asked at attach.
+    host_keyboard: Option<crate::keytools::Host>,
+    /// The question of the host terminal's keyboard is out and not all answered; true when the
+    /// answer that says the kitty protocol is there has come.
+    host_probe: Option<bool>,
 }
 
 /// The shortest time between two looks at the panes' directories for the windows' names.
@@ -1081,6 +1086,9 @@ impl Server {
             session.tree = None;
             // A person who attaches is looking at the terminal.
             session.host_focused = true;
+            // What this terminal can send is asked again for every client.
+            session.host_keyboard = None;
+            session.host_probe = Some(false);
             if let Some(message) = self.startup_message.take() {
                 session.key_state.show_message(message, Instant::now());
             }
@@ -1096,6 +1104,7 @@ impl Server {
             session.drag = None;
         }
         self.send(id, &ServerMessage::Attached { session: name });
+        self.send_output(id, crate::keytools::HOST_QUERY);
         self.resize_session(session_id, cols, rows);
     }
 
@@ -1295,6 +1304,8 @@ impl Server {
                 bell_due: None,
                 jump_candidate: None,
                 return_to: None,
+                host_keyboard: None,
+                host_probe: None,
             },
         );
         Ok(session_id)

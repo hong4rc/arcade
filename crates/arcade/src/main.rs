@@ -3,6 +3,7 @@
 mod client;
 mod connection;
 mod host;
+mod keytool;
 mod notify;
 mod wait;
 
@@ -25,7 +26,12 @@ commands:
   kill-session [-t <session>]     close a session
   kill-server                     stop the daemon and every session
   run <command> [<argument>...]   run a command, for scripts (for example session.detach)
-  config check [<file>]           check the configuration file and list its mistakes
+  config check [--host kitty|legacy] [<file>]
+                                  check the configuration file: list its mistakes and the
+                                  bindings that cannot work
+  keys list [--host kitty|legacy] [<file>]
+                                  print every key binding in force, with its source
+  keys test [<file>]              show the name of each key Arcade receives (Ctrl+C quits)
   notify [--class <info|input|approval|error>] [--title <text>] [--message <text>]
          [--target <pane>] [--source <name>] [--strict]
                                   tell Arcade that a pane needs attention (for hooks: it
@@ -142,11 +148,22 @@ fn run(mut args: Vec<String>) -> u8 {
             }
             list_command(&options)
         }
-        "config" => match rest {
-            [word] if word == "check" => config_check(None),
-            [word, file] if word == "check" => config_check(Some(PathBuf::from(file))),
-            _ => usage_error("usage: config check [<file>]"),
+        "config" => match rest.split_first() {
+            Some((word, args)) if word == "check" => {
+                let mut args = args.to_vec();
+                let host = match keytool::take_host_flag(&mut args) {
+                    Ok(host) => host,
+                    Err(e) => return usage_error(&e),
+                };
+                match args.as_slice() {
+                    [] => config_check(None, host),
+                    [file] => config_check(Some(PathBuf::from(file)), host),
+                    _ => usage_error("usage: config check [--host kitty|legacy] [<file>]"),
+                }
+            }
+            _ => usage_error("usage: config check [--host kitty|legacy] [<file>]"),
         },
+        "keys" => keytool::run(rest, default_config_path()),
         "notify" => notify::run(&options.socket, rest),
         "kill-server" => simple_command(&options, "server.kill", &[], None, true),
         "kill-session" => {
@@ -190,18 +207,20 @@ fn default_config_path() -> Option<PathBuf> {
 }
 
 /// `arcade config check`: read the file and say what is wrong with it, with the lines.
-fn config_check(file: Option<PathBuf>) -> u8 {
+fn config_check(file: Option<PathBuf>, host: Option<arcade_daemon::keytools::Host>) -> u8 {
     let Some(path) = file.or_else(default_config_path) else {
         eprintln!("arcade: no configuration file path (set HOME or ARCADE_CONFIG)");
         return 1;
     };
     if !path.exists() {
         println!("no file at {}: the defaults are used", path.display());
+        keytool::print_warnings(&arcade_daemon::config::Config::default(), host);
         return 0;
     }
     match arcade_daemon::config::load(&path) {
-        Ok(_) => {
+        Ok(config) => {
             println!("ok: {}", path.display());
+            keytool::print_warnings(&config, host);
             0
         }
         Err(errors) => {

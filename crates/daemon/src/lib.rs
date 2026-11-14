@@ -31,6 +31,7 @@ pub mod config;
 mod copy;
 mod keymap;
 mod keys;
+pub mod keytools;
 mod layout;
 mod log;
 mod notify;
@@ -46,7 +47,8 @@ mod status;
 mod theme;
 mod tree;
 
-pub use keymap::{Keymap, KeysConfig, parse_key};
+pub use keymap::{Binding, Keymap, KeysConfig, Table, normalize, parse_key, typed_name};
+pub use keys::{Input, KeyReader};
 pub use paths::{
     check_socket_path_length, default_socket_path, default_socket_path_from, prepare_socket_dir,
     resolve_socket_path,

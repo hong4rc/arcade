@@ -12,11 +12,11 @@ path = "src/main.rs"
 [dependencies]
 arcade-daemon = { path = "../daemon" }
 arcade-proto = { path = "../proto" }
+arcade-term = { path = "../term" }
 libc = "0.2"
 
 [dev-dependencies]
 arcade-testkit = { path = "../testkit" }
-arcade-term = { path = "../term" }
 
 [features]
 # Timestamps along the key and output paths (see the daemon's `stage` module). Off by default.

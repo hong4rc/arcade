@@ -37,7 +37,9 @@ The option `--socket <path>`, placed first on the command line, uses another soc
 | `arcade kill-session [-t <session>]` | Close a session |
 | `arcade kill-server` | Stop the daemon and every session |
 | `arcade run <command> [<argument>...]` | Run a named command (for example `session.detach`), meant for scripts |
-| `arcade config check [<file>]` | Check a configuration file and list its errors, without a daemon |
+| `arcade config check [--host kitty\|legacy] [<file>]` | Check a configuration file and list its errors, then the bindings that cannot work on the terminal (see 5.11), without a daemon |
+| `arcade keys list [--host kitty\|legacy] [<file>]` | Print every key binding in force, table by table, with where it comes from (`default` or `config`), then the bindings that cannot work. Reads the file only, so it needs no daemon and gives the same text every time |
+| `arcade keys test [<file>]` | Show, for each key you press, the name Arcade receives, its bytes and what it does in each table. `Ctrl+C` quits and the terminal is given back as it was |
 
 **When typed inside an Arcade pane** (Arcade sets the variables `ARCADE` and `ARCADE_PANE`): `arcade new` and `arcade attach` do not nest an Arcade inside Arcade. They switch the screen you are looking at to the other session. `arcade new -d` still only creates a session and changes nothing.
 
@@ -304,12 +306,14 @@ A program in a pane can also set the clipboard with OSC 52 when `allow-pane-writ
 If you use both ways, the notification from the hook replaces the one from the escape sequence that comes at the same time (same source or a class at least as urgent wins, see 5.8). To tell "finished a reply" from "finished the whole task", give the hooks different `--title` values; Arcade only knows the four classes. Keep prompts, commands and transcripts out of `--message`: Arcade keeps the class, title, message, source and time of each notification in memory until it is cleared.
 - Run `arcade notify check` inside a pane to see which pane and socket a hook would use, and `arcade notify log` to see what became of the latest signals.
 
+**5.11 Keys that cannot work, and what Arcade receives.** A terminal without the kitty keyboard protocol sends old key codes, and some keys cannot be told apart in them: `Ctrl` with a digit or a symbol, `Ctrl+m` and Enter, `Ctrl+i` and Tab, `Ctrl+Shift` and `Ctrl` with a letter, and anything with Cmd. Arcade asks the terminal when you attach. If it has only old key codes and a binding of your tables needs one of these keys, the status bar shows one line, for example `3 key bindings cannot work here (first: ctrl+m); run arcade keys list`, and again each time you reload the configuration. `arcade config check` and `arcade keys list` name every such binding with the reason, for example `warning: [keys.direct] ctrl+alt+1: the terminal does not send Ctrl with a digit`; run in a terminal they ask it themselves, and `--host legacy` or `--host kitty` says what to assume when there is no terminal to ask (without either, they say the host is not known and do not guess). Two more warnings do not depend on the terminal: a `direct` binding on the prefix key is never reached, and a `prefix` binding on the prefix key stops "prefix twice" from sending it to the program; on macOS, `Ctrl+Space` never reaches the terminal. The warnings never stop Arcade from starting.
+
+To see what really arrives, run `arcade keys test` in the terminal you use. A key that shows nothing was taken by the system, the window manager or the terminal before it reached Arcade (for example `Alt+h` under AeroSpace), while `Ctrl+Alt+h` shows its name and the command it runs.
+
 ## 6. Not built yet
 
 Things that belong to Phase 1 or to the design but are not in the current build:
 
 - Mouse: double click to select a word, triple click to select a line, an option to copy on release, scrolling by itself when dragging past a pane edge, dragging a border to resize, clicking a tab on the status bar.
-- `arcade keys list` and `arcade keys test` on the command line (inside Arcade, use the prefix then `?`).
-- A warning for bindings that cannot work (beyond the errors of `config check`).
 - For after Phase 1: several clients on one session (a second client entering replaces the first), saving and restoring sessions after the daemon stops, rectangle selection, changing layouts by mouse, themes.
 - Copy mode has one known limit: two identical lines next to each other can be off by one line while the content is scrolling.

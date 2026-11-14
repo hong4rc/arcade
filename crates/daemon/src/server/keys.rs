@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::keymap::{self, Binding, Keymap, typed_name};
+use crate::keytools;
 use crate::picker::PickerKind;
 use crate::status::Prompt;
 
@@ -150,6 +151,9 @@ impl Server {
                 Input::Mouse(mouse) => self.handle_mouse(session_id, mouse),
                 Input::Focus(focused) => self.host_focus(session_id, focused),
                 Input::Raw(raw) => {
+                    if self.host_reply(session_id, &raw) {
+                        continue;
+                    }
                     if self.in_prompt(session_id)
                         || self.picker_open(session_id)
                         || self.focus_in_copy_mode(session_id)
@@ -163,6 +167,43 @@ impl Server {
                 }
             }
         }
+    }
+
+    /// An answer to the question of the host terminal's keyboard, asked at attach: it is for
+    /// Arcade, not for the pane. When the last answer is in, a terminal that cannot send all the
+    /// keys the tables use is told on the status bar.
+    fn host_reply(&mut self, session_id: u64, raw: &[u8]) -> bool {
+        let Some(reply) = keytools::read_reply(raw) else {
+            return false;
+        };
+        let Some(s) = self.sessions.get_mut(&session_id) else {
+            return false;
+        };
+        let Some(kitty) = s.host_probe else {
+            // Nothing was asked: it is the pane's own business.
+            return false;
+        };
+        match reply {
+            keytools::Reply::Keyboard => s.host_probe = Some(true),
+            keytools::Reply::Attributes => {
+                s.host_probe = None;
+                s.host_keyboard = Some(if kitty {
+                    keytools::Host::Kitty
+                } else {
+                    keytools::Host::Legacy
+                });
+                if let Some(line) = self.key_warning_line(session_id) {
+                    self.set_message(session_id, &line);
+                }
+            }
+        }
+        true
+    }
+
+    /// The one line about bindings that cannot work, when the host is known and some cannot.
+    pub(super) fn key_warning_line(&self, session_id: u64) -> Option<String> {
+        let host = self.sessions.get(&session_id)?.host_keyboard?;
+        keytools::status_line(&keytools::warnings(&self.config, Some(host)))
     }
 
     pub(super) fn picker_open(&self, session_id: u64) -> bool {
