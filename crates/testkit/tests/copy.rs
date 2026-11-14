@@ -386,3 +386,49 @@ fn the_authors_movement_keys_and_a_rebound_key_work_in_copy_mode() {
     assert!(left_copy_mode(&mut client));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A pane with a scrollback of 200 lines that has printed 1 to 300, and a background job that
+/// prints `more` further lines (numbered from 5001) a moment from now, while copy mode is open.
+fn full_scrollback_with_late_output(daemon: &TestDaemon, more: usize) -> TestClient {
+    let mut client = client(daemon);
+    client.type_line(&format!("seq 1 300; (sleep 1; seq 5001 {}) &", 5000 + more));
+    client.wait_for_row("300").unwrap();
+    enter(&mut client);
+    search(&mut client, false, "250");
+    client.wait_for_row("250").unwrap();
+    client
+}
+
+#[test]
+fn the_selection_stays_on_its_line_when_old_lines_are_cut_from_a_full_scrollback() {
+    let daemon = TestDaemon::start_with(|c| c.scrollback_lines = 200);
+    let mut client = full_scrollback_with_late_output(&daemon, 100);
+    client.send(b"V");
+    // Wait for the late output: the pane has printed 100 more lines, so lines are cut off the
+    // top of the scrollback while the selection is held.
+    std::thread::sleep(Duration::from_millis(2500));
+    client.read_more(std::time::Instant::now() + Duration::from_millis(100));
+    assert!(row_of(&client, "250").is_some(), "{}", client.screen_text());
+    client.send(b"y");
+    wait_clipboard(&mut client, 1);
+    assert_eq!(client.clipboard_writes, vec![b"250".to_vec()]);
+}
+
+#[test]
+fn a_selected_line_that_was_cut_off_is_dropped_with_a_message() {
+    let daemon = TestDaemon::start_with(|c| c.scrollback_lines = 200);
+    let mut client = full_scrollback_with_late_output(&daemon, 1000);
+    client.send(b"V");
+    std::thread::sleep(Duration::from_millis(2500));
+    client.read_more(std::time::Instant::now() + Duration::from_millis(100));
+    client.send(b"y");
+    // Nothing is copied: the line is gone, and the bar says so.
+    std::thread::sleep(Duration::from_millis(300));
+    client.read_more(std::time::Instant::now() + Duration::from_millis(100));
+    assert!(
+        client.clipboard_writes.is_empty(),
+        "{:?}",
+        client.clipboard_writes
+    );
+    message_has(&mut client, "no longer in the scrollback");
+}

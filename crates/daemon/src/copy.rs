@@ -71,6 +71,29 @@ pub struct Copy {
     pub search: Option<(String, bool)>,
     /// The view must be drawn again.
     pub dirty: bool,
+    /// What the oldest row, the cursor's row and the selected row said when copy mode last
+    /// looked, to find them again when old lines have been cut off the top of the scrollback.
+    marks: Marks,
+}
+
+#[derive(Default)]
+struct Marks {
+    first: String,
+    cursor: String,
+    selection: Option<String>,
+}
+
+/// How far down the scrollback a line is looked for after old lines were cut off.
+const FOLLOW_LIMIT: usize = 20_000;
+
+/// The text of a row and of the one below it: enough to tell a line from its neighbours.
+fn signature<S: Source>(src: &S, row: usize) -> String {
+    let text = |y: usize| {
+        src.line(y)
+            .map(|l| cells_text(&l.cells))
+            .unwrap_or_default()
+    };
+    format!("{}\n{}", text(row), text(row + 1))
 }
 
 fn is_blank(cell: &Cell) -> bool {
@@ -272,7 +295,61 @@ impl Copy {
             selection: None,
             search: None,
             dirty: true,
+            marks: Marks::default(),
         }
+        .remembered(src)
+    }
+
+    fn remembered<S: Source>(mut self, src: &S) -> Copy {
+        self.remember(src);
+        self
+    }
+
+    fn remember<S: Source>(&mut self, src: &S) {
+        self.marks = Marks {
+            first: signature(src, 0),
+            cursor: signature(src, self.row),
+            selection: self.selection.map(|s| signature(src, s.row)),
+        };
+    }
+
+    /// A full scrollback loses its oldest lines as the program prints, and every row number
+    /// moves up by that many. When the oldest row no longer says what it said, find the cursor's
+    /// line again and move the cursor, the view and the selection with it. A selection whose
+    /// line is gone is dropped, and the message says so.
+    fn follow<S: Source>(&mut self, src: &S) -> Option<String> {
+        if signature(src, 0) == self.marks.first {
+            return None;
+        }
+        let gone = || "the selected text is no longer in the scrollback".to_string();
+        let mut message = None;
+        let cut = (1..=self.row.min(FOLLOW_LIMIT))
+            .find(|k| signature(src, self.row - k) == self.marks.cursor);
+        match cut {
+            Some(k) => {
+                self.row -= k;
+                self.top = self.top.saturating_sub(k);
+                if let Some(selection) = self.selection.as_mut() {
+                    let same = selection.row >= k
+                        && self.marks.selection.as_deref()
+                            == Some(signature(src, selection.row - k).as_str());
+                    if same {
+                        selection.row -= k;
+                    } else {
+                        self.selection = None;
+                        message = Some(gone());
+                    }
+                }
+            }
+            None => {
+                if self.selection.take().is_some() {
+                    message = Some(gone());
+                }
+            }
+        }
+        self.settle(src);
+        self.remember(src);
+        message
     }
 
     fn line_at<S: Source>(&self, src: &S, row: usize) -> Line {
@@ -304,6 +381,15 @@ impl Copy {
 
     /// Run one command. The commands that end copy mode or copy something say so in the result.
     pub fn apply<S: Source>(&mut self, src: &S, command: CopyCommand) -> Outcome {
+        if let Some(message) = self.follow(src) {
+            return Outcome::Message(message);
+        }
+        let outcome = self.apply_command(src, command);
+        self.remember(src);
+        outcome
+    }
+
+    fn apply_command<S: Source>(&mut self, src: &S, command: CopyCommand) -> Outcome {
         let total = src.total().max(1);
         let half = usize::from(self.rows / 2).max(1);
         let page = usize::from(self.rows).max(1);
@@ -496,8 +582,13 @@ impl Copy {
         pattern: &str,
         forward: bool,
     ) -> Result<bool, String> {
+        if let Some(message) = self.follow(src) {
+            return Err(message);
+        }
         self.search = Some((pattern.to_string(), forward));
-        self.find(src, pattern, forward)
+        let found = self.find(src, pattern, forward);
+        self.remember(src);
+        found
     }
 
     fn find<S: Source>(&mut self, src: &S, pattern: &str, forward: bool) -> Result<bool, String> {
@@ -691,6 +782,38 @@ mod tests {
         for command in commands {
             c.apply(src, *command);
         }
+    }
+
+    #[test]
+    fn lines_cut_off_the_top_move_the_cursor_and_the_selection_with_their_lines() {
+        let before = rows(&["a", "b", "c", "d", "e", "f", "g", "h"]);
+        let mut c = copy_at(&before, 5, 0);
+        c.apply(&before, CopyCommand::SelectLine);
+        c.apply(&before, CopyCommand::Down);
+        assert_eq!(c.row, 6);
+        // Two lines were cut off the top and two new ones printed at the bottom.
+        let after = rows(&["c", "d", "e", "f", "g", "h", "i", "j"]);
+        let outcome = c.apply(&after, CopyCommand::Down);
+        assert_eq!(outcome, Outcome::Moved);
+        // The cursor was on `g`, now row 4, and moved one down to `h`; the line selected, `f`,
+        // is row 3.
+        assert_eq!(c.row, 5);
+        assert_eq!(c.selection.map(|s| s.row), Some(3));
+    }
+
+    #[test]
+    fn a_selected_line_cut_off_the_top_is_dropped_and_the_message_says_so() {
+        let before = rows(&["a", "b", "c", "d", "e", "f", "g", "h"]);
+        let mut c = copy_at(&before, 1, 0);
+        c.apply(&before, CopyCommand::SelectLine);
+        // Everything that was there is gone.
+        let after = rows(&["1", "2", "3", "4", "5", "6", "7", "8"]);
+        let outcome = c.apply(&after, CopyCommand::Down);
+        assert_eq!(
+            outcome,
+            Outcome::Message("the selected text is no longer in the scrollback".to_string())
+        );
+        assert!(c.selection.is_none());
     }
 
     #[test]
