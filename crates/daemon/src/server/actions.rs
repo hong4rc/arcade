@@ -221,6 +221,7 @@ impl Server {
         match &command {
             Command::SessionList => return Ok(self.list_sessions()),
             Command::KeysList => return Ok(self.list_keys()),
+            Command::Palette => return Ok(self.list_commands()),
             Command::SessionClose(Some(name)) => {
                 let session = self
                     .sessions
@@ -302,6 +303,7 @@ impl Server {
             Command::SessionList => Ok(self.list_sessions()),
             Command::WindowList => self.list_windows(ctx.session),
             Command::KeysList => Ok(self.list_keys()),
+            Command::Palette => Ok(self.list_commands()),
             Command::SessionRename(Some(name)) => {
                 if self
                     .sessions
@@ -540,6 +542,22 @@ impl Server {
             }
             return Ok(());
         }
+        if kind == PickerKind::Commands {
+            let items: Vec<Item> = self
+                .command_names()
+                .into_iter()
+                .enumerate()
+                .map(|(id, name)| {
+                    let keys = self.keys_of(name).join(", ");
+                    Item::new(id, name.to_string(), keys, false)
+                })
+                .collect();
+            if let Some(s) = self.sessions.get_mut(&session_id) {
+                s.picker = Some(Picker::new(kind, "Commands", items, 0));
+                s.chrome_dirty = true;
+            }
+            return Ok(());
+        }
         if kind == PickerKind::Windows {
             let session = self
                 .sessions
@@ -595,6 +613,7 @@ impl Server {
             PickerKind::MoveWindow => "Move window to",
             PickerKind::Keys => "Keys",
             PickerKind::Windows => "Windows",
+            PickerKind::Commands => "Commands",
         };
         if let Some(s) = self.sessions.get_mut(&session_id) {
             s.picker = Some(Picker::new(kind, title, items, selected));
@@ -687,6 +706,18 @@ impl Server {
                         // The list was made from the tables in this order, and nothing in them
                         // changes while it is open.
                         if let Some((_, binding)) = self.key_bindings().into_iter().nth(index) {
+                            self.run_binding(session_id, &binding);
+                        }
+                        Ok(String::new())
+                    }
+                    PickerKind::Commands => {
+                        // The list was made from the names in this order.
+                        if let Some(name) = self.command_names().get(index) {
+                            let binding = Binding {
+                                command: (*name).to_string(),
+                                args: Vec::new(),
+                                repeat: false,
+                            };
                             self.run_binding(session_id, &binding);
                         }
                         Ok(String::new())
@@ -835,6 +866,48 @@ impl Server {
                 self.resize_session(id, cols, rows);
             }
         }
+    }
+
+    /// Every command name that can be run by hand, in order: those of the lists themselves act
+    /// on an open list only, so they are left out.
+    fn command_names(&self) -> Vec<&'static str> {
+        let mut names: Vec<&'static str> = commands::all_names()
+            .filter(|n| !n.starts_with("list."))
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
+    /// The keys a command has, as they are typed: after the prefix, in the direct layer, in copy
+    /// mode (only bindings that take no argument).
+    fn keys_of(&self, name: &str) -> Vec<String> {
+        let prefix = typed_name(self.config.keys.prefix);
+        let in_table = |table: &crate::keymap::Table, label: &dyn Fn(Key) -> String| {
+            let mut keys: Vec<String> = table
+                .iter()
+                .filter(|(_, b)| b.command == name && b.args.is_empty())
+                .map(|(key, _)| label(*key))
+                .collect();
+            keys.sort();
+            keys
+        };
+        let mut keys = in_table(&self.keymap.prefix, &|k| {
+            format!("{prefix} {}", typed_name(k))
+        });
+        keys.extend(in_table(&self.keymap.direct, &typed_name));
+        keys.extend(in_table(&self.keymap.copy, &|k| {
+            format!("copy: {}", typed_name(k))
+        }));
+        keys
+    }
+
+    /// The commands as text, one per line: the name, a tab, the keys.
+    fn list_commands(&self) -> String {
+        self.command_names()
+            .into_iter()
+            .map(|n| format!("{n}\t{}", self.keys_of(n).join(", ")))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// The windows of a session as text, one per line: number, name, whether it is the one shown.

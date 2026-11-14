@@ -411,6 +411,7 @@ impl Keymap {
         bind(t, ch('m'), "window.move-to-session", &[], false);
         bind(t, ch('['), "copy.enter", &[], false);
         bind(t, ch(']'), "pane.paste", &[], false);
+        bind(t, ch(':'), "command.list", &[], false);
         bind(t, ch('?'), "keys.list", &[], false);
         bind(t, ch('d'), "session.detach", &[], false);
         bind(t, ch('g'), "arcade.lock", &[], false);

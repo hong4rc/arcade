@@ -25,6 +25,8 @@ pub(super) enum PromptKind {
     ClosePane,
     RenameWindow,
     RenameSession,
+    /// The one argument of the named command, typed on the prompt line.
+    Argument(&'static str),
     /// The text to look for in copy mode, going down or going up.
     SearchForward,
     SearchBackward,
@@ -308,6 +310,13 @@ impl Server {
             ("pane.close", _) => Some((PromptKind::ClosePane, "Close this pane? (y/n) ")),
             ("window.rename", true) => Some((PromptKind::RenameWindow, "Window name: ")),
             ("session.rename", true) => Some((PromptKind::RenameSession, "Session name: ")),
+            ("window.select", true) => {
+                Some((PromptKind::Argument("window.select"), "Window number: "))
+            }
+            ("session.switch", true) => Some((
+                PromptKind::Argument("session.switch"),
+                "Switch to session: ",
+            )),
             ("copy.search-forward", _) if self.focus_in_copy_mode(session_id) => {
                 Some((PromptKind::SearchForward, "/"))
             }
@@ -321,6 +330,7 @@ impl Server {
             ("window.list", true) => Some(PickerKind::Windows),
             ("window.move-to-session", true) => Some(PickerKind::MoveWindow),
             ("keys.list", true) => Some(PickerKind::Keys),
+            ("command.list", true) => Some(PickerKind::Commands),
             _ => None,
         };
         if let Some(kind) = picker {
@@ -407,6 +417,7 @@ impl Server {
             PromptKind::ClosePane => ("pane.close", Vec::new()),
             PromptKind::RenameWindow
             | PromptKind::RenameSession
+            | PromptKind::Argument(_)
             | PromptKind::SearchForward
             | PromptKind::SearchBackward
                 if prompt.text.is_empty() =>
@@ -420,6 +431,7 @@ impl Server {
             }
             PromptKind::RenameWindow => ("window.rename", vec![prompt.text]),
             PromptKind::RenameSession => ("session.rename", vec![prompt.text]),
+            PromptKind::Argument(name) => (name, vec![prompt.text]),
         };
         let (ok, output) = self.run_command(name, &args, Some(pane));
         if !ok {

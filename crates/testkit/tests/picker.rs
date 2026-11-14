@@ -425,3 +425,80 @@ fn the_window_list_starts_on_the_current_window_and_escape_goes_nowhere() {
     let (_, output) = run(&daemon, "window.list", &[]);
     assert!(output.contains("2\ttwo\t1"), "{output}");
 }
+
+/// `:` as the new keyboard protocol reports it: Shift and `;`.
+const COLON: &[u8] = b"\x1b[59;2u";
+
+#[test]
+fn the_command_palette_shows_the_keys_of_a_command_and_runs_it_on_enter() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    run(&daemon, "pane.split-right", &[]);
+    client.send(PREFIX);
+    client.send(COLON);
+    screen_has(&mut client, "Commands");
+    client.send(b"zoom");
+    let ok = client.wait_until(WAIT, |c| {
+        let lines = lines_of_the_list(c);
+        lines.len() == 1 && lines[0].contains("pane.zoom") && lines[0].contains("ctrl+m z")
+    });
+    assert!(ok, "{}", client.screen_text());
+    assert!(!client.screen_text().contains("[Z]"));
+    client.send(b"\r");
+    screen_lacks(&mut client, "Commands");
+    screen_has(&mut client, "[Z]");
+}
+
+#[test]
+fn a_command_with_no_key_that_needs_a_number_asks_on_the_prompt_line_and_runs() {
+    let daemon = TestDaemon::start();
+    let mut client = three_windows(&daemon);
+    client.send(PREFIX);
+    client.send(COLON);
+    client.send(b"window.select");
+    names_in_list(&mut client, &["window.select"]);
+    client.send(b"\r");
+    screen_has(&mut client, "Window number:");
+    client.send(b"3\r");
+    let ok = client.wait_until(WAIT, |_| {
+        let (_, output) = run(&daemon, "window.list", &[]);
+        output.contains("3\tthree\t1")
+    });
+    assert!(ok);
+}
+
+#[test]
+fn the_palette_asks_for_a_session_name_too() {
+    let daemon = TestDaemon::start();
+    let mut client = a_ab_b(&daemon);
+    client.send(PREFIX);
+    client.send(COLON);
+    client.send(b"session.switch");
+    client.send(b"\r");
+    screen_has(&mut client, "Switch to session:");
+    client.send(b"b\r");
+    let ok = client.wait_until(WAIT, |_| {
+        let (_, output) = run(&daemon, "session.list", &[]);
+        output
+            .lines()
+            .any(|l| l.starts_with("b\t") && l.split('\t').nth(2) == Some("1"))
+    });
+    assert!(ok);
+}
+
+#[test]
+fn the_palette_leaves_out_the_commands_of_the_lists_and_lists_the_rest_in_order() {
+    let daemon = TestDaemon::start();
+    let (_, output) = run(&daemon, "command.list", &[]);
+    let names: Vec<&str> = output
+        .lines()
+        .map(|l| l.split('\t').next().unwrap())
+        .collect();
+    assert!(names.contains(&"pane.zoom") && names.contains(&"window.select"));
+    assert!(!names.iter().any(|n| n.starts_with("list.")));
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(names, sorted);
+    assert!(output.contains("pane.zoom\tctrl+m z"), "{output}");
+}

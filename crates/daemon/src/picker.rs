@@ -21,6 +21,8 @@ pub enum PickerKind {
     Keys,
     /// Go to the window of the current session on the line.
     Windows,
+    /// Run the command on the line.
+    Commands,
 }
 
 pub struct Item {
