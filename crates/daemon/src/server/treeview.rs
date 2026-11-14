@@ -2,9 +2,10 @@
 //! books, what its keys do, and going to what was chosen.
 
 use super::actions::Ctx;
+use super::actions::add_window;
 use super::*;
 use crate::commands::ListCommand;
-use crate::layout::Axis;
+use crate::layout::{Axis, Layout, LayoutError};
 use crate::tree::{Action, Entry, Key as TreeKey, Tree};
 
 /// How the tree opens.
@@ -16,6 +17,15 @@ pub(super) enum TreeStart {
     LiftPane,
     /// With the window the client is in lifted, the choice on its session.
     LiftWindow,
+}
+
+/// Where a lifted pane is put down.
+#[derive(Clone, Copy)]
+enum PaneDest {
+    /// To the right of this pane, which gives up half its room.
+    Beside(u64),
+    /// In a new window at the end of this session.
+    NewWindow(u64),
 }
 
 impl Server {
@@ -159,8 +169,174 @@ impl Server {
     fn do_tree_action(&mut self, session_id: u64, action: Action) -> Result<String, String> {
         match action {
             Action::Jump(key) => self.jump_to(session_id, key),
-            _ => Err("moving is not done yet".to_string()),
+            Action::PaneBeside { pane, target } => {
+                self.move_pane(session_id, pane, PaneDest::Beside(target))
+            }
+            Action::PaneToSession { pane, session } => {
+                self.move_pane(session_id, pane, PaneDest::NewWindow(session))
+            }
+            _ => Err("moving a window is not done yet".to_string()),
         }
+    }
+
+    /// Put a pane down: its process, its screen and its history go on as they are, only the
+    /// place changes. Nothing changes when the place cannot take it.
+    fn move_pane(&mut self, from: u64, pane: u64, dest: PaneDest) -> Result<String, String> {
+        let (src_session, src_window) = self
+            .locate_pane(pane)
+            .ok_or_else(|| "that pane is gone".to_string())?;
+        let (dst_session, dst_window) = match dest {
+            PaneDest::Beside(target) => {
+                if target == pane {
+                    return Err("a pane cannot be put next to itself".to_string());
+                }
+                let (s, w) = self
+                    .locate_pane(target)
+                    .ok_or_else(|| "that pane is gone".to_string())?;
+                (s, Some(w))
+            }
+            PaneDest::NewWindow(s) => {
+                if !self.sessions.contains_key(&s) {
+                    return Err("that session is gone".to_string());
+                }
+                (s, None)
+            }
+        };
+        let (alone, windows_in_source) = {
+            let session = self
+                .sessions
+                .get(&src_session)
+                .ok_or_else(|| "no such session".to_string())?;
+            let window = session
+                .window(src_window)
+                .ok_or_else(|| "no such window".to_string())?;
+            (window.layout.len() < 2, session.windows.len())
+        };
+        // Look before touching anything: does the place have room?
+        match (dest, dst_window) {
+            (PaneDest::Beside(target), Some(dw)) => {
+                let window = self
+                    .sessions
+                    .get(&dst_session)
+                    .and_then(|s| s.window(dw))
+                    .ok_or_else(|| "no such window".to_string())?;
+                let mut probe = window.layout.clone();
+                if dst_session == src_session && dw == src_window {
+                    probe.close(pane).map_err(|_| "no such pane".to_string())?;
+                }
+                match probe.split(target, Axis::LeftRight, pane) {
+                    Ok(()) => {}
+                    Err(LayoutError::TooSmall) => {
+                        return Err("no room in that window to split".to_string());
+                    }
+                    Err(_) => return Err("no such pane".to_string()),
+                }
+            }
+            (PaneDest::NewWindow(_), _)
+                if dst_session == src_session && alone && windows_in_source < 2 =>
+            {
+                return Err("the pane is alone in its window".to_string());
+            }
+            _ => {}
+        }
+
+        // Leave the old place.
+        if self.panes.get(&pane).is_some_and(|p| p.copy.is_some()) {
+            self.exit_copy(src_session, pane);
+        }
+        let source = Ctx {
+            session: src_session,
+            window: src_window,
+            pane,
+        };
+        let mut emptied = None;
+        if !alone {
+            self.unzoom(source);
+            self.remove_leaf(source);
+        } else if windows_in_source > 1 {
+            self.take_window(source);
+        } else {
+            emptied = self.sessions.remove(&src_session);
+        }
+
+        // Take the new place.
+        let moved_into = match dest {
+            PaneDest::Beside(target) => {
+                let window = dst_window.unwrap_or(src_window);
+                let ctx = Ctx {
+                    session: dst_session,
+                    window,
+                    pane: target,
+                };
+                self.unzoom(ctx);
+                if let Some(w) = self
+                    .sessions
+                    .get_mut(&dst_session)
+                    .and_then(|s| s.window_mut(window))
+                {
+                    let _ = w.layout.split(target, Axis::LeftRight, pane);
+                }
+                self.set_focus(Ctx { pane, ..ctx }, pane);
+                self.window_changed(ctx);
+                window
+            }
+            PaneDest::NewWindow(_) => {
+                let status = self.config.status_position;
+                let (base_index, renumber) = (self.config.base_index, self.config.renumber);
+                let window_id = self.next_window;
+                self.next_window += 1;
+                let moved_cwd = self.panes.get(&pane).and_then(|p| pty::process_cwd(p.pid));
+                let Some(destination) = self.sessions.get_mut(&dst_session) else {
+                    return Err("that session is gone".to_string());
+                };
+                let cwd = moved_cwd.unwrap_or_else(|| destination.cwd.clone());
+                let (cols, rows) = window_area(destination.cols, destination.rows, status);
+                add_window(
+                    destination,
+                    Window {
+                        id: window_id,
+                        number: 0,
+                        name: directory_name(&cwd),
+                        name_manual: false,
+                        layout: Layout::new(pane, cols, rows),
+                        focus: pane,
+                        last_focus: None,
+                        zoomed: false,
+                        arrangement: None,
+                    },
+                    base_index,
+                    renumber,
+                );
+                self.apply_window_sizes(dst_session, window_id);
+                window_id
+            }
+        };
+        self.select_window(dst_session, moved_into);
+        if let Some(s) = self.sessions.get_mut(&dst_session) {
+            s.relayout = true;
+            s.chrome_dirty = true;
+        }
+        self.follow(from, dst_session, emptied)
+    }
+
+    /// The client goes to the session the moved item is in. The session the item left, when it
+    /// was emptied, closes; a client other than the one that moved it is told.
+    fn follow(&mut self, from: u64, to: u64, emptied: Option<Session>) -> Result<String, String> {
+        let Some(old) = emptied else {
+            return self.switch_session_id(from, to);
+        };
+        if old.id == from {
+            if let Some(client) = old.client {
+                self.bind_client(client, to, old.cols, old.rows);
+            }
+            self.log.line(&format!(
+                "session {} closed: its last pane was moved",
+                old.id
+            ));
+            return Ok(String::new());
+        }
+        self.finish_session(&old, "its last pane was moved to another session");
+        self.switch_session_id(from, to)
     }
 
     /// Go to a session, a window or a pane: the client changes session when it has to.

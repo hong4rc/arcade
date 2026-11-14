@@ -21,7 +21,12 @@ const RESIZE_ROWS: u16 = 2;
 
 /// Put a window in a session's bar: with the number it gets there (the next one, or the lowest
 /// free one when numbers do not close up), in its place by number.
-fn add_window(session: &mut Session, mut window: Window, base_index: usize, renumber: bool) {
+pub(super) fn add_window(
+    session: &mut Session,
+    mut window: Window,
+    base_index: usize,
+    renumber: bool,
+) {
     window.number = if renumber {
         base_index + session.windows.len()
     } else {
@@ -1002,7 +1007,7 @@ impl Server {
     }
 
     /// The rooms of the window's panes changed: size the panes and draw the window again.
-    fn window_changed(&mut self, ctx: Ctx) {
+    pub(super) fn window_changed(&mut self, ctx: Ctx) {
         self.apply_window_sizes(ctx.session, ctx.window);
         if let Some(session) = self.sessions.get_mut(&ctx.session) {
             session.relayout = true;
@@ -1408,7 +1413,7 @@ impl Server {
     }
 
     /// Remove one pane of a window that has others; its room goes to a neighbour.
-    fn remove_leaf(&mut self, ctx: Ctx) {
+    pub(super) fn remove_leaf(&mut self, ctx: Ctx) {
         let Some(window) = self
             .sessions
             .get_mut(&ctx.session)
@@ -1437,7 +1442,7 @@ impl Server {
 
     /// Take a window out of its session, which must have another, and show another window. The
     /// window and its panes carry on; the caller decides what becomes of them.
-    fn take_window(&mut self, ctx: Ctx) -> Option<Window> {
+    pub(super) fn take_window(&mut self, ctx: Ctx) -> Option<Window> {
         let (base_index, renumber) = (self.config.base_index, self.config.renumber);
         let session = self.sessions.get_mut(&ctx.session)?;
         let index = session.windows.iter().position(|w| w.id == ctx.window)?;
@@ -1471,6 +1476,12 @@ impl Server {
         for pane in session.all_panes() {
             self.drop_pane(pane);
         }
+        self.finish_session(&session, note);
+    }
+
+    /// A session that is already out of the books: log it and tell its client goodbye. The
+    /// panes are the caller's to deal with.
+    pub(super) fn finish_session(&mut self, session: &Session, note: &str) {
         self.log
             .line(&format!("session {} closed: {note}", session.id));
         if let Some(client_id) = session.client {

@@ -297,3 +297,266 @@ fn a_filter_shows_the_matching_panes_with_their_path_and_enter_jumps_to_the_one_
     let ok = client.wait_until(WAIT, |c| bar(c).contains(" beta "));
     assert!(ok, "{}", client.screen_text());
 }
+
+// ---- Lifting a pane and putting it down ----
+
+/// The process number of the shell in the focused pane, printed under a tag of its own.
+fn shell_pid(client: &mut TestClient, tag: &str) -> String {
+    client.type_line(&format!("echo {tag}-$$"));
+    let prefix = format!("{tag}-");
+    let found = |c: &TestClient| {
+        c.screen_rows().iter().rev().find_map(|r| {
+            let t = r.trim_end();
+            let digits = t.strip_prefix(&prefix).or_else(|| {
+                t.rsplit_once(&prefix)
+                    .map(|(_, d)| d)
+                    .filter(|_| !t.contains("echo"))
+            })?;
+            (!digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit()))
+                .then(|| digits.to_string())
+        })
+    };
+    assert!(
+        client.wait_until(WAIT, |c| found(c).is_some()),
+        "{}",
+        client.screen_text()
+    );
+    found(client).unwrap()
+}
+
+/// Open the tree with the pane of the client lifted (`m`).
+fn lift_pane(client: &mut TestClient) {
+    client.send(PREFIX);
+    client.send(b"m");
+    let ok = client.wait_until(WAIT, |c| !box_rows(c).is_empty());
+    assert!(ok, "{}", client.screen_text());
+}
+
+fn footer(client: &TestClient) -> String {
+    box_rows(client)
+        .iter()
+        .rev()
+        .nth(1)
+        .map(|r| r.trim_matches(['│', ' ']).to_string())
+        .unwrap_or_default()
+}
+
+fn wait_footer(client: &mut TestClient, text: &str) {
+    let ok = client.wait_until(WAIT, |c| footer(c).contains(text));
+    assert!(
+        ok,
+        "the bottom line is {:?}, not {text:?}\n{}",
+        footer(client),
+        client.screen_text()
+    );
+}
+
+#[test]
+fn m_opens_with_the_pane_lifted_and_the_choice_on_its_window() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    lift_pane(&mut client);
+    wait_chosen(&mut client, "▾ 1 editor *");
+    let text = box_rows(&client).join("\n");
+    assert!(text.contains("[lifted]"), "{text}");
+    // Esc puts it down once and the tree stays; a second Esc closes.
+    client.send(ESC);
+    let ok = client.wait_until(WAIT, |c| !box_rows(c).join("\n").contains("[lifted]"));
+    assert!(ok, "{}", client.screen_text());
+    assert!(!box_rows(&client).is_empty());
+    client.send(ESC);
+    closed(&mut client);
+}
+
+#[test]
+fn a_pane_put_on_another_pane_goes_beside_it_with_the_same_process() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    let before = shell_pid(&mut client, "before");
+    lift_pane(&mut client);
+    client.send(DOWN);
+    client.send(RIGHT);
+    wait_chosen(&mut client, "htop");
+    wait_footer(&mut client, "move");
+    client.send(ENTER);
+    closed(&mut client);
+    let ok = client.wait_until(WAIT, |c| {
+        let t = c.screen_text();
+        t.contains("in-htop") && t.contains("in-zsh") && !t.contains("in-nvim") && t.contains('│')
+    });
+    assert!(ok, "{}", client.screen_text());
+    // The target is on the left, the moved pane on the right with the focus.
+    let rows = client.screen_rows();
+    let row = rows.iter().find(|r| r.contains("in-htop")).unwrap();
+    assert!(
+        row.find("in-htop").unwrap() < row.find("in-zsh").unwrap(),
+        "{row}"
+    );
+    let after = shell_pid(&mut client, "after");
+    assert_eq!(before, after);
+    // The old line is still in the history of the pane.
+    assert!(client.screen_text().contains("in-zsh"));
+}
+
+#[test]
+fn a_pane_put_on_a_window_goes_beside_the_pane_in_focus_there() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    lift_pane(&mut client);
+    client.send(DOWN);
+    wait_chosen(&mut client, "▸ 2 server");
+    client.send(ENTER);
+    closed(&mut client);
+    let ok = client.wait_until(WAIT, |c| {
+        let t = c.screen_text();
+        t.contains("in-htop") && t.contains("in-zsh") && !t.contains("in-nvim")
+    });
+    assert!(ok, "{}", client.screen_text());
+}
+
+#[test]
+fn a_pane_put_on_a_session_becomes_its_last_window_and_the_client_follows() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    let before = shell_pid(&mut client, "before");
+    lift_pane(&mut client);
+    client.send(LEFT);
+    client.send(DOWN);
+    wait_chosen(&mut client, "▸ beta");
+    wait_footer(&mut client, "new window of session beta");
+    client.send(ENTER);
+    closed(&mut client);
+    let ok = client.wait_until(WAIT, |c| {
+        bar(c).contains(" beta ") && c.screen_text().contains("in-zsh")
+    });
+    assert!(ok, "{}\n{}", client.screen_text(), bar(&client));
+    assert!(!client.screen_text().contains("in-emacs"));
+    assert!(bar(&client).contains(" 2 "), "{}", bar(&client));
+    let after = shell_pid(&mut client, "after");
+    assert_eq!(before, after);
+}
+
+#[test]
+fn the_last_pane_of_a_window_takes_the_window_with_it() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    client.send(PREFIX);
+    client.send(b"2");
+    assert!(client.wait_until(WAIT, |c| c.screen_text().contains("in-htop")));
+    lift_pane(&mut client);
+    client.send(LEFT);
+    client.send(DOWN);
+    client.send(RIGHT);
+    client.send(RIGHT);
+    wait_chosen(&mut client, "emacs");
+    client.send(ENTER);
+    closed(&mut client);
+    let ok = client.wait_until(WAIT, |c| {
+        bar(c).contains(" beta ")
+            && c.screen_text().contains("in-htop")
+            && c.screen_text().contains("in-emacs")
+    });
+    assert!(ok, "{}", client.screen_text());
+    // Alpha has lost its second window.
+    open_tree(&mut client);
+    client.send(UP);
+    client.send(LEFT);
+    client.send(LEFT);
+    client.send(RIGHT);
+    let text = box_rows(&client).join("\n");
+    assert!(!text.contains("2 server"), "{text}");
+}
+
+#[test]
+fn the_only_pane_of_a_session_takes_the_session_with_it_and_the_client_lives_on() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    client.send(PREFIX);
+    client.send(b"s");
+    // Go to beta through the list of sessions.
+    client.send(b"beta");
+    client.send(ENTER);
+    assert!(client.wait_until(WAIT, |c| bar(c).contains(" beta ")));
+    lift_pane(&mut client);
+    client.send(LEFT);
+    client.send(UP);
+    client.send(RIGHT);
+    client.send(RIGHT);
+    wait_chosen(&mut client, "zsh");
+    client.send(ENTER);
+    closed(&mut client);
+    let ok = client.wait_until(WAIT, |c| {
+        bar(c).contains(" alpha ")
+            && c.screen_text().contains("in-emacs")
+            && c.screen_text().contains("in-zsh")
+    });
+    assert!(ok, "{}\n{}", client.screen_text(), bar(&client));
+    assert!(!client.closed);
+    let (_, sessions) = run(&daemon, "list-sessions", &[]);
+    assert!(!sessions.contains("beta"), "{sessions}");
+}
+
+#[test]
+fn a_place_that_cannot_take_the_pane_says_why_and_enter_changes_nothing() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    // The pane itself.
+    lift_pane(&mut client);
+    client.send(RIGHT);
+    wait_chosen(&mut client, "● zsh [lifted]");
+    wait_footer(&mut client, "lifted");
+    // Its own window: the pane is in it already.
+    client.send(LEFT);
+    wait_footer(&mut client, "already");
+    let before = client.screen_text();
+    client.send(ENTER);
+    quiet(&mut client);
+    assert!(!box_rows(&client).is_empty());
+    client.send(ESC);
+    client.send(ESC);
+    closed(&mut client);
+    assert_eq!(
+        before.contains("in-zsh"),
+        client.screen_text().contains("in-zsh")
+    );
+    assert!(client.screen_text().contains("in-nvim"));
+}
+
+#[test]
+fn the_only_pane_of_a_session_cannot_be_put_in_a_new_window_of_its_own_session() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    client.send(PREFIX);
+    client.send(b"s");
+    client.send(b"beta");
+    client.send(ENTER);
+    assert!(client.wait_until(WAIT, |c| bar(c).contains(" beta ")));
+    lift_pane(&mut client);
+    client.send(LEFT);
+    wait_chosen(&mut client, "▾ beta *");
+    wait_footer(&mut client, "alone");
+    client.send(ENTER);
+    quiet(&mut client);
+    assert!(!box_rows(&client).is_empty());
+}
+
+#[test]
+fn a_lifted_pane_that_exits_leaves_a_usable_tree_with_a_notice() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    // The pane in focus is the one lifted; closing it through the daemon makes it vanish.
+    lift_pane(&mut client);
+    client.send(DOWN);
+    wait_chosen(&mut client, "▸ 2 server");
+    // The lifted pane's shell exits: kill its process group through the daemon's own command.
+    assert!(run(&daemon, "pane.close", &[]).0);
+    let ok = client.wait_until(WAIT, |c| {
+        let t = box_rows(c).join("\n");
+        !t.contains("[lifted]") && t.contains("is gone")
+    });
+    assert!(ok, "{}", client.screen_text());
+    // The tree still answers.
+    client.send(UP);
+    quiet(&mut client);
+    assert!(!box_rows(&client).is_empty());
+}
