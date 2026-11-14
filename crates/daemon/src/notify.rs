@@ -33,30 +33,30 @@ impl Class {
     pub fn parse(text: &str) -> Option<Class> {
         Class::BY_URGENCY.into_iter().find(|c| c.name() == text)
     }
-
-    /// Looking at the pane is enough for this class: it goes away by itself.
-    pub fn clears_when_seen(self) -> bool {
-        self == Class::Info
-    }
 }
-
-/// What a pane may send out to the host terminal: once in this long.
-pub const PUSH_INTERVAL: Duration = Duration::from_secs(5);
-/// What a client may be rung with: one bell in this long; more wait and ring once together.
-pub const BELL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// The escape sequence that asks the host terminal for a notification of its own, made new from
 /// the cleaned texts and never copied from what the pane wrote. A notification that came from
 /// an escape sequence in the pane goes back as the kind it came as: without a title it was one
 /// message (OSC 9), with one it was a title and a body (OSC 777). One from a command goes as
 /// OSC 777, with the source standing in for a missing title. Nothing to say: no sequence.
-pub fn host_sequence(from_terminal: bool, source: &str, title: &str, message: &str) -> Vec<u8> {
+pub fn host_sequence(
+    from_terminal: bool,
+    kind: crate::config::OscKind,
+    source: &str,
+    title: &str,
+    message: &str,
+) -> Vec<u8> {
     if title.is_empty() && message.is_empty() {
         return Vec::new();
     }
     let text = |t: &str| t.replace(';', ",");
     if from_terminal && title.is_empty() {
         return format!("\x1b]9;{message}\x07").into_bytes();
+    }
+    if !from_terminal && kind == crate::config::OscKind::Osc9 {
+        let one = if message.is_empty() { title } else { message };
+        return format!("\x1b]9;{one}\x07").into_bytes();
     }
     let title = if title.is_empty() { source } else { title };
     format!("\x1b]777;notify;{};{message}\x07", text(title)).into_bytes()
@@ -126,8 +126,12 @@ pub enum Outcome {
     Superseded,
     /// Dropped: too many signals for this pane within the second; the last one is kept for later.
     RateLimited,
-    /// Dropped by the settings: an `info` signal for a pane that is being looked at.
+    /// Dropped by the settings: a class that goes away at a glance, for a pane that is looked at.
     Blocked,
+    /// Dropped by the settings: the source is muted.
+    Muted,
+    /// The settings make no indicator for this class; the signal can still go out.
+    NoIndicator,
 }
 
 impl Outcome {
@@ -138,7 +142,11 @@ impl Outcome {
             Outcome::Replaced => "replaced",
             Outcome::Superseded => "dropped: a higher class from another source stands",
             Outcome::RateLimited => "dropped: too many signals for the pane in a second",
-            Outcome::Blocked => "blocked: an info signal for the pane in focus",
+            Outcome::Blocked => {
+                "blocked: the pane is looked at and this class goes away at a glance"
+            }
+            Outcome::Muted => "dropped: this source is muted",
+            Outcome::NoIndicator => "no indicator for this class",
         }
     }
 
@@ -309,31 +317,43 @@ mod tests {
 
     #[test]
     fn the_sequence_for_the_host_terminal_is_made_new_and_of_the_kind_it_came_as() {
+        const K: crate::config::OscKind = crate::config::OscKind::Osc777;
         assert_eq!(
-            host_sequence(true, "terminal", "", "done"),
+            host_sequence(true, K, "terminal", "", "done"),
             b"\x1b]9;done\x07"
         );
         assert_eq!(
-            host_sequence(true, "terminal", "T;x", "B;y"),
+            host_sequence(true, K, "terminal", "T;x", "B;y"),
             b"\x1b]777;notify;T,x;B;y\x07"
         );
         assert_eq!(
-            host_sequence(false, "claude", "", "need you"),
+            host_sequence(false, K, "claude", "", "need you"),
             b"\x1b]777;notify;claude;need you\x07"
         );
-        assert!(host_sequence(true, "terminal", "", "").is_empty());
+        assert!(host_sequence(true, K, "terminal", "", "").is_empty());
+        // A command's notification goes as one message when the settings say so.
+        assert_eq!(
+            host_sequence(
+                false,
+                crate::config::OscKind::Osc9,
+                "claude",
+                "T",
+                "need you"
+            ),
+            b"\x1b]9;need you\x07"
+        );
     }
 
     #[test]
     fn a_pane_may_push_once_in_the_interval() {
         let mut s = Store::default();
         let t = Instant::now();
-        assert!(s.may_push(1, t, PUSH_INTERVAL));
-        assert!(!s.may_push(1, at(4, t), PUSH_INTERVAL));
-        assert!(s.may_push(2, at(4, t), PUSH_INTERVAL));
-        assert!(s.may_push(1, at(5, t), PUSH_INTERVAL));
+        assert!(s.may_push(1, t, Duration::from_secs(5)));
+        assert!(!s.may_push(1, at(4, t), Duration::from_secs(5)));
+        assert!(s.may_push(2, at(4, t), Duration::from_secs(5)));
+        assert!(s.may_push(1, at(5, t), Duration::from_secs(5)));
         s.forget(1);
-        assert!(s.may_push(1, at(6, t), PUSH_INTERVAL));
+        assert!(s.may_push(1, at(6, t), Duration::from_secs(5)));
     }
 
     fn sig(class: Class, source: &str) -> Signal {
@@ -382,7 +402,6 @@ mod tests {
         assert!(Class::Error > Class::Info);
         assert_eq!(Class::parse("input"), Some(Class::Input));
         assert_eq!(Class::parse("urgent"), None);
-        assert!(Class::Info.clears_when_seen() && !Class::Error.clears_when_seen());
     }
 
     #[test]

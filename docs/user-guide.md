@@ -196,6 +196,13 @@ TOML format. A misspelled key is reported with a suggestion ("did you mean ...")
 | `[clipboard] command` | A command that receives the text on its standard input; required when `mode = "command"` | none |
 | `[clipboard] allow-pane-write` | Let the program in a pane set the clipboard | `true` |
 | `[power] prevent-sleep` | Keep the machine from sleeping on its own while idle, as long as the daemon runs | `true` |
+| `[notification] auto-jump` | Go to the pane that sent a notification out when the terminal window gets the focus back (section 5.8) | `true` |
+| `[notification] push-when-host-focused` | Send a notification out even when the terminal window has the focus, for a pane other than the one in focus | `true` |
+| `[notification] osc` | The escape sequence a notification from `arcade notify` goes out as: `"777"` (title and body) or `"9"` (one message) | `"777"` |
+| `[notification] push-interval` | Seconds between two sends out for one pane (0 for no limit) | `5` |
+| `[notification] bell-interval` | Seconds between two bells for one terminal (0 for no limit) | `2` |
+| `[notification] mute-sources` | List of source names whose signals are dropped, for example `["claude-code"]` | none |
+| `[notification.approval]`, `.input`, `.error`, `.info` | Four true or false keys per class: `indicator` (makes a mark), `bell` (rings the terminal), `osc` (asks the terminal for a notification of its own), `clear-on-focus` (looking at the pane takes it away) | `approval`, `input`, `error`: indicator, bell and osc on, clear-on-focus off; `info`: indicator, osc and clear-on-focus on, bell off |
 
 How to bind a key in the `[keys.*]` tables:
 
@@ -265,6 +272,8 @@ A program in a pane can also set the clipboard with OSC 52 when `allow-pane-writ
 - **Clearing by hand.** The prefix then `q` clears the notification of the pane you are in; the prefix then `A` clears all of them. The command names are `notification.next`, `notification.list`, `notification.clear` and `notification.clear-all`; `arcade run notification.list` prints the notifications as lines of tab-separated fields (class, source, pane, seconds waited, place, title, message).
 - **Out to the terminal you run Arcade in.** When a notification takes effect for a pane that you are not looking at, Arcade asks the terminal (Ghostty, iTerm2 and others) to get your attention: a notification of its own (the escape sequence OSC 777, or OSC 9 for a message that came without a title), and, for the classes `approval`, `input` and `error`, a bell. Whether a sound or a system notification shows is the terminal's decision. Arcade builds a new sequence from the cleaned title and message; it never passes on what the pane wrote. A signal from `arcade notify` goes out as OSC 777 with the title, or the source when there is no title, and the message as body; a bare bell from a program makes the indicator only.
 - **When Arcade thinks you are looking.** Arcade turns on the focus reporting of the terminal (mode 1004) and learns when the terminal window gets or loses the focus. You are looking at a pane when it has the focus in Arcade and the terminal window has the focus. Nothing goes out for that pane, and an `info` notification for it is not kept. When the terminal window has lost the focus, even the pane in focus counts as not looked at: its notification is kept and sent out, and an `info` one goes away when the window gets the focus back. A terminal that does not report focus is taken as always focused after you attach, so notifications for the pane in focus stay quiet there.
+- **Going back to the pane that called.** When a notification was sent out while the terminal window did not have the focus, Arcade goes to the pane of the newest one that still stands the next time the window gets the focus (the status bar shows nothing for this; the screen simply changes). Arcade cannot tell a click on the system notification from coming back to the window for another reason, so `Ctrl+Alt+o` (the key that goes back to the previous pane) returns to the pane you were in, as long as you have not moved since. `auto-jump = false` in `[notification]` turns the jump off.
+- **Settings.** Which classes make a mark, ring, ask for a notification or go away when looked at, the two intervals, the muted sources and the jump are in the `[notification]` tables (section 4).
 - **Limits.** A pane sends out at most once in 5 seconds (a signal that comes sooner is still shown as an indicator). A terminal is rung at most once in 2 seconds; bells that come sooner wait and ring once together when the 2 seconds end.
 - A tab list that is longer than the screen is cut, so that the counters and the PREFIX, LOCK and COPY words at the right stay in view.
 - When a pane already has a notification, a new one from the same source replaces it; one from another source replaces it only when its class is at least as urgent, and is dropped otherwise.
@@ -281,7 +290,6 @@ A program in a pane can also set the clipboard with OSC 52 when `allow-pane-writ
 
 Things that belong to Phase 1 or to the design but are not in the current build:
 
-- Notification: jumping back to the pane when the terminal gets the focus again, and the `[notification]` settings.
 - Mouse: double click to select a word, triple click to select a line, an option to copy on release, scrolling by itself when dragging past a pane edge, dragging a border to resize, clicking a tab on the status bar.
 - `arcade keys list` and `arcade keys test` on the command line (inside Arcade, use the prefix then `?`).
 - A warning for bindings that cannot work (beyond the errors of `config check`).

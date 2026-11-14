@@ -520,3 +520,167 @@ fn the_focus_reports_of_the_host_terminal_do_not_reach_the_program_in_the_pane()
         client.screen_text()
     );
 }
+
+// ---- Settings, going to the pane when the terminal gets the focus back ----
+
+static FILES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn daemon_with(settings: &str) -> TestDaemon {
+    let path = std::path::PathBuf::from(format!(
+        "/tmp/arc-notice-{}-{}.toml",
+        std::process::id(),
+        FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::write(&path, settings).unwrap();
+    TestDaemon::start_with(move |c| c.config_path = Some(path))
+}
+
+const BACK: &[u8] = b"\x1b[111;7u";
+
+#[test]
+fn when_the_terminal_gets_the_focus_back_the_client_goes_to_the_pane_that_sent_a_notification_out_and_the_return_key_goes_back()
+ {
+    let daemon = TestDaemon::start();
+    let (mut client, [first, _, third]) = three_panes(&daemon);
+    client.send(FOCUS_OUT);
+    notify(&daemon, first, "approval", "claude", "may I");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(200));
+    assert_eq!(client.host_notifications.len(), 1);
+    client.send(FOCUS_IN);
+    assert_eq!(client.focused_pane_id(), first);
+    // The return key (Ctrl+Alt+o) goes back to where the person was.
+    client.send(BACK);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(client.focused_pane_id(), third);
+}
+
+#[test]
+fn no_jump_when_the_notification_is_gone_or_the_terminal_was_looked_at_all_the_time() {
+    let daemon = TestDaemon::start();
+    let (mut client, [first, _, third]) = three_panes(&daemon);
+    client.send(FOCUS_OUT);
+    notify(&daemon, first, "approval", "claude", "may I");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    let (ok, _) = daemon
+        .command("notify.clear", &[&format!("target={first}")])
+        .unwrap();
+    assert!(ok);
+    client.send(FOCUS_IN);
+    assert_eq!(client.focused_pane_id(), third);
+    // A notification sent out while the terminal was looked at does not make a jump later.
+    notify(&daemon, first, "input", "claude", "again");
+    assert!(mark_shown(&mut client, "[?]1"), "{}", bar(&client));
+    client.send(FOCUS_OUT);
+    client.send(FOCUS_IN);
+    assert_eq!(client.focused_pane_id(), third);
+}
+
+#[test]
+fn the_jump_can_be_turned_off() {
+    let daemon = daemon_with("[notification]\nauto-jump = false\n");
+    let (mut client, [first, _, third]) = three_panes(&daemon);
+    client.send(FOCUS_OUT);
+    notify(&daemon, first, "approval", "claude", "may I");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    client.send(FOCUS_IN);
+    assert_eq!(client.focused_pane_id(), third);
+}
+
+#[test]
+fn a_muted_source_makes_nothing() {
+    let daemon = daemon_with("[notification]\nmute-sources = [\"noisy\"]\n");
+    let (mut client, [first, _, _]) = three_panes(&daemon);
+    notify(&daemon, first, "approval", "noisy", "spam");
+    settle(&mut client, Duration::from_millis(300));
+    assert!(!bar(&client).contains("[!]"), "{}", bar(&client));
+    assert!(client.host_notifications.is_empty());
+    let (_, log) = daemon.command("notify.log", &[]).unwrap();
+    assert!(log.contains("muted"), "{log}");
+    notify(&daemon, first, "approval", "other", "real");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+}
+
+#[test]
+fn a_class_can_go_without_an_indicator_without_a_bell_or_without_a_notification() {
+    let daemon = daemon_with(
+        "[notification.error]\nindicator = false\n[notification.input]\nbell = false\n[notification.approval]\nosc = false\n",
+    );
+    let (mut client, [first, second, third]) = three_panes(&daemon);
+    notify(&daemon, first, "error", "a", "e");
+    settle(&mut client, Duration::from_millis(300));
+    assert!(!bar(&client).contains("[x]"), "{}", bar(&client));
+    assert_eq!(
+        client.host_notifications.len(),
+        1,
+        "no mark but it goes out"
+    );
+    assert_eq!(client.bells, 1);
+    // Input: the notification goes out, the bell does not.
+    notify(&daemon, second, "input", "a", "i");
+    assert!(mark_shown(&mut client, "[?]1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(300));
+    assert_eq!(client.host_notifications.len(), 2);
+    assert_eq!(client.bells, 1);
+    // Approval: the bell only. The third pane has the focus; leave it first.
+    client.send(PREFIX);
+    client.send(b"h");
+    notify(&daemon, third, "approval", "a", "p");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    // The bell of the interval waits; the notification of its own does not come.
+    assert_eq!(client.host_notifications.len(), 2);
+}
+
+#[test]
+fn the_terminal_looked_at_can_keep_everything_in_but_the_indicator() {
+    let daemon = daemon_with("[notification]\npush-when-host-focused = false\n");
+    let (mut client, [first, second, _]) = three_panes(&daemon);
+    notify(&daemon, first, "approval", "a", "quiet");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(300));
+    assert!(client.host_notifications.is_empty());
+    assert_eq!(client.bells, 0);
+    // With the terminal not looked at it goes out.
+    client.send(FOCUS_OUT);
+    notify(&daemon, second, "approval", "a", "loud");
+    settle(&mut client, Duration::from_millis(300));
+    assert_eq!(client.host_notifications.len(), 1);
+}
+
+#[test]
+fn a_command_notification_can_go_out_as_one_message() {
+    let daemon = daemon_with("[notification]\nosc = \"9\"\n");
+    let (mut client, [first, _, _]) = three_panes(&daemon);
+    notify(&daemon, first, "approval", "claude", "may I");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(300));
+    assert_eq!(
+        client.host_notifications,
+        vec![(String::new(), "may I".to_string())]
+    );
+}
+
+#[test]
+fn a_class_can_be_made_to_go_away_when_looked_at() {
+    let daemon = daemon_with("[notification.approval]\nclear-on-focus = true\n");
+    let (mut client, [first, _, _]) = three_panes(&daemon);
+    notify(&daemon, first, "approval", "a", "x");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    client.send(PREFIX);
+    client.send(b"h");
+    client.send(PREFIX);
+    client.send(b"h");
+    assert!(gone(&mut client, "[!]"), "{}", bar(&client));
+}
+
+#[test]
+fn the_intervals_come_from_the_settings() {
+    let daemon = daemon_with("[notification]\npush-interval = 0\nbell-interval = 0\n");
+    let (mut client, [first, _, _]) = three_panes(&daemon);
+    notify(&daemon, first, "input", "a", "one");
+    notify(&daemon, first, "input", "a", "two");
+    assert!(mark_shown(&mut client, "[?]1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(300));
+    assert_eq!(client.host_notifications.len(), 2);
+    assert_eq!(client.bells, 2);
+}

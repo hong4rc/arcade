@@ -269,6 +269,11 @@ struct Session {
     /// When the last BEL went to the attached client, and when the one that waited is due.
     last_bell: Option<Instant>,
     bell_due: Option<Instant>,
+    /// The pane that sent the latest signal out while the host terminal was not looked at: where
+    /// the client goes when the terminal gets the focus back.
+    jump_candidate: Option<u64>,
+    /// After such a jump: the pane it left and the pane it went to; the return key goes back.
+    return_to: Option<(u64, u64)>,
 }
 
 /// The shortest time between two looks at the panes' directories for the windows' names.
@@ -1288,6 +1293,8 @@ impl Server {
                 host_focused: true,
                 last_bell: None,
                 bell_due: None,
+                jump_candidate: None,
+                return_to: None,
             },
         );
         Ok(session_id)

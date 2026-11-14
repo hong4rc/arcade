@@ -65,15 +65,40 @@ impl Server {
         session.client.map(|_| session.current_window().focus)
     }
 
-    /// The host terminal got or lost the focus.
+    /// The host terminal got or lost the focus. When it gets it back and a notification was
+    /// sent out while it had not, the client goes to the pane of the newest one that still
+    /// stands, and the return key goes back.
     pub(super) fn host_focus(&mut self, session_id: u64, focused: bool) {
-        if let Some(s) = self.sessions.get_mut(&session_id)
-            && s.host_focused != focused
+        let Some(s) = self.sessions.get_mut(&session_id) else {
+            return;
+        };
+        if s.host_focused == focused {
+            return;
+        }
+        s.host_focused = focused;
+        // Looking at a pane again lets go of what it had; the screen is built to do it.
+        s.relayout = true;
+        s.chrome_dirty = true;
+        if !focused {
+            return;
+        }
+        let candidate = s.jump_candidate.take();
+        let from = Self::focused_pane(s);
+        let Some(pane) = candidate else {
+            return;
+        };
+        if !self.config.notification.auto_jump
+            || Some(pane) == from
+            || self.notices.get(pane).is_none()
         {
-            s.host_focused = focused;
-            // Looking at a pane again lets go of what it had; the screen is built to do it.
-            s.relayout = true;
-            s.chrome_dirty = true;
+            return;
+        }
+        if self.jump_to(session_id, TreeKey::Pane(pane)).is_ok()
+            && let Some(from) = from
+            && let Some((landed, _)) = self.locate_pane(pane)
+            && let Some(s) = self.sessions.get_mut(&landed)
+        {
+            s.return_to = Some((from, pane));
         }
     }
 
@@ -87,8 +112,8 @@ impl Server {
             return;
         };
         match s.last_bell {
-            Some(t) if now.duration_since(t) < crate::notify::BELL_INTERVAL => {
-                s.bell_due = Some(t + crate::notify::BELL_INTERVAL);
+            Some(t) if now.duration_since(t) < self.config.notification.bell_interval => {
+                s.bell_due = Some(t + self.config.notification.bell_interval);
             }
             _ => {
                 s.last_bell = Some(now);
@@ -111,20 +136,18 @@ impl Server {
         }
     }
 
-    /// Ask the host terminal of the client to get the person's attention for the pane's
-    /// notification: its own notification and, for the classes that ask for one, a bell. Not for
-    /// the pane that is looked at, and not more than once in `PUSH_INTERVAL` for a pane. What
-    /// became of it, in words, for the log.
-    fn push_out(&mut self, pane: u64) -> &'static str {
-        let Some(n) = self.notices.get(pane) else {
-            return "nothing standing";
-        };
-        let (class, source, title, message) = (
-            n.class,
-            n.source.clone(),
-            n.title.clone(),
-            n.message.clone(),
-        );
+    /// Ask the host terminal of the client to get the person's attention for a notification:
+    /// its own notification and, for the classes that ask for one, a bell, as the settings say.
+    /// Not for the pane that is looked at, and not more often than the settings allow for a pane.
+    /// What became of it, in words, for the log.
+    fn push_out(
+        &mut self,
+        pane: u64,
+        class: Class,
+        source: &str,
+        title: &str,
+        message: &str,
+    ) -> &'static str {
         let Some((session_id, _)) = self.locate_pane(pane) else {
             return "no client";
         };
@@ -134,25 +157,56 @@ impl Server {
         let Some(client) = session.client else {
             return "no client to tell";
         };
+        let policy = self.config.notification.class(class);
+        if !policy.osc && !policy.bell {
+            return "not sent out: the settings send nothing for this class";
+        }
         if Self::seen_pane(session) == Some(pane) {
             return "not sent out: the pane is looked at";
         }
+        if session.host_focused && !self.config.notification.push_when_host_focused {
+            return "not sent out: the terminal is looked at";
+        }
+        let host_unfocused = !session.host_focused;
         let now = Instant::now();
-        if !self
-            .notices
-            .may_push(pane, now, crate::notify::PUSH_INTERVAL)
-        {
+        let every = self.config.notification.push_interval;
+        if !self.notices.may_push(pane, now, every) {
             return "not sent out: this pane sent one a moment ago";
         }
-        let sequence =
-            crate::notify::host_sequence(source == TERMINAL_SOURCE, &source, &title, &message);
-        if !sequence.is_empty() {
-            self.send_output(client, &sequence);
+        if policy.osc {
+            let sequence = crate::notify::host_sequence(
+                source == TERMINAL_SOURCE,
+                self.config.notification.osc,
+                source,
+                title,
+                message,
+            );
+            if !sequence.is_empty() {
+                self.send_output(client, &sequence);
+            }
         }
-        if class != Class::Info {
+        if policy.bell {
             self.ring(session_id, now);
         }
+        if host_unfocused && let Some(s) = self.sessions.get_mut(&session_id) {
+            s.jump_candidate = Some(pane);
+        }
         "sent out"
+    }
+
+    /// After the person went to the pane that a notification sent out: the return key goes back
+    /// to the pane they were in, as long as they have not moved since. Whether it did.
+    pub(super) fn return_after_jump(&mut self, ctx: Ctx) -> bool {
+        let Some((from, landed)) = self.sessions.get(&ctx.session).and_then(|s| s.return_to) else {
+            return false;
+        };
+        if let Some(s) = self.sessions.get_mut(&ctx.session) {
+            s.return_to = None;
+        }
+        if ctx.pane != landed || self.locate_pane(from).is_none() {
+            return false;
+        }
+        self.jump_to(ctx.session, TreeKey::Pane(from)).is_ok()
     }
 
     /// What is drawn about notifications changed: the status bar and the marks on the panes are
@@ -192,9 +246,11 @@ impl Server {
     /// A signal for a pane, from its program or from a command.
     pub(super) fn signal_pane(&mut self, pane: u64, signal: Signal, channel: Channel) -> Outcome {
         let (class, source) = (signal.class, signal.source.clone());
+        let fields = (signal.title.clone(), signal.message.clone());
         let outcome = self.take_signal(pane, signal);
-        let result = if outcome.took_effect() {
-            format!("{}; {}", outcome.describe(), self.push_out(pane))
+        let result = if outcome.took_effect() || outcome == Outcome::NoIndicator {
+            let sent = self.push_out(pane, class, &source, &fields.0, &fields.1);
+            format!("{}; {sent}", outcome.describe())
         } else {
             outcome.describe().to_string()
         };
@@ -211,9 +267,21 @@ impl Server {
             .get(&session_id)
             .and_then(Self::seen_pane)
             .is_some_and(|p| p == pane);
+        let policy = self.config.notification.class(signal.class);
+        if self
+            .config
+            .notification
+            .muted_sources
+            .contains(&signal.source)
+        {
+            return Outcome::Muted;
+        }
         // A class that goes away at a glance is not worth keeping for a pane that is looked at.
-        if signal.class.clears_when_seen() && seen {
+        if policy.clear_on_focus && seen {
             return Outcome::Blocked;
+        }
+        if !policy.indicator {
+            return Outcome::NoIndicator;
         }
         let outcome = self.notices.signal(pane, signal, Instant::now());
         if outcome.took_effect() {
@@ -230,8 +298,10 @@ impl Server {
         }
         for (pane, outcome) in self.notices.release_held(Instant::now()) {
             self.notices_changed(pane);
-            if outcome.took_effect() {
-                self.push_out(pane);
+            if outcome.took_effect()
+                && let Some(n) = self.notices.get(pane).cloned()
+            {
+                self.push_out(pane, n.class, &n.source, &n.title, &n.message);
             }
         }
         let seen = self.sessions.get(&session_id).and_then(Self::seen_pane);
@@ -239,7 +309,7 @@ impl Server {
             && self
                 .notices
                 .get(pane)
-                .is_some_and(|n| n.class.clears_when_seen())
+                .is_some_and(|n| self.config.notification.class(n.class).clear_on_focus)
         {
             self.notices.clear(pane);
             self.notices_changed(pane);

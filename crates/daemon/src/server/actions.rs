@@ -1117,6 +1117,9 @@ impl Server {
     }
 
     fn focus_last(&mut self, ctx: Ctx) -> Result<String, String> {
+        if self.return_after_jump(ctx) {
+            return Ok(String::new());
+        }
         let last = self
             .sessions
             .get(&ctx.session)

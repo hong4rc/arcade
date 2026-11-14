@@ -69,6 +69,85 @@ pub struct KeyOverride {
     pub binding: Option<Binding>,
 }
 
+/// What a notification of one class does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClassPolicy {
+    /// It makes a mark on the tab, the pane and the counter.
+    pub indicator: bool,
+    /// It rings the host terminal.
+    pub bell: bool,
+    /// It asks the host terminal for a notification of its own.
+    pub osc: bool,
+    /// Looking at the pane takes it away.
+    pub clear_on_focus: bool,
+}
+
+/// The kind of escape sequence a notification from `arcade notify` goes out as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OscKind {
+    /// A title and a body.
+    Osc777,
+    /// One message.
+    Osc9,
+}
+
+/// The `[notification]` settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationConfig {
+    /// In the order of `Class::BY_URGENCY`: approval, input, error, info.
+    pub classes: [ClassPolicy; 4],
+    /// Send a signal out even when the host terminal has the focus, when the pane that gave it
+    /// does not.
+    pub push_when_host_focused: bool,
+    pub osc: OscKind,
+    /// How seldom a pane sends a signal out, and how seldom a client is rung.
+    pub push_interval: Duration,
+    pub bell_interval: Duration,
+    /// Signals from these sources are dropped.
+    pub muted_sources: Vec<String>,
+    /// Go to the pane that sent a signal out when the host terminal gets the focus back.
+    pub auto_jump: bool,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        let waits = ClassPolicy {
+            indicator: true,
+            bell: true,
+            osc: true,
+            clear_on_focus: false,
+        };
+        NotificationConfig {
+            classes: [
+                waits,
+                waits,
+                waits,
+                ClassPolicy {
+                    bell: false,
+                    clear_on_focus: true,
+                    ..waits
+                },
+            ],
+            push_when_host_focused: true,
+            osc: OscKind::Osc777,
+            push_interval: Duration::from_secs(5),
+            bell_interval: Duration::from_secs(2),
+            muted_sources: Vec::new(),
+            auto_jump: true,
+        }
+    }
+}
+
+impl NotificationConfig {
+    pub fn class(&self, class: crate::notify::Class) -> ClassPolicy {
+        let at = crate::notify::Class::BY_URGENCY
+            .iter()
+            .position(|c| *c == class)
+            .unwrap_or(3);
+        self.classes[at]
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub keys: KeysConfig,
@@ -82,6 +161,7 @@ pub struct Config {
     pub clipboard: ClipboardConfig,
     /// Whether the daemon keeps the machine from sleeping because it sat idle.
     pub prevent_sleep: bool,
+    pub notification: NotificationConfig,
 }
 
 impl Default for Config {
@@ -94,6 +174,7 @@ impl Default for Config {
             renumber: true,
             scrollback_lines: None,
             prevent_sleep: true,
+            notification: NotificationConfig::default(),
             clipboard: ClipboardConfig {
                 mode: ClipboardMode::Osc52,
                 command: None,
@@ -328,6 +409,104 @@ fn unknown_key(section: &str, key: &str, known: &[&str]) -> String {
         message.push_str(&format!(", did you mean \"{}\"?", full(k)));
     }
     message
+}
+
+fn read_notification(r: &mut Reader<'_>, table: &DeTable<'_>, config: &mut NotificationConfig) {
+    const KEYS: &[&str] = &[
+        "auto-jump",
+        "push-when-host-focused",
+        "osc",
+        "push-interval",
+        "bell-interval",
+        "mute-sources",
+        "approval",
+        "input",
+        "error",
+        "info",
+    ];
+    for (n, v) in table.iter() {
+        let name = n.get_ref().as_ref();
+        match name {
+            "auto-jump" => {
+                if let Some(b) = r.boolean("auto-jump", v) {
+                    config.auto_jump = b;
+                }
+            }
+            "push-when-host-focused" => {
+                if let Some(b) = r.boolean("push-when-host-focused", v) {
+                    config.push_when_host_focused = b;
+                }
+            }
+            "osc" => match r.string("osc", v) {
+                Some("777") => config.osc = OscKind::Osc777,
+                Some("9") => config.osc = OscKind::Osc9,
+                Some(other) => r.error(
+                    v.span().start,
+                    format!("osc is \"777\" or \"9\", not \"{other}\""),
+                ),
+                None => {}
+            },
+            "push-interval" => {
+                if let Some(s) = r.integer("push-interval", v) {
+                    config.push_interval = Duration::from_secs(s as u64);
+                }
+            }
+            "bell-interval" => {
+                if let Some(s) = r.integer("bell-interval", v) {
+                    config.bell_interval = Duration::from_secs(s as u64);
+                }
+            }
+            "mute-sources" => match v.get_ref() {
+                DeValue::Array(items) => {
+                    config.muted_sources = items
+                        .iter()
+                        .filter_map(|item| r.string("mute-sources", item).map(str::to_string))
+                        .collect();
+                }
+                _ => r.error(
+                    v.span().start,
+                    "mute-sources must be a list of source names",
+                ),
+            },
+            "approval" | "input" | "error" | "info" => {
+                let Some(class) = crate::notify::Class::parse(name) else {
+                    continue;
+                };
+                let Some(inner) = r.table(&format!("notification.{name}"), v) else {
+                    continue;
+                };
+                let at = crate::notify::Class::BY_URGENCY
+                    .iter()
+                    .position(|c| *c == class)
+                    .unwrap_or(3);
+                for (k, value) in inner.iter() {
+                    let slot = match k.get_ref().as_ref() {
+                        "indicator" => &mut config.classes[at].indicator,
+                        "bell" => &mut config.classes[at].bell,
+                        "osc" => &mut config.classes[at].osc,
+                        "clear-on-focus" => &mut config.classes[at].clear_on_focus,
+                        other => {
+                            r.error(
+                                k.span().start,
+                                unknown_key(
+                                    &format!("notification.{name}"),
+                                    other,
+                                    &["indicator", "bell", "osc", "clear-on-focus"],
+                                ),
+                            );
+                            continue;
+                        }
+                    };
+                    if let Some(b) =
+                        r.boolean(&format!("notification.{name}.{}", k.get_ref()), value)
+                    {
+                        *slot = b;
+                    }
+                }
+            }
+            other => r.error(n.span().start, unknown_key("notification", other, KEYS)),
+        }
+    }
 }
 
 fn nav_chars(text: &str) -> Result<[char; 4], String> {
@@ -605,6 +784,7 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                     }
                 }
             }
+            "notification" => read_notification(&mut r, table, &mut config.notification),
             "scrollback" => {
                 for (n, v) in table.iter() {
                     match n.get_ref().as_ref() {
@@ -669,6 +849,7 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                         "scrollback",
                         "clipboard",
                         "power",
+                        "notification",
                     ],
                 ),
             ),
@@ -894,5 +1075,48 @@ position = "top"
             assert_eq!(again.prefix, first.prefix);
             assert_eq!(again.direct, first.direct);
         }
+    }
+
+    #[test]
+    fn the_notification_settings_have_the_defaults_of_the_spec_and_can_be_changed() {
+        let d = parse("").unwrap().notification;
+        assert_eq!(d, NotificationConfig::default());
+        assert!(d.auto_jump && d.push_when_host_focused);
+        assert_eq!(d.push_interval, Duration::from_secs(5));
+        assert_eq!(d.bell_interval, Duration::from_secs(2));
+        // Approval, input, error ring and ask; info only asks and goes away when looked at.
+        assert!(d.class(crate::notify::Class::Approval).bell);
+        assert!(!d.class(crate::notify::Class::Info).bell);
+        assert!(d.class(crate::notify::Class::Info).clear_on_focus);
+        assert!(!d.class(crate::notify::Class::Error).clear_on_focus);
+        let c = parse(
+            "[notification]\nauto-jump = false\nosc = \"9\"\npush-interval = 7\nmute-sources = [\"a\", \"b\"]\n[notification.info]\nbell = true\n",
+        )
+        .unwrap()
+        .notification;
+        assert!(!c.auto_jump);
+        assert_eq!(c.osc, OscKind::Osc9);
+        assert_eq!(c.push_interval, Duration::from_secs(7));
+        assert_eq!(c.muted_sources, ["a", "b"]);
+        assert!(c.class(crate::notify::Class::Info).bell);
+        assert!(c.class(crate::notify::Class::Info).clear_on_focus);
+    }
+
+    #[test]
+    fn mistakes_in_the_notification_settings_are_named_with_their_line() {
+        let got = lines("[notification]\nauto-jmp = true\n");
+        assert_eq!(
+            got,
+            [
+                "line 2: unknown key \"notification.auto-jmp\", did you mean \"notification.auto-jump\"?"
+            ]
+        );
+        let got = lines("[notification.info]\nbel = true\n");
+        assert_eq!(got.len(), 1);
+        assert!(got[0].contains("notification.info.bel"), "{got:?}");
+        let got = lines("[notification]\nosc = \"99\"\n");
+        assert!(got[0].starts_with("line 2: osc is"), "{got:?}");
+        let got = lines("[notification]\nmute-sources = \"a\"\n");
+        assert!(got[0].contains("list of source names"), "{got:?}");
     }
 }
