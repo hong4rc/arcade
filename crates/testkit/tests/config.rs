@@ -101,6 +101,28 @@ fn after_the_prefix_the_authors_movement_keys_move_focus() {
 }
 
 #[test]
+fn the_list_of_keys_follows_the_bindings_of_the_file() {
+    let dir = config_dir();
+    let file = dir.join("config.toml");
+    std::fs::write(
+        &file,
+        "[keys.prefix]\n\"q\" = \"pane.zoom\"\n\"x\" = false\n",
+    )
+    .unwrap();
+    let daemon = daemon_with(&file);
+    let (ok, output) = run(&daemon, "keys.list", &[]);
+    assert!(ok, "{output}");
+    assert!(output.contains("ctrl+m q\tpane.zoom"), "{output}");
+    assert!(!output.contains("ctrl+m x\t"), "{output}");
+    // The defaults that were not touched are still there, the direct ones too.
+    assert!(output.contains("ctrl+m |\tpane.split-right"), "{output}");
+    assert!(
+        output.contains("ctrl+alt+left\tpane.focus-left"),
+        "{output}"
+    );
+}
+
+#[test]
 fn no_file_means_the_defaults() {
     let dir = config_dir();
     let daemon = daemon_with(&dir.join("not-there.toml"));
@@ -152,7 +174,7 @@ fn reloading_replaces_the_key_tables_and_a_file_with_mistakes_changes_nothing() 
     client.send(b"\x1b[109;5uw");
     assert!(client.wait_until(WAIT, |c| !c.status_row().contains("[Z]")));
     client.send(b"\x1b[109;5uq");
-    assert!(client.wait_until(WAIT, |c| c.status_row().contains("no key")));
+    assert!(client.wait_until(WAIT, |c| c.status_row().contains("no binding for q")));
 }
 
 #[test]

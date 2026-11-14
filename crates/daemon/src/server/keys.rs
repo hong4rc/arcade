@@ -2,7 +2,7 @@
 //! keys that go on to the program in the pane.
 
 use super::*;
-use crate::keymap::{self, Binding, Keymap, key_name};
+use crate::keymap::{self, Binding, Keymap, typed_name};
 use crate::picker::PickerKind;
 use crate::status::Prompt;
 
@@ -224,10 +224,7 @@ impl Server {
                     // The prefix twice sends the prefix key itself.
                     self.key_to_focus(session_id, pane, original, raw);
                 } else {
-                    self.set_message(
-                        session_id,
-                        &format!("no key {} after the prefix", key_name(key)),
-                    );
+                    self.set_message(session_id, &format!("no binding for {}", typed_name(key)));
                 }
                 return;
             }
@@ -260,7 +257,7 @@ impl Server {
 
     /// Run what a key is bound to. Closing a pane asks first and renaming asks for the name;
     /// an error shows on the status bar.
-    fn run_binding(&mut self, session_id: u64, binding: &Binding) {
+    pub(super) fn run_binding(&mut self, session_id: u64, binding: &Binding) {
         let Some(pane) = self.focus_pane_of(session_id) else {
             return;
         };
@@ -279,6 +276,7 @@ impl Server {
         let picker = match (binding.command.as_str(), binding.args.is_empty()) {
             ("session.list", true) => Some(PickerKind::Sessions),
             ("window.move-to-session", true) => Some(PickerKind::MoveWindow),
+            ("keys.list", true) => Some(PickerKind::Keys),
             _ => None,
         };
         if let Some(kind) = picker {

@@ -355,10 +355,81 @@ fn a_key_after_the_prefix_that_means_nothing_says_so_and_is_not_passed_on() {
     let mut client = raw_pane(&daemon);
     client.send(PREFIX);
     client.send(b"~");
-    status_has(&mut client, "no key");
+    status_has(&mut client, "no binding for ~");
     client.send(b"|");
     wait_shown(&mut client, "|");
     assert!(!client.screen_text().contains('~'));
+}
+
+#[test]
+fn an_unbound_shifted_key_after_the_prefix_is_named_as_typed_and_reaches_no_pane() {
+    let daemon = TestDaemon::start();
+    let mut client = raw_pane(&daemon);
+    // Shift and `;` as the new protocol reports it: the message says `:`, not `shift+;`.
+    client.send(PREFIX);
+    client.send(b"\x1b[59;2u");
+    status_has(&mut client, "no binding for :");
+    // The pane got nothing: what is typed next is the first thing it shows.
+    client.send(b"z");
+    wait_shown(&mut client, "z");
+    assert!(client.content_rows().iter().all(|r| !r.contains(':')));
+}
+
+fn the_keys_list_is_open(client: &TestClient) -> bool {
+    client.screen_text().contains("Keys")
+}
+
+fn step_down_until(client: &mut TestClient, text: &str) {
+    for _ in 0..200 {
+        if client.screen_text().contains(text) {
+            return;
+        }
+        client.send(b"\x1b[B");
+        client.read_more(std::time::Instant::now() + Duration::from_millis(20));
+    }
+    panic!("{text:?} is not in the list:\n{}", client.screen_text());
+}
+
+#[test]
+fn the_question_mark_after_the_prefix_lists_the_keys_with_their_commands() {
+    let daemon = TestDaemon::start();
+    let mut client = raw_pane(&daemon);
+    client.send(PREFIX);
+    // `?` as the new protocol reports it: Shift and `/`.
+    client.send(b"\x1b[47;2u");
+    assert!(client.wait_until(WAIT, |c| the_keys_list_is_open(c)));
+    for wanted in [
+        "ctrl+m | ",
+        "pane.split-right",
+        "ctrl+m - ",
+        "pane.split-down",
+        "ctrl+m c ",
+        "window.new",
+        "ctrl+m d ",
+        "session.detach",
+    ] {
+        step_down_until(&mut client, wanted);
+    }
+    // Escape closes it and nothing reached the pane.
+    client.send(b"\x1b");
+    assert!(client.wait_until(WAIT, |c| !the_keys_list_is_open(c)));
+}
+
+#[test]
+fn enter_in_the_keys_list_runs_the_chosen_command() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    client.send(PREFIX);
+    client.send(b"?");
+    assert!(client.wait_until(WAIT, |c| the_keys_list_is_open(c)));
+    // The lines go by command name: `arcade.lock`, `arcade.redraw`, `arcade.reload-config`, then
+    // `copy.enter`.
+    client.send(b"\x1b[B\x1b[B\x1b[B");
+    client.read_more(std::time::Instant::now() + Duration::from_millis(100));
+    client.send(b"\r");
+    assert!(client.wait_until(WAIT, |c| bar(c).contains(" COPY ")));
+    assert!(!the_keys_list_is_open(&client));
 }
 
 #[test]

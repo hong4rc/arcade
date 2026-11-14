@@ -3,6 +3,7 @@
 use super::*;
 use crate::commands::{self, Command, CopyCommand, ListCommand};
 use crate::copy::{Copy, Outcome};
+use crate::keymap::{Binding, typed_name};
 use crate::layout::{Axis, Direction, LayoutError};
 use crate::picker::{Item, PickerKind};
 
@@ -119,6 +120,7 @@ impl Server {
     ) -> Result<String, String> {
         match &command {
             Command::SessionList => return Ok(self.list_sessions()),
+            Command::KeysList => return Ok(self.list_keys()),
             Command::SessionClose(Some(name)) => {
                 let session = self
                     .sessions
@@ -198,6 +200,7 @@ impl Server {
                 Ok(String::new())
             }
             Command::SessionList => Ok(self.list_sessions()),
+            Command::KeysList => Ok(self.list_keys()),
             Command::SessionRename(Some(name)) => {
                 if self
                     .sessions
@@ -373,6 +376,22 @@ impl Server {
 
     /// Open the list of sessions, to go to one or to move the current window to one.
     pub(super) fn open_picker(&mut self, session_id: u64, kind: PickerKind) -> Result<(), String> {
+        if kind == PickerKind::Keys {
+            let items: Vec<Item> = self
+                .key_bindings()
+                .into_iter()
+                .map(|(label, binding)| Item {
+                    name: label,
+                    detail: binding_line(&binding),
+                    current: false,
+                })
+                .collect();
+            if let Some(s) = self.sessions.get_mut(&session_id) {
+                s.picker = Some(Picker::new(kind, "Keys", items, 0));
+                s.chrome_dirty = true;
+            }
+            return Ok(());
+        }
         let current = self
             .sessions
             .get(&session_id)
@@ -401,12 +420,47 @@ impl Server {
         let title = match kind {
             PickerKind::Sessions => "Sessions",
             PickerKind::MoveWindow => "Move window to",
+            PickerKind::Keys => "Keys",
         };
         if let Some(s) = self.sessions.get_mut(&session_id) {
             s.picker = Some(Picker::new(kind, title, items, selected));
             s.chrome_dirty = true;
         }
         Ok(())
+    }
+
+    /// Every binding of the prefix table, then of the direct table, as what a person presses and
+    /// the binding, in a fixed order (by command, then by keys).
+    fn key_bindings(&self) -> Vec<(String, Binding)> {
+        let prefix = typed_name(self.config.keys.prefix);
+        let mut after_prefix: Vec<(String, Binding)> = self
+            .keymap
+            .prefix
+            .iter()
+            .map(|(key, b)| (format!("{prefix} {}", typed_name(*key)), b.clone()))
+            .collect();
+        let mut direct: Vec<(String, Binding)> = self
+            .keymap
+            .direct
+            .iter()
+            .map(|(key, b)| (typed_name(*key), b.clone()))
+            .collect();
+        let order = |a: &(String, Binding), b: &(String, Binding)| {
+            (binding_line(&a.1), &a.0).cmp(&(binding_line(&b.1), &b.0))
+        };
+        after_prefix.sort_by(order);
+        direct.sort_by(order);
+        after_prefix.extend(direct);
+        after_prefix
+    }
+
+    /// The bindings as text, one per line: the keys, a tab, the command.
+    fn list_keys(&self) -> String {
+        self.key_bindings()
+            .iter()
+            .map(|(label, b)| format!("{label}\t{}", binding_line(b)))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn list_command(&mut self, session_id: u64, command: ListCommand) -> Result<String, String> {
@@ -427,6 +481,7 @@ impl Server {
             }
             ListCommand::Select => {
                 let kind = picker.kind;
+                let index = picker.selected;
                 let name = picker.chosen().map(|i| i.name.clone());
                 session.picker = None;
                 session.relayout = true;
@@ -435,6 +490,14 @@ impl Server {
                     return Ok(String::new());
                 };
                 return match kind {
+                    PickerKind::Keys => {
+                        // The list was made from the tables in this order, and nothing in them
+                        // changes while it is open.
+                        if let Some((_, binding)) = self.key_bindings().into_iter().nth(index) {
+                            self.run_binding(session_id, &binding);
+                        }
+                        Ok(String::new())
+                    }
                     PickerKind::Sessions => self.switch_session(session_id, &name),
                     PickerKind::MoveWindow => {
                         let ctx = self.current_ctx(session_id)?;
@@ -971,5 +1034,14 @@ impl Server {
                 c.close_after_flush = true;
             }
         }
+    }
+}
+
+/// A binding's command with its arguments, as it would be typed.
+fn binding_line(binding: &Binding) -> String {
+    if binding.args.is_empty() {
+        binding.command.clone()
+    } else {
+        format!("{} {}", binding.command, binding.args.join(" "))
     }
 }

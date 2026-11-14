@@ -173,6 +173,43 @@ pub fn parse_key(text: &str) -> Result<Key, String> {
 }
 
 /// The words for a key, as `parse_key` reads them.
+/// The key as a person would say it: what was typed (`?`, `A`, `|`) for a shifted symbol or
+/// letter, and `key_name` for the rest. The symbols are those of the US layout, as in `normalize`.
+pub fn typed_name(key: Key) -> String {
+    let only_shift = key.mods.shift && !key.mods.ctrl && !key.mods.alt && !key.mods.super_key;
+    if let (true, Code::Char(c)) = (only_shift, key.code) {
+        let symbol = match c {
+            '1' => Some('!'),
+            '2' => Some('@'),
+            '3' => Some('#'),
+            '4' => Some('$'),
+            '5' => Some('%'),
+            '6' => Some('^'),
+            '7' => Some('&'),
+            '8' => Some('*'),
+            '9' => Some('('),
+            '0' => Some(')'),
+            '-' => Some('_'),
+            '=' => Some('+'),
+            '[' => Some('{'),
+            ']' => Some('}'),
+            '\\' => Some('|'),
+            ';' => Some(':'),
+            '\'' => Some('"'),
+            ',' => Some('<'),
+            '.' => Some('>'),
+            '/' => Some('?'),
+            '`' => Some('~'),
+            c if c.is_lowercase() => c.to_uppercase().next(),
+            _ => None,
+        };
+        if let Some(symbol) = symbol {
+            return symbol.to_string();
+        }
+    }
+    key_name(key)
+}
+
 pub fn key_name(key: Key) -> String {
     let mut out = String::new();
     for (on, word) in [
@@ -373,6 +410,7 @@ impl Keymap {
         bind(t, ch('m'), "window.move-to-session", &[], false);
         bind(t, ch('['), "copy.enter", &[], false);
         bind(t, ch(']'), "pane.paste", &[], false);
+        bind(t, ch('?'), "keys.list", &[], false);
         bind(t, ch('d'), "session.detach", &[], false);
         bind(t, ch('g'), "arcade.lock", &[], false);
         bind(t, ch('r'), "arcade.reload-config", &[], false);
