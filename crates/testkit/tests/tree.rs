@@ -91,6 +91,21 @@ fn open_tree(client: &mut TestClient) {
     assert!(ok, "{}", client.screen_text());
 }
 
+/// A line of the tree without the place and the program a pane line adds (`in <directory>`,
+/// `running <program>`), which differ from machine to machine.
+fn plain(line: &str) -> String {
+    let mut words = line.split_whitespace();
+    let mut kept = Vec::new();
+    while let Some(w) = words.next() {
+        if w == "in" || w == "running" {
+            words.next();
+        } else {
+            kept.push(w);
+        }
+    }
+    kept.join(" ")
+}
+
 /// The text of the chosen line.
 fn chosen(client: &TestClient) -> String {
     box_rows(client)
@@ -99,7 +114,7 @@ fn chosen(client: &TestClient) -> String {
             let inner = r.strip_prefix('│')?.trim_start();
             inner
                 .strip_prefix("> ")
-                .map(|t| t.trim_end_matches([' ', '│']).trim().to_string())
+                .map(|t| plain(t.trim_end_matches([' ', '│']).trim()))
         })
         .unwrap_or_default()
 }
@@ -764,12 +779,60 @@ fn the_lift_key_can_be_rebound_and_the_old_one_goes_into_the_filter() {
     client.send(b"x");
     let ok = client.wait_until(WAIT, |c| !chosen(c).contains("[lifted]"));
     assert!(ok, "{}", client.screen_text());
-    // Space is a character of the filter now: "nvim " matches nothing.
-    client.send(b"nvim");
+    // Space is a character of the filter now: "nvi " matches nothing.
+    client.send(b"nvi");
     let ok = client.wait_until(WAIT, |c| box_rows(c).iter().any(|r| r.contains("› nvim")));
     assert!(ok, "{}", client.screen_text());
     client.send(b" ");
     let ok = client.wait_until(WAIT, |c| !box_rows(c).iter().any(|r| r.contains("› nvim")));
     assert!(ok, "{}", client.screen_text());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_pane_line_names_the_directory_and_the_program_in_the_foreground_and_the_filter_finds_them() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    let dir = daemon
+        .dir()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap()
+        .to_string();
+    open_tree(&mut client);
+    let text = box_rows(&client).join("\n");
+    assert!(text.contains(&format!("zsh in {dir}")), "{text}");
+    assert!(!text.contains("running"), "{text}");
+    client.send(ESC);
+    closed(&mut client);
+    // A program that runs in the pane in front of the shell shows by its name.
+    client.type_line("sleep 31");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    open_tree(&mut client);
+    let ok = client.wait_until(WAIT, |c| {
+        box_rows(c)
+            .iter()
+            .any(|r| r.contains(&format!("zsh in {dir} running sleep")))
+    });
+    assert!(ok, "{}", client.screen_text());
+    // The filter looks at the new parts too: the program, and the directory.
+    client.send(b"sleep");
+    let ok = client.wait_until(WAIT, |c| {
+        let lines: Vec<String> = box_rows(c)
+            .into_iter()
+            .filter(|r| r.contains('›'))
+            .collect();
+        lines.len() == 1 && lines[0].contains("running sleep")
+    });
+    assert!(ok, "{}", client.screen_text());
+    client.send(b"\x15");
+    client.send(dir.as_bytes());
+    let ok = client.wait_until(WAIT, |c| {
+        box_rows(c).iter().filter(|r| r.contains('›')).count() >= 4
+    });
+    assert!(ok, "{}", client.screen_text());
+    client.send(ESC);
+    client.send(ESC);
+    closed(&mut client);
+    client.send(b"\x03");
 }

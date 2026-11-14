@@ -81,15 +81,31 @@ impl Server {
         entries
     }
 
-    /// The title the program in the pane set, or the name of the program.
+    /// What a pane is called in the tree: the title the program set, or the name of the
+    /// program the pane started; then where it stands (the last part of its directory), and
+    /// the program in the foreground when that is not the first one. Several panes that run the
+    /// same shell tell apart by these.
     fn pane_label(&self, pane: u64) -> String {
         let Some(p) = self.panes.get(&pane) else {
             return "pane".to_string();
         };
-        p.title
+        let base = p
+            .title
             .clone()
             .or_else(|| pty::process_name(p.pid))
-            .unwrap_or_else(|| "pane".to_string())
+            .unwrap_or_else(|| "pane".to_string());
+        let mut label = base.clone();
+        if let Some(dir) = pty::process_cwd(p.pid) {
+            label.push_str(" in ");
+            label.push_str(&directory_name(&dir));
+        }
+        if let Some(running) = pty::foreground_name(p.master.as_raw_fd(), p.pid)
+            && running != base
+        {
+            label.push_str(" running ");
+            label.push_str(&running);
+        }
+        label
     }
 
     /// Open the tree for the client of the session.

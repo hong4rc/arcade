@@ -141,7 +141,7 @@ The key list (prefix, then `?`) filters by key and by command name, for example 
 
 ### 3.5 Tree of sessions, windows and panes: jumping, lifting and putting down
 
-The prefix then `t` opens a tree with three tiers: sessions, the windows inside them, the panes inside those. A pane line shows the title the program set, or the name of the running program if there is none. The place you are in is marked (and the session and window carry a `*`); when the tree opens, the branch that holds that place is open and the other branches are closed. The tree does not update by itself over time; if something disappears while the tree is open, the tree is rebuilt at the next drawing and the choice moves to the nearest item that still exists.
+The prefix then `t` opens a tree with three tiers: sessions, the windows inside them, the panes inside those. A pane line shows the title the program set (or the name of the program the pane started if there is none), then `in <directory>` with the last part of the directory the pane stands in, and `running <program>` when a program other than the first one is in the foreground, for example `zsh in arcade running nvim`. The filter looks at all of that. The place you are in is marked (and the session and window carry a `*`); when the tree opens, the branch that holds that place is open and the other branches are closed. The tree does not update by itself over time; if something disappears while the tree is open, the tree is rebuilt at the next drawing and the choice moves to the nearest item that still exists.
 
 | Key | Action |
 |---|---|

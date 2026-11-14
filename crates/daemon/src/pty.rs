@@ -219,6 +219,17 @@ pub fn process_name(pid: i32) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// The name of the program in the foreground of the terminal whose master side is `master`,
+/// when it is not the first process (the shell) itself.
+pub fn foreground_name(master: std::os::fd::RawFd, first_pid: i32) -> Option<String> {
+    // SAFETY: tcgetpgrp reads the foreground group of the terminal behind a descriptor.
+    let group = unsafe { libc::tcgetpgrp(master) };
+    if group <= 0 || group == first_pid {
+        return None;
+    }
+    process_name(group)
+}
+
 /// Wait up to `millis` for `fd` to have something to read or to be hung up. Used for a pane
 /// whose process has ended: its last output may reach the master a moment after the exit.
 pub fn wait_readable(fd: std::os::fd::RawFd, millis: i32) {
