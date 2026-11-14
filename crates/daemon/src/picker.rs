@@ -168,82 +168,117 @@ impl Picker {
             .enumerate()
             .map(|(i, item)| self.line(item, i == self.selected))
             .collect();
-        let filter_line = format!("{}{}", theme::symbol(Symbol::PickerFilterMark), self.filter);
         let nothing = self.visible.is_empty();
         if nothing {
             lines.push(format!("  {}", theme::symbol(Symbol::PickerNoMatch)));
         }
-        let widest = lines
-            .iter()
-            .map(|l| text_cells(l, Default::default()).len())
-            .chain(std::iter::once(
-                text_cells(&filter_line, Default::default()).len(),
-            ))
-            .chain(std::iter::once(
-                text_cells(&self.title, Default::default()).len() + 2,
-            ))
-            .max()
-            .unwrap_or(0);
-        // One column of room inside each side, and the frame.
-        let most = usize::from(cols).saturating_sub(2).max(1);
-        let inner = (widest + 2).clamp(20.min(most), most);
-        let width = inner + 2;
-        // The frame and the filter line take three rows.
-        let room = usize::from(rows).saturating_sub(3);
-        let shown = lines.len().min(room);
-        // The lines that show: the first ones, or those that end with the chosen one.
-        let first = (self.selected + 1).saturating_sub(shown);
-        let height = shown + 3;
-        let x = (usize::from(cols).saturating_sub(width) / 2) as u16;
-        let y = (usize::from(rows).saturating_sub(height) / 2) as u16;
-
-        let plain = theme::style(Role::Picker);
-        let chosen = theme::style(Role::PickerSelected);
-        let side = |c: Symbol| text_cells(theme::symbol(c), plain);
-        let mut out: Vec<Vec<Cell>> = Vec::with_capacity(height);
-
-        let mut top = side(Symbol::PickerTopLeft);
-        let title = format!(" {} ", self.title);
-        let mut title_cells = fit(text_cells(&title, plain), inner, plain);
-        let rule = text_cells(theme::symbol(Symbol::PickerHorizontal), plain);
-        for (i, cell) in title_cells.iter_mut().enumerate() {
-            if i >= text_cells(&title, plain).len() {
-                *cell = rule[0].clone();
-            }
-        }
-        top.extend(title_cells);
-        top.extend(side(Symbol::PickerTopRight));
-        out.push(top);
-
-        let mut filter_row = side(Symbol::PickerVertical);
-        let mut body = vec![blank(plain)];
-        body.extend(text_cells(&filter_line, plain));
-        filter_row.extend(fit(body, inner, plain));
-        filter_row.extend(side(Symbol::PickerVertical));
-        out.push(filter_row);
-
-        for (index, line) in lines.iter().enumerate().skip(first).take(shown) {
-            let style = if index == self.selected && !nothing {
-                chosen
-            } else {
-                plain
-            };
-            let mut row = side(Symbol::PickerVertical);
-            let mut body = vec![blank(style)];
-            body.extend(text_cells(line, style));
-            row.extend(fit(body, inner, style));
-            row.extend(side(Symbol::PickerVertical));
-            out.push(row);
-        }
-
-        let mut bottom = side(Symbol::PickerBottomLeft);
-        for _ in 0..inner {
-            bottom.extend(rule.clone());
-        }
-        bottom.extend(side(Symbol::PickerBottomRight));
-        out.push(bottom);
-        Drawn { x, y, rows: out }
+        let selected = (!nothing).then_some(self.selected);
+        draw_box(
+            &self.title,
+            &self.filter,
+            &lines,
+            selected,
+            None,
+            cols,
+            rows,
+        )
     }
+}
+
+/// A framed box for a screen of this size: the title in the top edge, the filter line, the lines
+/// (the ones that fit, ending with the chosen one when it would be out of sight), and, when
+/// there is one, a line of its own at the bottom.
+pub fn draw_box(
+    title: &str,
+    filter: &str,
+    lines: &[String],
+    selected: Option<usize>,
+    footer: Option<&str>,
+    cols: u16,
+    rows: u16,
+) -> Drawn {
+    let filter_line = format!("{}{}", theme::symbol(Symbol::PickerFilterMark), filter);
+    let widest = lines
+        .iter()
+        .map(|l| text_cells(l, Default::default()).len())
+        .chain(std::iter::once(
+            text_cells(&filter_line, Default::default()).len(),
+        ))
+        .chain(std::iter::once(
+            text_cells(title, Default::default()).len() + 2,
+        ))
+        .chain(footer.map(|f| text_cells(f, Default::default()).len() + 1))
+        .max()
+        .unwrap_or(0);
+    // One column of room inside each side, and the frame.
+    let most = usize::from(cols).saturating_sub(2).max(1);
+    let inner = (widest + 2).clamp(20.min(most), most);
+    let width = inner + 2;
+    // The frame and the filter line take three rows, and the footer one more.
+    let extra = 3 + usize::from(footer.is_some());
+    let room = usize::from(rows).saturating_sub(extra);
+    let shown = lines.len().min(room);
+    // The lines that show: the first ones, or those that end with the chosen one.
+    let first = (selected.unwrap_or(0) + 1).saturating_sub(shown);
+    let height = shown + extra;
+    let x = (usize::from(cols).saturating_sub(width) / 2) as u16;
+    let y = (usize::from(rows).saturating_sub(height) / 2) as u16;
+
+    let plain = theme::style(Role::Picker);
+    let chosen = theme::style(Role::PickerSelected);
+    let side = |c: Symbol| text_cells(theme::symbol(c), plain);
+    let mut out: Vec<Vec<Cell>> = Vec::with_capacity(height);
+
+    let mut top = side(Symbol::PickerTopLeft);
+    let title_text = format!(" {title} ");
+    let mut title_cells = fit(text_cells(&title_text, plain), inner, plain);
+    let rule = text_cells(theme::symbol(Symbol::PickerHorizontal), plain);
+    for (i, cell) in title_cells.iter_mut().enumerate() {
+        if i >= text_cells(&title_text, plain).len() {
+            *cell = rule[0].clone();
+        }
+    }
+    top.extend(title_cells);
+    top.extend(side(Symbol::PickerTopRight));
+    out.push(top);
+
+    let mut filter_row = side(Symbol::PickerVertical);
+    let mut body = vec![blank(plain)];
+    body.extend(text_cells(&filter_line, plain));
+    filter_row.extend(fit(body, inner, plain));
+    filter_row.extend(side(Symbol::PickerVertical));
+    out.push(filter_row);
+
+    for (index, line) in lines.iter().enumerate().skip(first).take(shown) {
+        let style = if Some(index) == selected {
+            chosen
+        } else {
+            plain
+        };
+        let mut row = side(Symbol::PickerVertical);
+        let mut body = vec![blank(style)];
+        body.extend(text_cells(line, style));
+        row.extend(fit(body, inner, style));
+        row.extend(side(Symbol::PickerVertical));
+        out.push(row);
+    }
+
+    if let Some(footer) = footer {
+        let mut row = side(Symbol::PickerVertical);
+        let mut body = vec![blank(plain)];
+        body.extend(text_cells(footer, plain));
+        row.extend(fit(body, inner, plain));
+        row.extend(side(Symbol::PickerVertical));
+        out.push(row);
+    }
+
+    let mut bottom = side(Symbol::PickerBottomLeft);
+    for _ in 0..inner {
+        bottom.extend(rule.clone());
+    }
+    bottom.extend(side(Symbol::PickerBottomRight));
+    out.push(bottom);
+    Drawn { x, y, rows: out }
 }
 
 /// The key hint: a framed box of lines in as many columns as the screen has room for. Lines

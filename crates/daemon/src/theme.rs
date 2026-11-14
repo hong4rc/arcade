@@ -133,6 +133,17 @@ pub enum Symbol {
     PickerNoMatch,
     /// Between a mode word on the status bar and what it tells the user to do.
     HintSeparator,
+    /// In front of a session or window of the tree that shows what is inside it, and of one that
+    /// does not.
+    TreeOpen,
+    TreeClosed,
+    /// In front of the pane the client is in, and of the others (blank).
+    TreeHere,
+    TreeOtherPane,
+    /// After the line of the item that is lifted.
+    TreeLifted,
+    /// Between the names on the path that a line shows while the tree is filtered.
+    TreePathSeparator,
 }
 
 pub fn symbol(symbol: Symbol) -> &'static str {
@@ -157,5 +168,11 @@ pub fn symbol(symbol: Symbol) -> &'static str {
         Symbol::PickerFilterMark => "/ ",
         Symbol::PickerNoMatch => "no match",
         Symbol::HintSeparator => " · ",
+        Symbol::TreeOpen => "▾ ",
+        Symbol::TreeClosed => "▸ ",
+        Symbol::TreeHere => "● ",
+        Symbol::TreeOtherPane => "  ",
+        Symbol::TreeLifted => " [lifted]",
+        Symbol::TreePathSeparator => " › ",
     }
 }

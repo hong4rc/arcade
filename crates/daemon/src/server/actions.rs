@@ -308,6 +308,9 @@ impl Server {
             Command::WindowList => self.list_windows(ctx.session),
             Command::KeysList => Ok(self.list_keys()),
             Command::Palette => Ok(self.list_commands()),
+            Command::TreeOpen | Command::PaneMove | Command::WindowMove => {
+                Err("this opens a list that is used at the keyboard".to_string())
+            }
             Command::SessionRename(Some(name)) => {
                 if self
                     .sessions
@@ -678,10 +681,15 @@ impl Server {
             .sessions
             .get_mut(&session_id)
             .ok_or_else(|| "no such session".to_string())?;
+        if session.tree.is_some() {
+            return self.tree_command(session_id, command);
+        }
         let Some(picker) = session.picker.as_mut() else {
             return Err("no list is open".to_string());
         };
         match command {
+            // Only the tree has anything to go into or lift.
+            ListCommand::Left | ListCommand::Right | ListCommand::Lift => {}
             ListCommand::Up => picker.up(),
             ListCommand::Down => picker.down(),
             ListCommand::FilterDelete | ListCommand::FilterClear => {
@@ -773,6 +781,11 @@ impl Server {
             .find(|s| s.name == name)
             .map(|s| s.id)
             .ok_or_else(|| format!("no such session: {name}"))?;
+        self.switch_session_id(from, target)
+    }
+
+    /// As `switch_session`, for a session known by its number.
+    pub(super) fn switch_session_id(&mut self, from: u64, target: u64) -> Result<String, String> {
         if target == from {
             return Ok(String::new());
         }
@@ -786,6 +799,7 @@ impl Server {
         let (cols, rows) = (source.cols, source.rows);
         source.key_state.prefix = keys::PrefixState::Idle;
         source.picker = None;
+        source.tree = None;
         self.bind_client(client, target, cols, rows);
         Ok(String::new())
     }
@@ -973,7 +987,7 @@ impl Server {
     }
 
     /// Put a zoomed window back to its layout.
-    fn unzoom(&mut self, ctx: Ctx) {
+    pub(super) fn unzoom(&mut self, ctx: Ctx) {
         let Some(window) = self
             .sessions
             .get_mut(&ctx.session)
@@ -1297,7 +1311,7 @@ impl Server {
     }
 
     /// Show another window; the one shown now becomes the one to go back to.
-    fn select_window(&mut self, session_id: u64, window_id: u64) {
+    pub(super) fn select_window(&mut self, session_id: u64, window_id: u64) {
         let Some(session) = self.sessions.get_mut(&session_id) else {
             return;
         };

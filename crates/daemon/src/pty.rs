@@ -201,6 +201,24 @@ pub fn process_cwd(pid: i32) -> Option<String> {
         .map(|p| p.display().to_string())
 }
 
+/// The name of the program a process runs, when the system tells us.
+#[cfg(target_os = "macos")]
+pub fn process_name(pid: i32) -> Option<String> {
+    let mut name = [0u8; 256];
+    // SAFETY: proc_name writes at most the number of bytes given into the buffer.
+    let got = unsafe { libc::proc_name(pid, name.as_mut_ptr().cast(), name.len() as u32) };
+    let len = usize::try_from(got).ok().filter(|n| *n > 0)?;
+    Some(String::from_utf8_lossy(&name[..len.min(name.len())]).into_owned())
+}
+
+/// The name of the program a process runs, when the system tells us.
+#[cfg(not(target_os = "macos"))]
+pub fn process_name(pid: i32) -> Option<String> {
+    let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// Wait up to `millis` for `fd` to have something to read or to be hung up. Used for a pane
 /// whose process has ended: its last output may reach the master a moment after the exit.
 pub fn wait_readable(fd: std::os::fd::RawFd, millis: i32) {

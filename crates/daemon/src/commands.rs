@@ -45,6 +45,10 @@ pub enum ListCommand {
     /// Take the last typed character off the filter, or all of it.
     FilterDelete,
     FilterClear,
+    /// In the tree: out to the item this one is inside, into it, and lift it or put it down.
+    Left,
+    Right,
+    Lift,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +72,10 @@ pub enum Command {
     WindowMoveRight,
     WindowMoveToSession(Option<String>),
     WindowList,
+    /// Open the tree to look and jump, with a pane lifted, or with a window lifted.
+    TreeOpen,
+    PaneMove,
+    WindowMove,
     WindowLayoutNext,
     WindowLayoutEven,
     SessionList,
@@ -173,6 +181,12 @@ const NAMES: &[(&str, Command)] = &[
         Command::List(ListCommand::FilterDelete),
     ),
     ("list.filter-clear", Command::List(ListCommand::FilterClear)),
+    ("list.left", Command::List(ListCommand::Left)),
+    ("list.right", Command::List(ListCommand::Right)),
+    ("list.lift", Command::List(ListCommand::Lift)),
+    ("tree.open", Command::TreeOpen),
+    ("pane.move", Command::PaneMove),
+    ("window.move", Command::WindowMove),
     ("keys.list", Command::KeysList),
     ("command.list", Command::Palette),
     ("arcade.lock", Command::ArcadeLock),

@@ -36,6 +36,16 @@ fn two_sessions(daemon: &TestDaemon) -> TestClient {
     alpha
 }
 
+/// The list of sessions to move the window to has no key of its own now (`m` lifts a pane in
+/// the tree): it opens from the command list.
+fn open_move_list(client: &mut TestClient) {
+    client.send(PREFIX);
+    client.send(b":");
+    screen_has(client, "Commands");
+    client.send(b"move-to-session");
+    client.send(b"\r");
+}
+
 fn screen_has(client: &mut TestClient, text: &str) {
     let ok = client.wait_until(WAIT, |c| c.screen_text().contains(text));
     assert!(ok, "the screen lacks {text:?}:\n{}", client.screen_text());
@@ -366,8 +376,7 @@ fn the_last_window_of_a_session_cannot_be_moved() {
     assert!(!ok);
     assert!(message.contains("last window"), "{message}");
     // From the keys, the same refusal shows on the status bar and no list opens.
-    client.send(PREFIX);
-    client.send(b"m");
+    open_move_list(&mut client);
     assert!(client.wait_until(WAIT, |c| c.status_row().contains("last window")));
     assert!(!client.screen_text().contains("Move window to"));
 }
@@ -378,8 +387,7 @@ fn the_move_list_leaves_out_the_current_session_and_moves_the_window_on_enter() 
     let mut client = two_sessions(&daemon);
     run(&daemon, "window.new", &[]);
     assert!(client.wait_until(WAIT, |c| c.status_row().contains(" 2 ")));
-    client.send(PREFIX);
-    client.send(b"m");
+    open_move_list(&mut client);
     screen_has(&mut client, "Move window to");
     assert!(
         !client.screen_text().contains("alpha  2 windows"),

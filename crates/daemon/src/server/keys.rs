@@ -6,6 +6,8 @@ use crate::keymap::{self, Binding, Keymap, typed_name};
 use crate::picker::PickerKind;
 use crate::status::Prompt;
 
+use super::treeview::TreeStart;
+
 /// How long a message stays on the status bar when no key is pressed.
 const MESSAGE_LIFETIME: Duration = Duration::from_secs(3);
 
@@ -164,7 +166,7 @@ impl Server {
     pub(super) fn picker_open(&self, session_id: u64) -> bool {
         self.sessions
             .get(&session_id)
-            .is_some_and(|s| s.picker.is_some())
+            .is_some_and(|s| s.picker.is_some() || s.tree.is_some())
     }
 
     /// The focused pane shows copy mode, so keys are for copy mode and not for its program.
@@ -246,8 +248,23 @@ impl Server {
         if s.key_state.clear_message() {
             s.chrome_dirty = true;
         }
-        if let Some(picker) = s.picker.as_mut() {
+        if let Some(tree) = s.tree.as_mut() {
             if let Some(b) = Keymap::get(&self.keymap.list, key).cloned() {
+                self.run_binding(session_id, &b);
+            } else if let Some(text) = typed_text(key, raw) {
+                tree.notice = None;
+                tree.type_text(text);
+                s.relayout = true;
+                s.chrome_dirty = true;
+            }
+            return;
+        }
+        if let Some(picker) = s.picker.as_mut() {
+            // The keys that only the tree has are nothing here: a space is typed into the filter.
+            let bound = Keymap::get(&self.keymap.list, key).filter(|b| {
+                !matches!(b.command.as_str(), "list.left" | "list.right" | "list.lift")
+            });
+            if let Some(b) = bound.cloned() {
                 self.run_binding(session_id, &b);
             } else if let Some(text) = typed_text(key, raw) {
                 // Anything else that can be typed goes into the filter box.
@@ -361,6 +378,18 @@ impl Server {
             }
             _ => None,
         };
+        let tree_start = match binding.command.as_str() {
+            "tree.open" => Some(TreeStart::Browse),
+            "pane.move" => Some(TreeStart::LiftPane),
+            "window.move" => Some(TreeStart::LiftWindow),
+            _ => None,
+        };
+        if let Some(start) = tree_start.filter(|_| binding.args.is_empty()) {
+            if let Err(message) = self.open_tree(session_id, start) {
+                self.set_message(session_id, &message);
+            }
+            return;
+        }
         let picker = match (binding.command.as_str(), binding.args.is_empty()) {
             ("session.list", true) => Some(PickerKind::Sessions),
             ("window.list", true) => Some(PickerKind::Windows),
@@ -479,7 +508,7 @@ impl Server {
         if self
             .sessions
             .get(&session_id)
-            .is_some_and(|s| s.picker.is_some())
+            .is_some_and(|s| s.picker.is_some() || s.tree.is_some())
         {
             return;
         }

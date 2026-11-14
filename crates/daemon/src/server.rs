@@ -45,6 +45,7 @@ mod actions;
 mod frame;
 mod keys;
 mod mouse;
+mod treeview;
 
 const LISTENER: Token = Token(0);
 const WAKER: Token = Token(1);
@@ -260,6 +261,8 @@ struct Session {
     picker: Option<Picker>,
     /// A mouse button held down since a press in a pane.
     drag: Option<mouse::Drag>,
+    /// The tree of sessions, windows and panes, while it is open.
+    tree: Option<crate::tree::Tree>,
 }
 
 /// The shortest time between two looks at the panes' directories for the windows' names.
@@ -1055,6 +1058,7 @@ impl Server {
             session.key_state.prefix = keys::PrefixState::Idle;
             session.key_state.prompt = None;
             session.picker = None;
+            session.tree = None;
             if let Some(message) = self.startup_message.take() {
                 session.key_state.show_message(message, Instant::now());
             }
@@ -1263,6 +1267,7 @@ impl Server {
                 key_state: KeyState::new(),
                 picker: None,
                 drag: None,
+                tree: None,
             },
         );
         Ok(session_id)

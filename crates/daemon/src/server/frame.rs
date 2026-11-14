@@ -139,6 +139,7 @@ impl Server {
         stage_mark!(DaemonFrameStart);
         let status_position = self.config.status_position;
         let unlock_key = self.unlock_key_name();
+        self.refresh_tree(session_id);
         let Some(session) = self.sessions.get_mut(&session_id) else {
             return;
         };
@@ -263,9 +264,13 @@ impl Server {
             }
         }
         // The floating list is drawn over everything on every update.
-        let picker_open = session.picker.is_some();
+        let picker_open = session.picker.is_some() || session.tree.is_some();
         if let Some(picker) = &session.picker {
             let drawn = picker.draw(cols, rows);
+            session.screen.overlay(drawn.x, drawn.y, &drawn.rows);
+        }
+        if let Some(tree) = &session.tree {
+            let drawn = tree.draw(cols, rows);
             session.screen.overlay(drawn.x, drawn.y, &drawn.rows);
         }
         if !picker_open && session.key_state.hint_visible() {

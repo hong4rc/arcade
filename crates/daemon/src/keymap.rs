@@ -478,7 +478,9 @@ impl Keymap {
         bind(t, ch('$'), "session.rename", &[], false);
         bind(t, ch('w'), "window.list", &[], false);
         bind(t, ch('s'), "session.list", &[], false);
-        bind(t, ch('m'), "window.move-to-session", &[], false);
+        bind(t, ch('t'), "tree.open", &[], false);
+        bind(t, ch('m'), "pane.move", &[], false);
+        bind(t, ch('M'), "window.move", &[], false);
         bind(t, ch('['), "copy.enter", &[], false);
         bind(t, ch(']'), "pane.paste", &[], false);
         bind(t, ch(':'), "command.list", &[], false);
@@ -538,6 +540,23 @@ impl Keymap {
             false,
         );
         bind(t, ctrl('u'), "list.filter-clear", &[], false);
+        // Only the tree uses these three; in the other lists they are not bound to anything, and
+        // a space is typed into the filter.
+        bind(
+            t,
+            plain(Code::Named(arrow(DIRECTIONS[0]))),
+            "list.left",
+            &[],
+            false,
+        );
+        bind(
+            t,
+            plain(Code::Named(arrow(DIRECTIONS[3]))),
+            "list.right",
+            &[],
+            false,
+        );
+        bind(t, plain(Code::Char(' ')), "list.lift", &[], false);
     }
 
     fn fill_copy(&mut self, config: &KeysConfig) {

@@ -43,6 +43,7 @@ mod server;
 pub mod stage;
 mod status;
 mod theme;
+mod tree;
 
 pub use keymap::{Keymap, KeysConfig, parse_key};
 pub use paths::{
