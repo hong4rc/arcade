@@ -373,6 +373,24 @@ impl Server {
         }
     }
 
+    /// Handle the pending clipboard writes of the panes of one session.
+    pub(super) fn handle_pending_clipboard_of(&mut self, session_id: u64) {
+        if self.pending_clipboard.is_empty() {
+            return;
+        }
+        let ready: Vec<u64> = self
+            .pending_clipboard
+            .keys()
+            .copied()
+            .filter(|id| self.locate_pane(*id).is_some_and(|(s, _)| s == session_id))
+            .collect();
+        for pane_id in ready {
+            if let Some(data) = self.pending_clipboard.remove(&pane_id) {
+                self.pane_wrote_clipboard(pane_id, &data);
+            }
+        }
+    }
+
     fn pane_wrote_clipboard(&mut self, pane_id: u64, data: &[u8]) {
         if !self.config.clipboard.allow_pane_write {
             return;

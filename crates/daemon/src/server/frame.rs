@@ -128,6 +128,9 @@ impl Server {
             .collect();
         for id in due {
             self.build_frame_for(id);
+            // A clipboard write must not wait for the end of a flood: it is handled when the
+            // next update of its session goes out.
+            self.handle_pending_clipboard_of(id);
         }
     }
 

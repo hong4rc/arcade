@@ -342,6 +342,18 @@ fn a_thousand_clipboard_writes_in_one_burst_reach_the_client_as_few_and_the_last
 }
 
 #[test]
+fn a_clipboard_write_from_a_pane_that_never_stops_printing_still_reaches_the_client() {
+    let daemon = TestDaemon::start();
+    let mut client = client(&daemon);
+    // "X" in base64 is "WA==".
+    client.type_line(r"printf '\033]52;c;WA==\007'; yes");
+    let ok = client.wait_until(Duration::from_secs(1), |c| {
+        c.clipboard_writes.last() == Some(&b"X".to_vec())
+    });
+    assert!(ok, "{:?}", client.clipboard_writes);
+}
+
+#[test]
 fn the_commands_work_from_inside_a_pane_too() {
     let daemon = TestDaemon::start();
     let mut client = client(&daemon);
