@@ -69,6 +69,38 @@ fn the_authors_file_gives_a_top_bar_and_its_keys() {
 }
 
 #[test]
+fn after_the_prefix_the_authors_movement_keys_move_focus() {
+    let dir = config_dir();
+    let file = dir.join("config.toml");
+    std::fs::write(&file, AUTHOR).unwrap();
+    let daemon = daemon_with(&file);
+    let mut client = daemon
+        .attach(AttachOptions::new().size(100, 30).named("nav"))
+        .unwrap();
+    client.wait_for_prompt().unwrap();
+    run(&daemon, "pane.split-right", &[]);
+    assert!(client.wait_until(WAIT, |_| {
+        let (_, out) = run(&daemon, "session.list", &[]);
+        out.lines()
+            .next()
+            .and_then(|l| l.split('\t').nth(4))
+            .is_some_and(|n| n == "2")
+    }));
+    client.type_line("true");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let right = client.focused_pane_id();
+    // The prefix, then h: left; the prefix, then i: right again. The movement keys repeat, so
+    // the typing that asks for the pane number waits until the repeat window is over.
+    let past_the_repeat_window = std::time::Duration::from_millis(900);
+    client.send(b"\x1b[109;5uh");
+    std::thread::sleep(past_the_repeat_window);
+    assert_ne!(client.focused_pane_id(), right);
+    client.send(b"\x1b[109;5ui");
+    std::thread::sleep(past_the_repeat_window);
+    assert_eq!(client.focused_pane_id(), right);
+}
+
+#[test]
 fn no_file_means_the_defaults() {
     let dir = config_dir();
     let daemon = daemon_with(&dir.join("not-there.toml"));

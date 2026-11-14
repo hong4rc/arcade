@@ -384,3 +384,41 @@ fn shifted_characters_reach_a_pane_with_the_new_protocol_as_they_were_typed() {
     client.send(b":A>|~");
     wait_shown(&mut client, "x:A>|~");
 }
+
+#[test]
+fn the_default_direct_layer_uses_ctrl_alt_and_plain_alt_goes_to_the_pane() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    client.type_line("echo mark-one");
+    client.wait_for_row("mark-one").unwrap();
+    run(&daemon, "window.new", &[]);
+    assert!(client.wait_until(WAIT, |c| !c.screen_text().contains("mark-one")));
+    // Ctrl+Alt+, is the previous window.
+    client.send(b"\x1b[44;7u");
+    screen_has(&mut client, "mark-one");
+    // Plain Alt+Left is nobody's binding: the program gets it whole.
+    let mut raw = raw_pane(&daemon);
+    raw.send(b"\x1b[1;3D");
+    wait_shown(&mut raw, "^[[1;3D");
+}
+
+#[test]
+fn a_multi_line_bracketed_paste_never_opens_the_prefix() {
+    let daemon = TestDaemon::start();
+    let mut client = raw_pane(&daemon);
+    client.send(b"\x1b[200~one\rtwo\rthree\r\x1b[201~");
+    wait_shown(&mut client, "one^Mtwo^Mthree^M");
+    assert!(!client.status_row().contains("PREFIX"));
+}
+
+#[test]
+fn a_prefix_set_to_ctrl_b_works_with_the_old_byte() {
+    let daemon = TestDaemon::start_with(|c| c.config.keys.prefix = parse_key("ctrl+b").unwrap());
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    client.send(b"\x02");
+    status_has(&mut client, "PREFIX");
+    client.send(b"|");
+    wait_panes(&mut client, &daemon, 2);
+}
