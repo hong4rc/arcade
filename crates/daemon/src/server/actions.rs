@@ -351,7 +351,29 @@ impl Server {
     }
 
     /// A program in a pane asked for the clipboard to be set.
-    pub(super) fn pane_wrote_clipboard(&mut self, pane_id: u64, data: &[u8]) {
+    /// Handle the clipboard write each pane made last, after the screen updates have gone out
+    /// and only on a turn where the pane gave no output: a pane that keeps writing has only its
+    /// latest write handled, when it pauses.
+    pub(super) fn handle_pending_clipboard(&mut self, read_now: &[u64]) {
+        if self.pending_clipboard.is_empty() {
+            return;
+        }
+        let ready: Vec<u64> = self
+            .pending_clipboard
+            .keys()
+            .copied()
+            .filter(|id| {
+                !read_now.contains(id) && self.panes.get(id).is_none_or(|p| !p.read_pending)
+            })
+            .collect();
+        for pane_id in ready {
+            if let Some(data) = self.pending_clipboard.remove(&pane_id) {
+                self.pane_wrote_clipboard(pane_id, &data);
+            }
+        }
+    }
+
+    fn pane_wrote_clipboard(&mut self, pane_id: u64, data: &[u8]) {
         if !self.config.clipboard.allow_pane_write {
             return;
         }

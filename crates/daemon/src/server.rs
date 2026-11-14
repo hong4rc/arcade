@@ -370,6 +370,8 @@ struct Server {
     waker: Arc<Waker>,
     /// Panes whose process ended, waiting to be drained and closed.
     exited: Vec<u64>,
+    /// The latest clipboard write of each pane, handled once the screen updates are out.
+    pending_clipboard: HashMap<u64, Vec<u8>>,
     stopping: Option<Instant>,
     killed_hard: bool,
     ever_had_session: bool,
@@ -432,6 +434,7 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         exits_tx,
         waker,
         exited: Vec::new(),
+        pending_clipboard: HashMap::new(),
         stopping: None,
         killed_hard: false,
         ever_had_session: false,
@@ -570,8 +573,10 @@ impl Server {
                 self.flush_pane_input(id);
             }
             // (2) Pane output, a bounded amount from each.
+            let mut read_now: Vec<u64> = Vec::new();
             for id in pane_ready.drain() {
                 self.read_pane(id, PANE_READ_LIMIT);
+                read_now.push(id);
             }
             // (3) Processes that ended.
             self.finish_exited_panes();
@@ -579,6 +584,7 @@ impl Server {
             self.wake_name_checks();
             self.send_frames();
             self.send_titles();
+            self.handle_pending_clipboard(&read_now);
             // (5) Panes that have been quiet shrink their old scrollback, a little at a time.
             self.compress_idle_panes();
             // Push out what was queued.
@@ -1421,8 +1427,9 @@ impl Server {
         if let Some(title) = new_title {
             pane.title = Some(title).filter(|t| !t.is_empty());
         }
-        for data in clipboard_writes {
-            self.pane_wrote_clipboard(pane_id, &data);
+        // Only the latest write counts, and it waits until the output has been passed on.
+        if let Some(data) = clipboard_writes.pop() {
+            self.pending_clipboard.insert(pane_id, data);
         }
     }
 

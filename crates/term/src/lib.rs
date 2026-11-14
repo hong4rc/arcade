@@ -281,8 +281,14 @@ impl Term {
         term.on_clipboard_write(move |_, write| {
             let size: usize = write.contents().map(|c| c.data.len()).sum();
             if size <= CLIPBOARD_WRITE_LIMIT {
-                let data: Vec<u8> = write.contents().flat_map(|c| c.data.to_vec()).collect();
-                sink.borrow_mut().push(Event::ClipboardWrite(data));
+                let mut data: Vec<u8> = Vec::with_capacity(size);
+                for part in write.contents() {
+                    data.extend_from_slice(part.data);
+                }
+                // Only the latest write matters; an earlier one still waiting is replaced.
+                let mut events = sink.borrow_mut();
+                events.retain(|e| !matches!(e, Event::ClipboardWrite(_)));
+                events.push(Event::ClipboardWrite(data));
             }
             // Over the limit the write is dropped whole, never cut short.
             write.reply(Ok(()), false);

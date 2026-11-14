@@ -317,6 +317,31 @@ fn a_program_writing_the_clipboard_is_heard_by_default_and_not_when_the_settings
 }
 
 #[test]
+fn a_thousand_clipboard_writes_in_one_burst_reach_the_client_as_few_and_the_last_is_the_last() {
+    let daemon = TestDaemon::start();
+    let mut client = client(&daemon);
+    let dir = std::env::temp_dir().join(format!("arc-osc52-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("burst");
+    // 999 writes of "A", then one of "B", all in a file that `cat` puts out at once.
+    client.type_line(&format!(
+        r#"{{ yes "$(printf '\033]52;c;QQ==\007')" | head -n 999 | tr -d '\n'; printf '\033]52;c;Qg==\007'; }} > {f} && cat {f}"#,
+        f = file.display()
+    ));
+    let ok = client.wait_until(WAIT, |c| c.clipboard_writes.last() == Some(&b"B".to_vec()));
+    assert!(ok, "{:?}", client.clipboard_writes.len());
+    std::thread::sleep(Duration::from_millis(200));
+    client.read_more(std::time::Instant::now() + Duration::from_millis(50));
+    assert!(
+        client.clipboard_writes.len() <= 10,
+        "{} sequences reached the client",
+        client.clipboard_writes.len()
+    );
+    assert_eq!(client.clipboard_writes.last(), Some(&b"B".to_vec()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_commands_work_from_inside_a_pane_too() {
     let daemon = TestDaemon::start();
     let mut client = client(&daemon);
