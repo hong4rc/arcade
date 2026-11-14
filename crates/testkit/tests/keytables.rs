@@ -288,6 +288,32 @@ fn the_repeat_window_ends_and_typing_after_it_goes_to_the_pane() {
 }
 
 #[test]
+fn a_key_that_does_not_repeat_is_typing_inside_the_repeat_window() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    run(&daemon, "pane.split-right", &[]);
+    wait_panes(&mut client, &daemon, 2);
+    client.send(PREFIX);
+    client.send(b"h");
+    // `c` and `e` are prefix keys (new window, a pane command) that do not repeat: inside the
+    // window they are letters for the pane, not commands.
+    client.send(b"echo typed-c-e");
+    client.send(b"\r");
+    screen_has(&mut client, "typed-c-e");
+    assert!(
+        !client.status_row().contains(" 2 "),
+        "a window was made: {}",
+        client.status_row()
+    );
+    // A key that repeats still works inside the window.
+    client.send(PREFIX);
+    client.send(b"h");
+    client.send(b"l");
+    assert!(client.wait_until(WAIT, |c| c.status_row().contains("PREFIX")));
+}
+
+#[test]
 fn the_command_run_from_a_pane_gives_the_same_result_as_the_key() {
     let daemon = TestDaemon::start();
     let mut client = daemon

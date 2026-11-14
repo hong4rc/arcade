@@ -208,7 +208,12 @@ impl Server {
             .get(&session_id)
             .map_or(PrefixState::Idle, |s| s.key_state.prefix);
         if state != PrefixState::Idle {
-            if let Some(b) = Keymap::get(&self.keymap.prefix, key).cloned() {
+            // While the repeat window is open only a repeatable binding still counts; any other
+            // key is typing, and closes the window below.
+            let binding = Keymap::get(&self.keymap.prefix, key)
+                .filter(|b| state == PrefixState::Awaiting || b.repeat)
+                .cloned();
+            if let Some(b) = binding {
                 let next = if b.repeat {
                     PrefixState::Repeating(now + self.config.keys.repeat_window)
                 } else {
