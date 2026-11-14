@@ -300,6 +300,7 @@ impl Server {
                 Ok(String::new())
             }
             Command::SessionList => Ok(self.list_sessions()),
+            Command::WindowList => self.list_windows(ctx.session),
             Command::KeysList => Ok(self.list_keys()),
             Command::SessionRename(Some(name)) => {
                 if self
@@ -539,6 +540,31 @@ impl Server {
             }
             return Ok(());
         }
+        if kind == PickerKind::Windows {
+            let session = self
+                .sessions
+                .get(&session_id)
+                .ok_or_else(|| "no such session".to_string())?;
+            let items: Vec<Item> = session
+                .windows
+                .iter()
+                .enumerate()
+                .map(|(position, w)| {
+                    Item::new(
+                        position,
+                        w.name.clone(),
+                        format!("#{}", w.number),
+                        w.id == session.current,
+                    )
+                })
+                .collect();
+            let selected = items.iter().position(|i| i.current).unwrap_or(0);
+            if let Some(s) = self.sessions.get_mut(&session_id) {
+                s.picker = Some(Picker::new(kind, "Windows", items, selected));
+                s.chrome_dirty = true;
+            }
+            return Ok(());
+        }
         let current = self
             .sessions
             .get(&session_id)
@@ -568,6 +594,7 @@ impl Server {
             PickerKind::Sessions => "Sessions",
             PickerKind::MoveWindow => "Move window to",
             PickerKind::Keys => "Keys",
+            PickerKind::Windows => "Windows",
         };
         if let Some(s) = self.sessions.get_mut(&session_id) {
             s.picker = Some(Picker::new(kind, title, items, selected));
@@ -661,6 +688,17 @@ impl Server {
                         // changes while it is open.
                         if let Some((_, binding)) = self.key_bindings().into_iter().nth(index) {
                             self.run_binding(session_id, &binding);
+                        }
+                        Ok(String::new())
+                    }
+                    PickerKind::Windows => {
+                        let window = self
+                            .sessions
+                            .get(&session_id)
+                            .and_then(|s| s.windows.get(index))
+                            .map(|w| w.id);
+                        if let Some(window) = window {
+                            self.select_window(session_id, window);
                         }
                         Ok(String::new())
                     }
@@ -797,6 +835,27 @@ impl Server {
                 self.resize_session(id, cols, rows);
             }
         }
+    }
+
+    /// The windows of a session as text, one per line: number, name, whether it is the one shown.
+    fn list_windows(&self, session_id: u64) -> Result<String, String> {
+        let session = self
+            .sessions
+            .get(&session_id)
+            .ok_or_else(|| "no such session".to_string())?;
+        Ok(session
+            .windows
+            .iter()
+            .map(|w| {
+                format!(
+                    "{}\t{}\t{}",
+                    w.number,
+                    w.name,
+                    u8::from(w.id == session.current)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 
     fn list_sessions(&self) -> String {

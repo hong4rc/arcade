@@ -318,6 +318,7 @@ impl Server {
         };
         let picker = match (binding.command.as_str(), binding.args.is_empty()) {
             ("session.list", true) => Some(PickerKind::Sessions),
+            ("window.list", true) => Some(PickerKind::Windows),
             ("window.move-to-session", true) => Some(PickerKind::MoveWindow),
             ("keys.list", true) => Some(PickerKind::Keys),
             _ => None,

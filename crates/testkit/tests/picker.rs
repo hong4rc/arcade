@@ -382,3 +382,46 @@ fn the_move_list_leaves_out_the_current_session_and_moves_the_window_on_enter() 
         "{list}"
     );
 }
+
+/// A session of three windows named `one`, `two` and `three`, with the first one shown.
+fn three_windows(daemon: &TestDaemon) -> TestClient {
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    run(daemon, "window.rename", &["one"]);
+    for name in ["two", "three"] {
+        run(daemon, "window.new", &[]);
+        run(daemon, "window.rename", &[name]);
+    }
+    run(daemon, "window.select", &["1"]);
+    client
+}
+
+#[test]
+fn the_window_list_shows_the_windows_and_choosing_one_by_filter_goes_to_it() {
+    let daemon = TestDaemon::start();
+    let mut client = three_windows(&daemon);
+    client.send(PREFIX);
+    client.send(b"w");
+    names_in_list(&mut client, &["one", "two", "three"]);
+    screen_has(&mut client, "> one");
+    client.send(b"thr");
+    names_in_list(&mut client, &["three"]);
+    client.send(b"\r");
+    screen_lacks(&mut client, "Windows");
+    let (_, output) = run(&daemon, "window.list", &[]);
+    assert_eq!(output, "1\tone\t0\n2\ttwo\t0\n3\tthree\t1", "{output}");
+}
+
+#[test]
+fn the_window_list_starts_on_the_current_window_and_escape_goes_nowhere() {
+    let daemon = TestDaemon::start();
+    let mut client = three_windows(&daemon);
+    run(&daemon, "window.select", &["2"]);
+    client.send(PREFIX);
+    client.send(b"w");
+    screen_has(&mut client, "> two");
+    client.send(b"\x1b[27u");
+    screen_lacks(&mut client, "Windows");
+    let (_, output) = run(&daemon, "window.list", &[]);
+    assert!(output.contains("2\ttwo\t1"), "{output}");
+}

@@ -19,6 +19,8 @@ pub enum PickerKind {
     MoveWindow,
     /// Run the command of the key binding on the line.
     Keys,
+    /// Go to the window of the current session on the line.
+    Windows,
 }
 
 pub struct Item {
