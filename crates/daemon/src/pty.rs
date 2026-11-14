@@ -68,7 +68,7 @@ pub fn spawn(spec: &SpawnSpec) -> io::Result<Spawned> {
             &mut slave_fd,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut winsize,
+            std::ptr::addr_of_mut!(winsize),
         )
     };
     if rc != 0 {

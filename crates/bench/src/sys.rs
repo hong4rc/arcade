@@ -40,7 +40,7 @@ pub fn spawn_pty(argv: &[String], cols: u16, rows: u16) -> io::Result<Pty> {
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut ws,
+            std::ptr::addr_of_mut!(ws),
         )
     };
     if rc != 0 {
