@@ -251,6 +251,22 @@ fn hint_keys(table: &Table, commands: &[&str]) -> Option<String> {
     Some(keys.join(sep))
 }
 
+/// The line shown while a swap waits for its direction: which keys say it.
+pub fn swap_hint_line(table: &Table, width: usize) -> String {
+    let keys = hint_keys(
+        table,
+        &[
+            "pane.focus-left",
+            "pane.focus-down",
+            "pane.focus-up",
+            "pane.focus-right",
+        ],
+    )
+    .unwrap_or_default();
+    let line = format!(" swap with the pane to the: {keys}  (Esc cancels)");
+    line.chars().take(width).collect()
+}
+
 /// The hint that takes the place of the status bar after the prefix: the commonly used keys of
 /// `table` in a fixed order, cut from the end to fit in `width` cells, always ending with the key
 /// that lists every key. Taken from the table, so a rebound key shows as it is bound now.
@@ -492,21 +508,9 @@ impl Keymap {
                     &[],
                     true,
                 );
-                bind(
-                    t,
-                    with_mods(
-                        plain(code),
-                        Mods {
-                            ctrl: true,
-                            ..Mods::NONE
-                        },
-                    ),
-                    &format!("pane.swap-{}", direction_word(*d)),
-                    &[],
-                    true,
-                );
             }
         }
+        bind(t, ch('S'), "pane.swap-mode", &[], false);
         bind(t, ch('|'), "pane.split-right", &[], false);
         bind(t, ch('-'), "pane.split-down", &[], false);
         bind(t, ch(';'), "pane.focus-last", &[], false);

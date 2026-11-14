@@ -367,6 +367,7 @@ impl Soak {
                 self.keys(b"yes 'soak line' | head -n 700\r");
             }
             97..=98 => self.notice(),
+            99 if self.rng.below(2) == 0 => self.hold(),
             _ => self.command("arcade.reload-config", &[]),
         }
         self.drain();
@@ -615,6 +616,32 @@ impl Soak {
         if self.rng.below(2) == 0 {
             self.command("session.switch", &[&name]);
         }
+    }
+
+    /// The prefix, then a run of keys with Ctrl held (focus, size, swap, an unbound one), then
+    /// Ctrl is let go and a word is typed: the word must reach the program, not the table.
+    fn hold(&mut self) {
+        const HELD: &[&[u8]] = &[
+            b"\x1b[104;5u",
+            b"\x1b[106;5u",
+            b"\x1b[107;5u",
+            b"\x1b[108;5u",
+            b"\x1b[104;6u",
+            b"\x1b[108;6u",
+            b"\x1b[115;6u",
+            b"\x1b[1;5D",
+            b"\x1b[1;5C",
+            b"\x1b[1;5Q",
+        ];
+        let count = 1 + self.rng.below(6);
+        self.note(format!("holds Ctrl for {count} keys, then types"));
+        self.keys(PREFIX);
+        for _ in 0..count {
+            let k = *self.rng.pick(HELD);
+            self.keys(k);
+        }
+        self.keys(b"\x1b[27u");
+        self.keys(b"echo held\r");
     }
 
     fn leave_and_come_back(&mut self) {

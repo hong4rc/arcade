@@ -350,17 +350,42 @@ fn swapping_trades_the_places_of_two_panes_and_the_focus_stays_with_the_pane() {
 }
 
 #[test]
-fn ctrl_and_a_direction_after_the_prefix_swaps_and_repeats() {
+fn the_swap_key_then_a_direction_swaps_the_pane_with_its_neighbour() {
     let daemon = TestDaemon::start();
     let mut client = a_left_b_right(&daemon);
-    // Ctrl and the right arrow, as the new protocol reports it.
     client.send(b"\x1b[109;5u");
+    client.send(b"S");
+    // While it waits for the direction, the bar says so.
+    assert!(
+        client.wait_until(WAIT, |c| c.status_row().contains("swap with")),
+        "{}",
+        client.status_row()
+    );
+    client.send(b"\x1b[C");
+    wait_in(&mut client, (51, 0, 50, 30), "A-is-here");
+    assert!(
+        client.wait_until(WAIT, |c| !c.status_row().contains("swap with")),
+        "{}",
+        client.status_row()
+    );
+}
+
+#[test]
+fn holding_ctrl_swaps_again_and_again() {
+    let daemon = TestDaemon::start();
+    let mut client = a_left_b_right(&daemon);
+    // Ctrl and Shift and `s` (the swap key), then Ctrl and an arrow, as the protocol reports them.
+    client.send(b"\x1b[109;5u");
+    client.send(b"\x1b[115;6u");
     client.send(b"\x1b[1;5C");
     wait_in(&mut client, (51, 0, 50, 30), "A-is-here");
-    // The prefix table is still open: the same key again, with no prefix, swaps back.
+    client.send(b"\x1b[115;6u");
     client.send(b"\x1b[1;5D");
     wait_in(&mut client, (0, 0, 50, 30), "A-is-here");
     wait_in(&mut client, (51, 0, 50, 30), "B-is-here");
+    client.send(b"\x1b[115;6u");
+    client.send(b"\x1b[1;5C");
+    wait_in(&mut client, (51, 0, 50, 30), "A-is-here");
 }
 
 fn window_lines(daemon: &TestDaemon) -> Vec<String> {
@@ -515,8 +540,8 @@ fn space_goes_round_the_arrangements_and_every_pane_keeps_some_room() {
     let rows = client.region(0, 0, 101, 30);
     let across = rows.iter().filter(|r| r.contains('─')).count();
     assert_eq!(across, 2, "{}", client.screen_text());
-    // And round again; the repeat window lets the key go on without the prefix.
-    client.send(b" ");
+    // And round again.
+    space(&mut client);
     assert!(
         client.wait_until(WAIT, |c| divider_lines(c) == (3, 0)),
         "{}",

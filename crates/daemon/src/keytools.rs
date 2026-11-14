@@ -102,16 +102,7 @@ pub fn list_lines(config: &Config) -> Vec<String> {
         }
         lines.push(format!("[{}]", name.word()));
         let keys: Vec<String> = entries.iter().map(|e| typed_name(e.key)).collect();
-        let actions: Vec<String> = entries
-            .iter()
-            .map(|e| {
-                let mut text = action(&e.binding);
-                if e.binding.repeat {
-                    text.push_str(" (repeats)");
-                }
-                text
-            })
-            .collect();
+        let actions: Vec<String> = entries.iter().map(|e| action(&e.binding)).collect();
         let key_width = keys.iter().map(|k| k.chars().count()).max().unwrap_or(0);
         let action_width = actions.iter().map(|a| a.chars().count()).max().unwrap_or(0);
         if entries.is_empty() {

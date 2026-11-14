@@ -366,6 +366,10 @@ impl Server {
             Command::TreeOpen | Command::PaneMove | Command::WindowMove => {
                 Err("this opens a list that is used at the keyboard".to_string())
             }
+            Command::PaneSwapMode => Err(
+                "this waits for a movement key; use pane.swap-left, -down, -up or -right"
+                    .to_string(),
+            ),
             Command::SessionRename(Some(name)) => {
                 if self
                     .sessions

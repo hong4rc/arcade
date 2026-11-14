@@ -220,6 +220,11 @@ fn config_check(file: Option<PathBuf>, host: Option<arcade_daemon::keytools::Hos
     match arcade_daemon::config::load(&path) {
         Ok(config) => {
             println!("ok: {}", path.display());
+            if config.timed_repeat_ignored {
+                println!(
+                    "note: repeat-window-ms and repeat = true do nothing: keys repeat while the prefix's modifier is held"
+                );
+            }
             keytool::print_warnings(&config, host);
             0
         }

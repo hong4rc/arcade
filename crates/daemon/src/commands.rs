@@ -59,6 +59,8 @@ pub enum Command {
     PaneFocusLast,
     PaneResize(Direction),
     PaneSwap(Direction),
+    /// The key that starts a swap: the next movement key says with which neighbour.
+    PaneSwapMode,
     PaneSplit(Axis),
     PaneZoom,
     PaneClose,
@@ -114,6 +116,7 @@ const NAMES: &[(&str, Command)] = &[
     ("pane.resize-down", Command::PaneResize(Direction::Down)),
     ("pane.resize-up", Command::PaneResize(Direction::Up)),
     ("pane.resize-right", Command::PaneResize(Direction::Right)),
+    ("pane.swap-mode", Command::PaneSwapMode),
     ("pane.swap-left", Command::PaneSwap(Direction::Left)),
     ("pane.swap-down", Command::PaneSwap(Direction::Down)),
     ("pane.swap-up", Command::PaneSwap(Direction::Up)),

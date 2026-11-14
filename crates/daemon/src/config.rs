@@ -172,6 +172,9 @@ pub struct Config {
     pub prevent_sleep: bool,
     pub on_session_end: OnSessionEnd,
     pub notification: NotificationConfig,
+    /// The file sets `repeat-window-ms` or a binding with `repeat = true`: both are accepted
+    /// and do nothing, because keys repeat only while the prefix's modifier is held.
+    pub timed_repeat_ignored: bool,
 }
 
 impl Default for Config {
@@ -186,6 +189,7 @@ impl Default for Config {
             prevent_sleep: true,
             on_session_end: OnSessionEnd::Switch,
             notification: NotificationConfig::default(),
+            timed_repeat_ignored: false,
             clipboard: ClipboardConfig {
                 mode: ClipboardMode::Osc52,
                 command: None,
@@ -566,6 +570,7 @@ fn read_keys(r: &mut Reader<'_>, table: &DeTable<'_>, config: &mut Config) {
             "repeat-window-ms" => {
                 if let Some(ms) = r.integer("repeat-window-ms", value) {
                     config.keys.repeat_window = Duration::from_millis(ms as u64);
+                    config.timed_repeat_ignored = true;
                 }
             }
             "direct" | "after-prefix" | "copy" | "list" => {}
@@ -686,11 +691,14 @@ fn read_binding(
                 return;
             };
             match parse_command(&text) {
-                Ok((command, args)) => Some(Binding {
-                    command,
-                    args,
-                    repeat,
-                }),
+                Ok((command, args)) => {
+                    config.timed_repeat_ignored |= repeat;
+                    Some(Binding {
+                        command,
+                        args,
+                        repeat,
+                    })
+                }
                 Err(e) => {
                     r.error(bound.span().start, e);
                     return;

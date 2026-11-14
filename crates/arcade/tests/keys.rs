@@ -273,3 +273,25 @@ fn keys_test_without_a_terminal_says_so() {
     assert_eq!(o.status.code(), Some(1));
     assert!(err(&o).contains("needs a terminal"), "{}", err(&o));
 }
+
+#[test]
+fn the_old_timed_repeat_settings_load_and_config_check_says_they_do_nothing() {
+    let dir = Dir::new();
+    let file = dir.file(
+        "c.toml",
+        "[keys]\nrepeat-window-ms = 300\n[keys.prefix]\n\"H\" = { run = \"pane.resize-left\", repeat = true }\n",
+    );
+    let o = dir.plain(&["config", "check", "--host", "kitty", &file]);
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let text = out(&o);
+    assert!(text.starts_with("ok:"), "{text}");
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("note: repeat-window-ms and repeat = true do nothing")),
+        "{text}"
+    );
+    // A file without them gets no note.
+    let plain = dir.file("p.toml", "[keys]\nnav = \"hnei\"\n");
+    let o = dir.plain(&["config", "check", "--host", "kitty", &plain]);
+    assert!(!out(&o).contains("do nothing"), "{}", out(&o));
+}

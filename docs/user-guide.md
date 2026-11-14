@@ -51,48 +51,48 @@ The four default movement keys are `h` (left), `j` (down), `k` (up), `l` (right)
 
 ### 3.1 After the prefix (Ctrl+m)
 
-If half a second after the prefix nothing else is pressed, the status bar is replaced by one line of hints taken from the key table in force, for example `| - split  hjkl focus  HJKL size  c new  1-9 win  t tree  a notes  z zoom  [ copy  ? all keys`. A line that is too narrow is cut from the end but always keeps `? all keys`, which opens the full list. Pressing a key brings the bar back and the action runs as usual. The panes are never drawn over. Rebinding a key changes the line; with `[status] position = "off"` there is no bar and so no hint.
+If half a second after the prefix nothing else is pressed, the status bar is replaced by one line of hints taken from the key table in force, for example `| - split  hjkl focus  HJKL size  c new  1-9 win  t tree  a notes  z zoom  [ copy  ? all keys`. A line that is too narrow is cut from the end but always keeps `? all keys`, which opens the full list. Pressing a key brings the bar back and the action runs as usual. The panes are never drawn over. While Ctrl is held (see below) the line shows at once and stays. Rebinding a key changes the line; with `[status] position = "off"` there is no bar and so no hint.
 
-"Repeat" means that after the key, the prefix key table stays open for `repeat-window-ms` (600 ms by default), so the next key can be pressed at once without the prefix.
+**Holding Ctrl to go on.** After the prefix, a key pressed on its own (`h`) runs its command once and the table closes: whatever you type next goes to the program in the pane, so a letter is never eaten. To repeat a command, keep **Ctrl** (the modifier of the prefix) held down after the prefix and press the keys with it: `Ctrl+h` moves focus left as `h` does, `Ctrl+Shift+h` is `H` (resize), and so on, as many times as you like and with no time limit, for any command in the table. While Ctrl is held the status bar shows the hint line. Let go of Ctrl and the next key goes to the pane as ordinary typing (it is not lost); `Esc` right after the prefix closes the table. A key that means nothing is passed over while you hold on. Pressing the prefix key itself still sends it to the program (so with the default prefix, `Ctrl+m` while holding Ctrl sends it on and closes the table). A prefix without a modifier (for example `f12`), and a terminal with old key codes that cannot tell Ctrl keys apart (`arcade config check --host legacy`), run one command for each prefix. Older files with `repeat-window-ms` or `repeat = true` still load; they do nothing, and `arcade config check` says so.
 
-| Key | Action | Repeat |
-|---|---|---|
-| movement key | Move focus to the pane in that direction | yes |
-| Shift + movement key (for example `H`) | Resize the pane in that direction | yes |
-| Ctrl + movement key (letter or arrow) | Swap the current pane with its neighbour in that direction; focus follows the pane. With no neighbour, a message shows on the status bar | yes |
-| `\|` | Split the pane to the right | |
-| `-` | Split the pane downwards | |
-| `;` | Go back to the previous pane | |
-| `z` | Zoom or unzoom the pane | |
-| `x` | Close the pane | |
-| `Space` | Next layout, in a cycle: panes side by side with equal widths, stacked with equal heights, one main pane on the left (the first pane, 60 percent of the width) with the others stacked on the right | yes |
-| `=` | Make the panes equal in size (the way of splitting stays; panes along the same axis differ by at most one cell) | |
-| `!` | Break the current pane out into a window of its own, right after this window; with only one pane, a message shows on the status bar | |
-| `c` | New window | |
-| `1` to `9` | Select the window by number | |
-| `Tab` | Go back to the previous window | |
-| `u` | Next window | yes |
-| `y` | Previous window | yes |
-| `<` | Move the window to the left | yes |
-| `>` | Move the window to the right | yes |
-| `,` | Rename the window | |
-| `$` | Rename the session | |
-| `s` | List of sessions | |
-| `w` | List of the windows of this session; type to filter by name, `Enter` to go there | |
-| `t` | Tree of sessions, windows and panes: look and jump (section 3.5) | |
-| `m` | Lift the current pane to put it down somewhere else (section 3.5). `m` used to move a window to another session; the command `window.move-to-session` is still in the command palette (`:`) but has no default key | |
-| `M` | Lift the current window to put it down somewhere else (section 3.5) | |
-| `a` | List of the notifications (section 5.8) | |
-| `A` | Clear every notification | |
-| `q` | Clear the notification of the pane you are in | |
-| `[` | Enter copy mode | |
-| `]` | Paste the internal buffer into the pane | |
-| `:` | Command palette: every named command, each line with the keys bound to it; type to filter, `Enter` to run (a command that needs a number or a name asks on the prompt line) | |
-| `?` | List of the keys that exist | |
-| `d` | Detach from the session | |
-| `g` | Lock or unlock Arcade (see 5.1) | |
-| `r` | Reload the configuration file | |
-| `R` | Redraw the whole screen | |
+| Key | Action |
+|---|---|
+| movement key | Move focus to the pane in that direction |
+| Shift + movement key (for example `H`) | Resize the pane in that direction |
+| `S` then a movement key (letter or arrow) | Swap the current pane with its neighbour in that direction; focus follows the pane. While `S` waits for the direction the status bar says so; `Esc` cancels. With no neighbour, a message shows on the status bar. Holding Ctrl: `Ctrl+Shift+s`, then `Ctrl+h`, and again |
+| `\|` | Split the pane to the right |
+| `-` | Split the pane downwards |
+| `;` | Go back to the previous pane |
+| `z` | Zoom or unzoom the pane |
+| `x` | Close the pane |
+| `Space` | Next layout, in a cycle: panes side by side with equal widths, stacked with equal heights, one main pane on the left (the first pane, 60 percent of the width) with the others stacked on the right |
+| `=` | Make the panes equal in size (the way of splitting stays; panes along the same axis differ by at most one cell) |
+| `!` | Break the current pane out into a window of its own, right after this window; with only one pane, a message shows on the status bar |
+| `c` | New window |
+| `1` to `9` | Select the window by number |
+| `Tab` | Go back to the previous window |
+| `u` | Next window |
+| `y` | Previous window |
+| `<` | Move the window to the left |
+| `>` | Move the window to the right |
+| `,` | Rename the window |
+| `$` | Rename the session |
+| `s` | List of sessions |
+| `w` | List of the windows of this session; type to filter by name, `Enter` to go there |
+| `t` | Tree of sessions, windows and panes: look and jump (section 3.5) |
+| `m` | Lift the current pane to put it down somewhere else (section 3.5). `m` used to move a window to another session; the command `window.move-to-session` is still in the command palette (`:`) but has no default key |
+| `M` | Lift the current window to put it down somewhere else (section 3.5) |
+| `a` | List of the notifications (section 5.8) |
+| `A` | Clear every notification |
+| `q` | Clear the notification of the pane you are in |
+| `[` | Enter copy mode |
+| `]` | Paste the internal buffer into the pane |
+| `:` | Command palette: every named command, each line with the keys bound to it; type to filter, `Enter` to run (a command that needs a number or a name asks on the prompt line) |
+| `?` | List of the keys that exist |
+| `d` | Detach from the session |
+| `g` | Lock or unlock Arcade (see 5.1) |
+| `r` | Reload the configuration file |
+| `R` | Redraw the whole screen |
 
 ### 3.2 Direct layer (Ctrl+Alt)
 
@@ -185,7 +185,7 @@ TOML format. A misspelled key is reported with a suggestion ("did you mean ...")
 | `[keys] prefix` | The prefix key | `"ctrl+m"` |
 | `[keys] direct-modifier` | The modifier of the direct layer; `"none"` turns this layer off | `"ctrl+alt"` |
 | `[keys] nav` | The four movement characters, in the order left, down, up, right | `"hjkl"` |
-| `[keys] repeat-window-ms` | How long the prefix panel stays open after a repeating key, in milliseconds | `600` |
+| `[keys] repeat-window-ms` | Accepted so old files load; it does nothing (keys repeat while Ctrl is held, section 3.1) | none |
 | `[keys.prefix]` (or `[keys.after-prefix]`) | Rebind the keys after the prefix | table in 3.1 |
 | `[keys.direct]` | Rebind the direct layer keys (do not write the modifier, Arcade adds it) | table in 3.2 |
 | `[keys.copy]` | Rebind the copy mode keys | table in 3.3 |
@@ -213,7 +213,7 @@ How to bind a key in the `[keys.*]` tables:
 [keys.prefix]
 "q" = "pane.zoom"                                   # bind a command
 "x" = false                                         # remove a default key
-"H" = { run = "pane.resize-left", repeat = true }   # bind and let it repeat
+"H" = "pane.resize-left"                            # bind a shifted key
 "w" = "window.select 3"                             # a command with an argument
 ```
 

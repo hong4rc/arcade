@@ -288,7 +288,14 @@ impl Server {
                 let hint = (session.picker.is_none()
                     && session.tree.is_none()
                     && session.key_state.hint_visible())
-                .then(|| crate::keymap::hint_line(&self.keymap.prefix, usize::from(cols)));
+                .then(|| {
+                    let width = usize::from(cols);
+                    if matches!(session.key_state.prefix, keys::PrefixState::Swapping { .. }) {
+                        crate::keymap::swap_hint_line(&self.keymap.prefix, width)
+                    } else {
+                        crate::keymap::hint_line(&self.keymap.prefix, width)
+                    }
+                });
                 let (cells, prompt_cursor) = status::build(
                     cols,
                     &status_info(session, copy_on, unlock_key, &self.notices, hint),

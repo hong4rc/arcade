@@ -6,6 +6,7 @@ use crate::keymap::{self, Binding, Keymap, typed_name};
 use crate::keytools;
 use crate::picker::PickerKind;
 use crate::status::Prompt;
+use arcade_term::Mods;
 
 use super::treeview::TreeStart;
 
@@ -21,9 +22,53 @@ pub(super) enum PrefixState {
     Idle,
     /// The prefix key was pressed; the next key is looked up in the prefix table.
     Awaiting,
-    /// A repeatable binding just ran; keys are looked up in the prefix table until this time.
-    Repeating(Instant),
+    /// The modifier of the prefix key is still held (a key arrived with it): keys that carry it
+    /// are looked up in the prefix table without it, until one comes without it.
+    Holding,
+    /// The swap key was pressed; the next movement key says which neighbour to swap with.
+    /// `held`: the modifier of the prefix key is still held.
+    Swapping {
+        held: bool,
+    },
 }
+
+/// The modifiers of the prefix key that a person can hold down while pressing other keys.
+fn held_mods(prefix: Key) -> Mods {
+    Mods {
+        ctrl: prefix.mods.ctrl,
+        alt: prefix.mods.alt,
+        super_key: prefix.mods.super_key,
+        ..Mods::NONE
+    }
+}
+
+/// The key carries every held modifier of the prefix (and there is one to hold).
+fn carries(key: Key, held: Mods) -> bool {
+    held != Mods::NONE
+        && (!held.ctrl || key.mods.ctrl)
+        && (!held.alt || key.mods.alt)
+        && (!held.super_key || key.mods.super_key)
+}
+
+/// The key as the prefix table knows it, with the held modifiers taken off.
+fn without_held(key: Key, held: Mods) -> Key {
+    keymap::normalize(Key {
+        code: key.code,
+        mods: Mods {
+            ctrl: key.mods.ctrl && !held.ctrl,
+            alt: key.mods.alt && !held.alt,
+            super_key: key.mods.super_key && !held.super_key,
+            shift: key.mods.shift,
+        },
+    })
+}
+
+fn is_bare_escape(key: Key) -> bool {
+    key.code == Code::Named(Named::Escape) && key.mods == Mods::NONE
+}
+
+/// The command a swap key stands for, in the table of keys after the prefix.
+const SWAP_MODE: &str = "pane.swap-mode";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PromptKind {
@@ -73,7 +118,11 @@ impl KeyState {
 
     /// The key hint is on the screen.
     pub fn hint_visible(&self) -> bool {
-        self.prefix == PrefixState::Awaiting && self.hint_shown
+        match self.prefix {
+            PrefixState::Idle => false,
+            PrefixState::Awaiting => self.hint_shown,
+            PrefixState::Holding | PrefixState::Swapping { .. } => true,
+        }
     }
 
     /// Show a line on the status bar for `MESSAGE_LIFETIME`, or until the next key.
@@ -95,17 +144,10 @@ impl KeyState {
 
     /// When the repeat window ends, if one is open.
     pub fn deadline(&self) -> Option<Instant> {
-        let repeat = match self.prefix {
-            PrefixState::Repeating(t) => Some(t),
-            _ => None,
-        };
         let hint = self
             .hint_at
             .filter(|_| self.prefix == PrefixState::Awaiting);
-        [repeat, self.message_until, hint]
-            .into_iter()
-            .flatten()
-            .min()
+        [self.message_until, hint].into_iter().flatten().min()
     }
 
     pub fn status_prompt(&self) -> Option<Prompt> {
@@ -233,12 +275,6 @@ impl Server {
     /// The prefix window ended: leave the prefix table.
     pub(super) fn expire_key_states(&mut self, now: Instant) {
         for s in self.sessions.values_mut() {
-            if let PrefixState::Repeating(t) = s.key_state.prefix
-                && now >= t
-            {
-                s.key_state.prefix = PrefixState::Idle;
-                s.chrome_dirty = true;
-            }
             if s.key_state.message_until.is_some_and(|t| now >= t) && s.key_state.clear_message() {
                 s.chrome_dirty = true;
             }
@@ -263,34 +299,34 @@ impl Server {
         if let Some(s) = self.sessions.get_mut(&session_id)
             && s.key_state.prefix != state
         {
-            let was_awaiting = s.key_state.prefix == PrefixState::Awaiting;
             s.key_state.prefix = state;
             s.chrome_dirty = true;
-            if state == PrefixState::Awaiting {
-                s.key_state.hint_at = Some(Instant::now() + HINT_DELAY);
-                s.key_state.hint_shown = false;
-            } else if was_awaiting {
-                s.key_state.hint_at = None;
-                // The bar the hint replaced is drawn again (chrome_dirty is set above).
-                s.key_state.hint_shown = false;
+            match state {
+                PrefixState::Awaiting => {
+                    s.key_state.hint_at = Some(Instant::now() + HINT_DELAY);
+                    s.key_state.hint_shown = false;
+                }
+                // Someone who holds the modifier is looking for the next key: the hint stays
+                // up until the modifier is let go.
+                PrefixState::Holding | PrefixState::Swapping { .. } => {
+                    s.key_state.hint_at = None;
+                    s.key_state.hint_shown = true;
+                }
+                PrefixState::Idle => {
+                    s.key_state.hint_at = None;
+                    s.key_state.hint_shown = false;
+                }
             }
         }
     }
 
     fn handle_key(&mut self, session_id: u64, original: Key, raw: &[u8]) {
-        let now = Instant::now();
         // Tables are looked up by the normal form; a pane gets the key as it came (`:` and
         // not Shift and `;`).
         let key = keymap::normalize(original);
         let Some(s) = self.sessions.get_mut(&session_id) else {
             return;
         };
-        if let PrefixState::Repeating(t) = s.key_state.prefix
-            && now >= t
-        {
-            s.key_state.prefix = PrefixState::Idle;
-            s.chrome_dirty = true;
-        }
         if s.key_state.clear_message() {
             s.chrome_dirty = true;
         }
@@ -346,34 +382,10 @@ impl Server {
             .sessions
             .get(&session_id)
             .map_or(PrefixState::Idle, |s| s.key_state.prefix);
-        if state != PrefixState::Idle {
-            // While the repeat window is open only a repeatable binding still counts; any other
-            // key is typing, and closes the window below.
-            let binding = Keymap::get(&self.keymap.prefix, key)
-                .filter(|b| state == PrefixState::Awaiting || b.repeat)
-                .cloned();
-            if let Some(b) = binding {
-                let next = if b.repeat {
-                    PrefixState::Repeating(now + self.config.keys.repeat_window)
-                } else {
-                    PrefixState::Idle
-                };
-                self.set_prefix(session_id, next);
-                self.run_binding(session_id, &b);
-                return;
-            }
-            if state == PrefixState::Awaiting {
-                self.set_prefix(session_id, PrefixState::Idle);
-                if key == keymap::normalize(self.config.keys.prefix) {
-                    // The prefix twice sends the prefix key itself.
-                    self.key_to_focus(session_id, pane, original, raw);
-                } else {
-                    self.set_message(session_id, &format!("no binding for {}", typed_name(key)));
-                }
-                return;
-            }
-            // The repeat window was open and this key is not in the table: it is typing.
-            self.set_prefix(session_id, PrefixState::Idle);
+        if state != PrefixState::Idle
+            && self.prefix_table_key(session_id, state, key, original, raw)
+        {
+            return;
         }
         if key == keymap::normalize(self.config.keys.prefix) {
             self.set_prefix(session_id, PrefixState::Awaiting);
@@ -384,6 +396,126 @@ impl Server {
             return;
         }
         self.key_to_focus(session_id, pane, original, raw);
+    }
+
+    /// A key while the prefix table is in effect. `false` when the key ended the holding and is
+    /// typing after all: it goes on to the direct layer and the pane, not eaten.
+    fn prefix_table_key(
+        &mut self,
+        session_id: u64,
+        state: PrefixState,
+        key: Key,
+        original: Key,
+        raw: &[u8],
+    ) -> bool {
+        let Some(pane) = self.focus_pane_of(session_id) else {
+            return true;
+        };
+        let prefix = keymap::normalize(self.config.keys.prefix);
+        if key == prefix {
+            // The prefix twice sends the prefix key itself.
+            self.set_prefix(session_id, PrefixState::Idle);
+            self.key_to_focus(session_id, pane, original, raw);
+            return true;
+        }
+        let held = held_mods(prefix);
+        // A terminal with old key codes cannot say whether Ctrl is down: one command a prefix.
+        let can_hold = self
+            .sessions
+            .get(&session_id)
+            .is_some_and(|s| s.host_keyboard != Some(keytools::Host::Legacy));
+        let carried = can_hold && carries(key, held);
+        let looked = if carried {
+            without_held(key, held)
+        } else {
+            key
+        };
+        let bound = Keymap::get(&self.keymap.prefix, looked).cloned();
+        match state {
+            PrefixState::Awaiting => {
+                if bound.is_none() && is_bare_escape(key) {
+                    self.set_prefix(session_id, PrefixState::Idle);
+                    return true;
+                }
+                let next = if carried {
+                    PrefixState::Holding
+                } else {
+                    PrefixState::Idle
+                };
+                match bound {
+                    Some(b) if b.command == SWAP_MODE => {
+                        self.set_prefix(session_id, PrefixState::Swapping { held: carried });
+                    }
+                    Some(b) => {
+                        self.set_prefix(session_id, next);
+                        self.run_binding(session_id, &b);
+                    }
+                    None => {
+                        self.set_prefix(session_id, next);
+                        self.set_message(
+                            session_id,
+                            &format!("no binding for {}", typed_name(key)),
+                        );
+                    }
+                }
+                true
+            }
+            PrefixState::Holding => {
+                if !carried {
+                    // The modifier was let go: this key is typing.
+                    self.set_prefix(session_id, PrefixState::Idle);
+                    return false;
+                }
+                match bound {
+                    Some(b) if b.command == SWAP_MODE => {
+                        self.set_prefix(session_id, PrefixState::Swapping { held: true });
+                    }
+                    Some(b) => self.run_binding(session_id, &b),
+                    // Still held: a key that means nothing here is passed over.
+                    None => {}
+                }
+                true
+            }
+            PrefixState::Swapping { held: was_held } => {
+                if was_held && !carried {
+                    // The modifier was let go while the swap waited: this key is typing.
+                    self.set_prefix(session_id, PrefixState::Idle);
+                    return false;
+                }
+                if is_bare_escape(key) {
+                    self.set_prefix(session_id, PrefixState::Idle);
+                    return true;
+                }
+                let next = if was_held || carried {
+                    PrefixState::Holding
+                } else {
+                    PrefixState::Idle
+                };
+                let direction = bound
+                    .as_ref()
+                    .and_then(|b| b.command.strip_prefix("pane.focus-"))
+                    .filter(|d| matches!(*d, "left" | "down" | "up" | "right"));
+                match direction {
+                    Some(d) => {
+                        self.set_prefix(session_id, next);
+                        let (ok, output) =
+                            self.run_command(&format!("pane.swap-{d}"), &[], Some(pane));
+                        if !ok {
+                            self.set_message(session_id, &output);
+                        }
+                    }
+                    None => {
+                        self.set_prefix(session_id, next);
+                        self.set_message(
+                            session_id,
+                            &format!("{} is not a direction", typed_name(key)),
+                        );
+                    }
+                }
+                true
+            }
+            PrefixState::Idle => false,
+        }
     }
 
     /// A key no table above took: for the pane in copy mode it is a copy mode key (or nothing),

@@ -226,6 +226,12 @@ fn six_windows(daemon: &TestDaemon, client: &mut TestClient) {
     status_has(client, " 6 F ");
 }
 
+/// Ctrl+h, Ctrl+Shift+h and Ctrl+Shift+`.` as a terminal with the keyboard protocol sends them
+/// while Ctrl is still down after the prefix.
+const CTRL_H: &[u8] = b"\x1b[104;5u";
+const CTRL_SHIFT_H: &[u8] = b"\x1b[104;6u";
+const CTRL_SHIFT_DOT: &[u8] = b"\x1b[46;6u";
+
 fn move_with_prefix(forms: &[&[u8]], gap: Duration) {
     let daemon = TestDaemon::start();
     let mut client = daemon
@@ -241,82 +247,221 @@ fn move_with_prefix(forms: &[&[u8]], gap: Duration) {
         client.send(form);
         std::thread::sleep(gap);
     }
+    // Ctrl is let go (the hint on the bar goes with it) so that the tabs can be read.
+    client.send(b"\x1b[27u");
     let want = format!(" {} A ", 1 + forms.len());
     status_has(&mut client, &want);
 }
 
-#[test]
-fn the_prefix_twice_in_its_window_moves_a_window_two_places() {
-    move_with_prefix(&[b">", b">"], Duration::from_millis(100));
+/// Three panes side by side, the focus on the right one.
+fn three_in_a_row(daemon: &TestDaemon) -> TestClient {
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    run(daemon, "pane.split-right", &[]);
+    run(daemon, "pane.split-right", &[]);
+    wait_panes(&mut client, daemon, 3);
+    client
 }
 
-#[test]
-fn holding_the_key_moves_a_window_five_places_in_either_form() {
-    // As a character, the way a host sends the shifted symbol ...
-    move_with_prefix(&[b">", b">", b">", b">", b">"], Duration::from_millis(50));
-    // ... and as the base key with Shift.
-    move_with_prefix(
-        &[
-            b"\x1b[46;2u",
-            b"\x1b[46;2u",
-            b"\x1b[46;2u",
-            b"\x1b[46;2u",
-            b"\x1b[46;2u",
-        ],
-        Duration::from_millis(50),
+/// Which of the three panes of `three_in_a_row` has the focus, told by where the cursor is
+/// (asking the pane would type into it).
+fn focus_of_three(client: &TestClient) -> usize {
+    match client.term().cursor_position().0 {
+        0..=49 => 0,
+        50..=75 => 1,
+        _ => 2,
+    }
+}
+
+fn focus_goes_to(client: &mut TestClient, pane: usize) {
+    let ok = client.wait_until(WAIT, |c| focus_of_three(c) == pane);
+    assert!(
+        ok,
+        "the focus is in pane {}, not {pane}:\n{}",
+        focus_of_three(client),
+        client.screen_text()
     );
 }
 
 #[test]
-fn the_repeat_window_ends_and_typing_after_it_goes_to_the_pane() {
+fn a_bare_key_after_the_prefix_runs_once_and_the_next_keys_are_typing() {
     let daemon = TestDaemon::start();
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
     run(&daemon, "pane.split-right", &[]);
     wait_panes(&mut client, &daemon, 2);
+    let right = client.focused_pane_id();
     client.send(PREFIX);
     client.send(b"h");
-    status_has(&mut client, "PREFIX");
-    // The window ends by itself, without a key.
-    status_lacks(&mut client, "PREFIX");
-    // A key typed inside the window that is not in the table is typing.
-    client.send(PREFIX);
-    client.send(b"h");
-    client.send(b"echo typed-after");
-    client.send(b"\r");
-    screen_has(&mut client, "typed-after");
-}
-
-#[test]
-fn a_key_that_does_not_repeat_is_typing_inside_the_repeat_window() {
-    let daemon = TestDaemon::start();
-    let mut client = daemon.attach_shell();
-    client.wait_for_prompt().unwrap();
-    run(&daemon, "pane.split-right", &[]);
-    wait_panes(&mut client, &daemon, 2);
-    client.send(PREFIX);
-    client.send(b"h");
-    // `c` is a prefix key (new window) that does not repeat: inside the window it is a letter
-    // for the pane, not a command.
-    client.send(b"cd /; echo typed-c-e");
-    client.send(b"\r");
-    // The whole line reached the pane, with its first `c`, and no window was made.
-    let ok = client.wait_until(WAIT, |c| {
-        c.content_rows()
-            .iter()
-            .any(|r| r.trim_start().starts_with("typed-c-e"))
-    });
-    assert!(ok, "{}", client.screen_text());
+    // The prefix table closed at once: `h`, `e`, `c` and `x` are letters for the pane.
+    client.send(b"echo hexc-typed\r");
+    screen_has(&mut client, "hexc-typed");
+    assert_ne!(client.focused_pane_id(), right);
     assert!(
-        !client.status_row().contains(" 2 "),
-        "a window was made: {}",
+        !client.status_row().contains("Close this pane"),
+        "{}",
         client.status_row()
     );
-    // A key that repeats still works inside the window.
+    assert_eq!(pane_count(&daemon), 2);
+}
+
+#[test]
+fn a_second_bare_key_is_typing_even_when_the_first_one_repeated_before() {
+    // Before, `>` twice moved a window twice; now the second `>` is a character for the pane.
+    move_with_prefix(&[b">"], Duration::from_millis(100));
+    let daemon = TestDaemon::start();
+    let mut client = raw_pane(&daemon);
+    client.send(PREFIX);
+    client.send(b">");
+    client.send(b">");
+    wait_shown(&mut client, ">");
+}
+
+#[test]
+fn holding_ctrl_after_the_prefix_moves_the_focus_again_and_again_then_typing_goes_to_the_pane() {
+    let daemon = TestDaemon::start();
+    let mut client = three_in_a_row(&daemon);
+    focus_goes_to(&mut client, 2);
+    client.send(PREFIX);
+    client.send(CTRL_H);
+    focus_goes_to(&mut client, 1);
+    client.send(CTRL_H);
+    focus_goes_to(&mut client, 0);
+    // At the left edge a third press has nowhere to go and the table stays open.
+    client.send(CTRL_H);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(focus_of_three(&client), 0);
+    // Ctrl was let go: `x` is a letter for the pane, not the close key, and is not lost.
+    client.send(b"xyz-typed\r");
+    screen_has(&mut client, "xyz-typed");
+    assert!(
+        !client.status_row().contains("Close this pane"),
+        "{}",
+        client.status_row()
+    );
+    assert_eq!(pane_count(&daemon), 3);
+    assert_eq!(focus_of_three(&client), 0);
+}
+
+#[test]
+fn holding_ctrl_and_shift_resizes_again_and_again() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    run(&daemon, "pane.split-right", &[]);
+    wait_panes(&mut client, &daemon, 2);
+    let divider = |c: &TestClient| {
+        c.content_rows()
+            .first()
+            .and_then(|r| r.chars().position(|ch| ch == '│'))
+    };
+    assert!(client.wait_until(WAIT, |c| divider(c).is_some()));
+    client.send(PREFIX);
+    let mut last = divider(&client);
+    for _ in 0..3 {
+        client.send(CTRL_SHIFT_H);
+        let before = last;
+        let ok = client.wait_until(WAIT, |c| divider(c) != before);
+        assert!(ok, "the divider stayed at {before:?}");
+        last = divider(&client);
+        assert!(last < before, "{before:?} then {last:?}");
+    }
+}
+
+#[test]
+fn holding_goes_on_for_as_long_as_the_key_is_held() {
+    // Two seconds between two presses, and the second one still counts.
+    move_with_prefix(
+        &[CTRL_SHIFT_DOT, CTRL_SHIFT_DOT],
+        Duration::from_millis(2000),
+    );
+    // Five presses in a row, as the shifted symbol and as the base key with Shift.
+    move_with_prefix(&[CTRL_SHIFT_DOT; 5], Duration::from_millis(30));
+}
+
+#[test]
+fn a_key_that_means_nothing_while_holding_is_passed_over_and_the_table_stays_open() {
+    let daemon = TestDaemon::start();
+    let mut client = three_in_a_row(&daemon);
+    focus_goes_to(&mut client, 2);
+    client.send(PREFIX);
+    client.send(CTRL_H);
+    focus_goes_to(&mut client, 1);
+    // Ctrl+F2 is in no table.
+    client.send(b"\x1b[1;5Q");
+    client.send(CTRL_H);
+    focus_goes_to(&mut client, 0);
+}
+
+#[test]
+fn the_hint_shows_at_once_while_holding_and_goes_when_ctrl_is_let_go() {
+    let daemon = TestDaemon::start();
+    let mut client = three_in_a_row(&daemon);
+    client.send(PREFIX);
+    client.send(CTRL_H);
+    // No half second to wait for: the hint is there as soon as the holding starts.
+    assert!(
+        client.wait_until(Duration::from_millis(400), |c| hint_is_shown(c)),
+        "{}",
+        client.status_row()
+    );
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(hint_is_shown(&client), "{}", client.status_row());
+    client.send(b"q");
+    assert!(
+        client.wait_until(WAIT, |c| !hint_is_shown(c)),
+        "{}",
+        client.status_row()
+    );
+}
+
+#[test]
+fn an_arrow_after_the_prefix_runs_once_and_the_next_arrow_goes_to_the_pane() {
+    let daemon = TestDaemon::start();
+    let mut client = raw_pane(&daemon);
+    run(&daemon, "pane.split-right", &[]);
+    wait_panes(&mut client, &daemon, 2);
+    client.send(PREFIX);
+    client.send(b"\x1b[D");
+    // The raw pane is the left one: it gets the second arrow, as the key came.
+    client.send(b"\x1b[D");
+    screen_has(&mut client, "^[[D");
+}
+
+#[test]
+fn a_prefix_without_a_modifier_runs_one_command_each_time() {
+    let daemon = TestDaemon::start_with(|c| c.config.keys.prefix = parse_key("f12").unwrap());
+    let mut client = three_in_a_row(&daemon);
+    let start = client.focused_pane_id();
+    client.send(b"\x1b[24~");
+    client.send(b"h");
+    client.send(b"echo f12-typed\r");
+    screen_has(&mut client, "f12-typed");
+    assert_ne!(client.focused_pane_id(), start);
+    // A key with Ctrl after it is no holding here: it means what it means in the table.
+    client.send(b"\x1b[24~");
+    client.send(CTRL_H);
+    status_has(&mut client, "no binding for ctrl+h");
+}
+
+#[test]
+fn a_terminal_with_old_key_codes_gets_one_command_a_prefix_and_loses_no_key() {
+    let daemon = TestDaemon::start();
+    let mut client = three_in_a_row(&daemon);
+    // The terminal says it has old key codes only.
+    client.send(b"\x1b[?62;22c");
+    status_has(&mut client, "cannot work here");
+    let start = client.focused_pane_id();
     client.send(PREFIX);
     client.send(b"h");
-    client.send(b"l");
-    assert!(client.wait_until(WAIT, |c| c.status_row().contains("PREFIX")));
+    client.send(b"echo legacy-typed\r");
+    screen_has(&mut client, "legacy-typed");
+    assert_ne!(client.focused_pane_id(), start);
+    // Ctrl and `h` after the prefix is not a way to hold on: nothing repeats, nothing is eaten.
+    client.send(PREFIX);
+    client.send(CTRL_H);
+    client.send(b"echo legacy-again\r");
+    screen_has(&mut client, "legacy-again");
 }
 
 #[test]
@@ -716,18 +861,52 @@ fn a_key_that_follows_the_prefix_quickly_never_shows_the_hint() {
     assert_eq!(windows.lines().count(), 2, "{windows}");
 }
 
+/// After holding Ctrl, whatever is typed reaches the program: no letter is lost, whatever was
+/// held before it.
 #[test]
-fn the_hint_does_not_show_in_the_repeat_window() {
+fn no_typed_key_is_lost_after_holding() {
+    const HELD: &[&[u8]] = &[
+        CTRL_H,
+        b"\x1b[106;5u",
+        b"\x1b[107;5u",
+        b"\x1b[108;5u",
+        CTRL_SHIFT_H,
+        b"\x1b[108;6u",
+        b"\x1b[115;6u",
+        b"\x1b[1;5D",
+        b"\x1b[1;5C",
+        b"\x1b[1;5Q",
+        b"\x1b[114;5u",
+    ];
     let daemon = TestDaemon::start();
-    let mut client = raw_pane(&daemon);
-    run(&daemon, "pane.split-right", &[]);
-    // `H` is repeatable: after it the table stays open, and no hint comes of that.
-    client.send(PREFIX);
-    client.send(b"H");
-    std::thread::sleep(Duration::from_millis(300));
-    let deadline = std::time::Instant::now() + Duration::from_millis(500);
-    while std::time::Instant::now() < deadline {
-        client.read_more(std::time::Instant::now() + Duration::from_millis(50));
-        assert!(!hint_is_shown(&client), "{}", client.screen_text());
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut next = |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n as u64) as usize
+    };
+    for round in 0..40 {
+        client.send(PREFIX);
+        for _ in 0..1 + next(5) {
+            client.send(HELD[next(HELD.len())]);
+        }
+        // Letters that are keys of the prefix table (`h`, `x`, `c`, `z`, `s`, `t`) are in it on
+        // purpose: once Ctrl is up they are typing.
+        let token: String = (0..4)
+            .map(|_| ["h", "x", "c", "z", "s", "t", "q", "w"][next(8)])
+            .collect::<String>()
+            + &round.to_string();
+        client.send(token.as_bytes());
+        let ok = client.wait_until(WAIT, |c| c.screen_text().contains(&token));
+        assert!(
+            ok,
+            "round {round}: {token} did not reach the pane:\n{}",
+            client.screen_text()
+        );
+        client.send(b"\r");
+        assert_eq!(pane_count(&daemon), 1);
     }
 }
