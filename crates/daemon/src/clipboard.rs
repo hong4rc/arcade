@@ -36,7 +36,7 @@ impl Clipboard {
         match config.mode {
             ClipboardMode::Osc52 => {
                 let encoded = base64(text.as_bytes());
-                let mut message = format!("sent {chars} characters");
+                let mut message = format!("copied {chars} characters");
                 if encoded.len() > OSC52_WARN_BYTES {
                     message.push_str("; the terminal may have ignored so much");
                 }
@@ -51,7 +51,7 @@ impl Clipboard {
             ClipboardMode::Command => {
                 let message = match config.command.as_deref() {
                     Some(command) => match pipe_to(command, text) {
-                        Ok(()) => format!("sent {chars} characters"),
+                        Ok(()) => format!("copied {chars} characters"),
                         Err(e) => format!("could not run the clipboard command: {e}"),
                     },
                     None => "no clipboard command is set".to_string(),
@@ -145,7 +145,7 @@ mod tests {
         let mut clipboard = Clipboard::default();
         let sent = clipboard.copy("hi", &config(ClipboardMode::Osc52));
         assert_eq!(sent.osc52.unwrap(), b"\x1b]52;c;aGk=\x07");
-        assert_eq!(sent.message, "sent 2 characters");
+        assert_eq!(sent.message, "copied 2 characters");
         assert_eq!(clipboard.buffer(), Some("hi"));
     }
 
@@ -181,7 +181,7 @@ mod tests {
         let mut clipboard = Clipboard::default();
         let sent = clipboard.copy("once", &settings);
         assert!(sent.osc52.is_none());
-        assert_eq!(sent.message, "sent 4 characters");
+        assert_eq!(sent.message, "copied 4 characters");
         for _ in 0..100 {
             if std::fs::read_to_string(&file).is_ok_and(|t| t == "once") {
                 break;

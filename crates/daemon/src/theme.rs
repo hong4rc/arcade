@@ -107,6 +107,13 @@ pub enum Symbol {
     DividerVertical,
     /// The cell of a divider that runs left to right.
     DividerHorizontal,
+    /// Where a divider meets another: the line goes on to the right, to the left, down, up, or
+    /// every way.
+    DividerJoinRight,
+    DividerJoinLeft,
+    DividerJoinDown,
+    DividerJoinUp,
+    DividerCross,
     /// Marks the tab of a window whose pane is zoomed.
     Zoomed,
     /// The corners and sides of the frame of the floating list.
@@ -121,12 +128,19 @@ pub enum Symbol {
     PickerOtherMark,
     /// After the line that stands for what is current (the session shown).
     PickerCurrentMark,
+    /// Between a mode word on the status bar and what it tells the user to do.
+    HintSeparator,
 }
 
 pub fn symbol(symbol: Symbol) -> &'static str {
     match symbol {
         Symbol::DividerVertical => "│",
         Symbol::DividerHorizontal => "─",
+        Symbol::DividerJoinRight => "├",
+        Symbol::DividerJoinLeft => "┤",
+        Symbol::DividerJoinDown => "┬",
+        Symbol::DividerJoinUp => "┴",
+        Symbol::DividerCross => "┼",
         Symbol::Zoomed => "[Z]",
         Symbol::PickerTopLeft => "┌",
         Symbol::PickerTopRight => "┐",
@@ -137,5 +151,6 @@ pub fn symbol(symbol: Symbol) -> &'static str {
         Symbol::PickerSelectedMark => "> ",
         Symbol::PickerOtherMark => "  ",
         Symbol::PickerCurrentMark => " *",
+        Symbol::HintSeparator => " · ",
     }
 }

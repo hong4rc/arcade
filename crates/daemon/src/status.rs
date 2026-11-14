@@ -26,6 +26,8 @@ pub struct StatusInfo {
     /// Waiting for the key after the prefix key.
     pub prefix: bool,
     pub locked: bool,
+    /// The key that ends the lock, as it is typed, when there is one.
+    pub unlock_key: Option<String>,
     /// The focused pane is in copy mode.
     pub copy: bool,
     /// A line shown in place of the bar until the next key.
@@ -72,15 +74,21 @@ pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
             theme::style(role),
         ));
     }
-    let mut words: Vec<&str> = Vec::new();
+    let mut words: Vec<String> = Vec::new();
     if info.prefix {
-        words.push("PREFIX");
+        words.push("PREFIX".to_string());
     }
     if info.locked {
-        words.push("LOCK");
+        words.push(match &info.unlock_key {
+            Some(key) => format!(
+                "LOCK{}{key} to unlock",
+                theme::symbol(Symbol::HintSeparator)
+            ),
+            None => "LOCK".to_string(),
+        });
     }
     if info.copy {
-        words.push("COPY");
+        words.push("COPY".to_string());
     }
     let right: Vec<Cell> = words
         .iter()
@@ -131,6 +139,7 @@ mod tests {
             ],
             prefix: false,
             locked: false,
+            unlock_key: None,
             copy: false,
             message: None,
             prompt: None,
@@ -162,6 +171,18 @@ mod tests {
         assert!(line.trim_end().ends_with("PREFIX  LOCK  COPY"), "{line:?}");
         let quiet = text(&build(60, &info()).0);
         assert!(!quiet.contains("PREFIX") && !quiet.contains("LOCK") && !quiet.contains("COPY"));
+    }
+
+    #[test]
+    fn the_lock_word_names_the_unlock_key_when_there_is_one() {
+        let mut i = info();
+        i.locked = true;
+        i.unlock_key = Some("ctrl+alt+g".into());
+        let line = text(&build(60, &i).0);
+        assert!(
+            line.contains("LOCK \u{b7} ctrl+alt+g to unlock"),
+            "{line:?}"
+        );
     }
 
     #[test]

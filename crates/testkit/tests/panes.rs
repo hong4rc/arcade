@@ -286,3 +286,32 @@ fn a_pane_flooded_with_a_gigabyte_does_not_stop_the_pane_beside_it() {
     assert!(answered >= 3);
     assert!(daemon.command("session.list", &[]).unwrap().0);
 }
+
+#[test]
+fn a_divider_that_ends_on_another_is_drawn_with_a_joining_sign() {
+    let daemon = TestDaemon::start();
+    let mut client = client_with_shell(&daemon);
+    // One pane on the left, two stacked on the right: the row between the stacked panes
+    // starts at the column divider, which gets a `├` there.
+    run(&daemon, "pane.split-right");
+    run(&daemon, "pane.split-down");
+    let ok = client.wait_until(WAIT, |c| c.region(50, 0, 1, 30).iter().any(|r| r == "├"));
+    assert!(ok, "{}", client.screen_text());
+    let column = client.region(50, 0, 1, 30);
+    assert_eq!(column.iter().filter(|r| *r == "├").count(), 1, "{column:?}");
+    assert!(column.iter().all(|r| r == "├" || r == "│"), "{column:?}");
+}
+
+#[test]
+fn a_column_divider_that_starts_on_a_row_divider_is_drawn_with_a_joining_sign() {
+    let daemon = TestDaemon::start();
+    let mut client = client_with_shell(&daemon);
+    // Two panes stacked, then the lower one split in two side by side: the column divider
+    // hangs from the row divider, which gets a `┬` there.
+    run(&daemon, "pane.split-down");
+    run(&daemon, "pane.split-right");
+    let ok = client.wait_until(WAIT, |c| {
+        c.region(0, 0, 101, 30).iter().any(|r| r.contains('┬'))
+    });
+    assert!(ok, "{}", client.screen_text());
+}

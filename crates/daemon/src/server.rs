@@ -915,7 +915,7 @@ impl Server {
             }
             ClientMessage::Detach => {
                 if let ClientState::Attached(session) = state {
-                    self.detach_client(session, DetachReason::Requested, "detached");
+                    self.detach_on_request(session);
                 }
             }
             ClientMessage::Command { name, args } => {
@@ -1222,6 +1222,20 @@ impl Server {
             .map(|n| format!("{base}-{n}"))
             .find(|candidate| !self.sessions.values().any(|s| &s.name == candidate))
             .unwrap_or_else(|| base.to_string())
+    }
+
+    /// The client asked to leave: the last line it prints names the session it left.
+    pub(super) fn detach_on_request(&mut self, session_id: u64) {
+        let name = self
+            .sessions
+            .get(&session_id)
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        self.detach_client(
+            session_id,
+            DetachReason::Requested,
+            &format!("detached: {name}"),
+        );
     }
 
     fn detach_client(&mut self, session_id: u64, reason: DetachReason, message: &str) {

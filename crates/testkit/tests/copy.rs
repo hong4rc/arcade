@@ -92,10 +92,9 @@ fn three_lines_far_up_the_scrollback_reach_the_client_as_one_osc52_sequence() {
     client.send(b"y");
     wait_clipboard(&mut client, 1);
     assert_eq!(client.clipboard_writes, vec![b"250\n251\n252".to_vec()]);
-    // Copying ended copy mode, and the bar says what was sent and does not say "copied".
+    // Copying ended copy mode, and the bar says how much was copied.
     assert!(left_copy_mode(&mut client));
-    message_has(&mut client, "sent 11 characters");
-    assert!(!bar(&client).contains("copied"));
+    message_has(&mut client, "copied 11 characters");
     // And there was one sequence, not two.
     std::thread::sleep(Duration::from_millis(100));
     client.read_more(std::time::Instant::now() + Duration::from_millis(50));
@@ -123,7 +122,7 @@ fn the_command_mode_feeds_the_command_and_the_client_gets_no_sequence() {
     });
     assert!(ok, "{:?}", std::fs::read_to_string(&file));
     assert!(client.clipboard_writes.is_empty());
-    message_has(&mut client, "sent 2 characters");
+    message_has(&mut client, "copied 2 characters");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -239,7 +238,7 @@ fn the_capital_y_copies_and_stays_in_copy_mode() {
     assert_eq!(client.clipboard_writes[0], b"stay-here".to_vec());
     // A message takes the place of the bar until the next key; that key is a copy mode key, and
     // the bar then shows copy mode again.
-    message_has(&mut client, "sent 9 characters");
+    message_has(&mut client, "copied 9 characters");
     client.send(b"k");
     assert!(in_copy_mode(&mut client), "{}", bar(&client));
 }

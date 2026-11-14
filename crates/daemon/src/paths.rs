@@ -46,6 +46,28 @@ pub fn resolve_socket_path(explicit: Option<&Path>) -> PathBuf {
     default_socket_path()
 }
 
+/// The longest socket path the operating system accepts, in bytes (the path and its closing
+/// zero byte must fit in `sun_path`).
+pub fn socket_path_limit() -> usize {
+    // SAFETY: an all-zero `sockaddr_un` is a valid value; only its size is looked at.
+    let address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_path.len() - 1
+}
+
+/// Say so in plain words when `socket` is too long to bind or connect to.
+pub fn check_socket_path_length(socket: &Path) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    let length = socket.as_os_str().as_bytes().len();
+    let limit = socket_path_limit();
+    if length > limit {
+        return Err(format!(
+            "socket path is too long ({length} bytes, the limit is {limit}): {}",
+            socket.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Create the socket's directory (mode 0700) when it is missing, and refuse one that other
 /// users could enter.
 pub fn prepare_socket_dir(socket: &Path) -> io::Result<()> {

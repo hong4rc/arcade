@@ -287,10 +287,16 @@ impl Server {
         }
         if let Some((kind, label)) = ask {
             if let Some(s) = self.sessions.get_mut(&session_id) {
+                // A rename starts from the name in use, so a small change is a small edit.
+                let text = match kind {
+                    PromptKind::RenameWindow => s.current_window().name.clone(),
+                    PromptKind::RenameSession => s.name.clone(),
+                    _ => String::new(),
+                };
                 s.key_state.prompt = Some(PromptState {
                     kind,
                     label: label.to_string(),
-                    text: String::new(),
+                    text,
                 });
                 s.chrome_dirty = true;
             }

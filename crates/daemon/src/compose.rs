@@ -161,6 +161,22 @@ impl Screen {
     /// `origin_y`). The cells of the half of a divider that is on the focused pane's side, where
     /// they touch its room, get the focus color.
     pub fn draw_dividers(&mut self, dividers: &[Divider], origin_y: u16, focus: Option<Rect>) {
+        // Every cell that holds a divider, and whether its line runs top to bottom, so that a
+        // cell where two dividers meet can be drawn with the sign that joins them.
+        let mut line_cells: std::collections::HashMap<(u16, u16), bool> =
+            std::collections::HashMap::new();
+        for d in dividers {
+            for i in 0..d.len {
+                let at = if d.vertical {
+                    (d.x, d.y + i)
+                } else {
+                    (d.x + i, d.y)
+                };
+                line_cells.insert(at, d.vertical);
+            }
+        }
+        let vertical_at = |x: u16, y: u16| line_cells.get(&(x, y)) == Some(&true);
+        let horizontal_at = |x: u16, y: u16| line_cells.get(&(x, y)) == Some(&false);
         for d in dividers {
             for i in 0..d.len {
                 let (x, y) = if d.vertical {
@@ -188,10 +204,22 @@ impl Screen {
                 } else {
                     Role::Divider
                 };
+                let (left, right) = (horizontal_at(x.wrapping_sub(1), y), horizontal_at(x + 1, y));
+                let (up, down) = (vertical_at(x, y.wrapping_sub(1)), vertical_at(x, y + 1));
                 let sym = if d.vertical {
-                    Symbol::DividerVertical
+                    match (left, right) {
+                        (true, true) => Symbol::DividerCross,
+                        (false, true) => Symbol::DividerJoinRight,
+                        (true, false) => Symbol::DividerJoinLeft,
+                        _ => Symbol::DividerVertical,
+                    }
                 } else {
-                    Symbol::DividerHorizontal
+                    match (up, down) {
+                        (true, true) => Symbol::DividerCross,
+                        (false, true) => Symbol::DividerJoinDown,
+                        (true, false) => Symbol::DividerJoinUp,
+                        _ => Symbol::DividerHorizontal,
+                    }
                 };
                 let gy = y + origin_y;
                 if x >= self.cols || gy >= self.rows {

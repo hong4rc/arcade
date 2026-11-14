@@ -4,7 +4,7 @@ use super::*;
 use crate::render::HostModes;
 use crate::status::{self, StatusInfo, Tab};
 
-fn status_info(s: &Session, copy: bool) -> StatusInfo {
+fn status_info(s: &Session, copy: bool, unlock_key: Option<String>) -> StatusInfo {
     StatusInfo {
         session: s.name.clone(),
         tabs: s
@@ -19,6 +19,7 @@ fn status_info(s: &Session, copy: bool) -> StatusInfo {
             .collect(),
         prefix: s.key_state.prefix_active(),
         locked: s.key_state.locked,
+        unlock_key,
         copy,
         message: s.key_state.message.clone(),
         prompt: s.key_state.status_prompt(),
@@ -133,6 +134,7 @@ impl Server {
     /// Build the screen update for a session's client and queue it.
     pub(super) fn build_frame_for(&mut self, session_id: u64) {
         let status_position = self.config.status_position;
+        let unlock_key = self.unlock_key_name();
         let Some(session) = self.sessions.get_mut(&session_id) else {
             return;
         };
@@ -249,7 +251,8 @@ impl Server {
             session.screen.draw_dividers(&dividers, origin, focus_rect);
             if let Some(y) = status_row(rows, status_position) {
                 let copy_on = self.panes.get(&focus).is_some_and(|p| p.copy.is_some());
-                let (cells, prompt_cursor) = status::build(cols, &status_info(session, copy_on));
+                let (cells, prompt_cursor) =
+                    status::build(cols, &status_info(session, copy_on, unlock_key));
                 session.screen.set_row(y, cells);
                 cursor_override = prompt_cursor.map(|x| (x, y));
             }

@@ -50,6 +50,10 @@ fn run(mut args: Vec<String>) -> u8 {
     let options = Options {
         socket: arcade_daemon::resolve_socket_path(socket_arg.as_deref()),
     };
+    if let Err(message) = arcade_daemon::check_socket_path_length(&options.socket) {
+        eprintln!("arcade: {message}");
+        return 1;
+    }
     let Some(command) = args.first().cloned() else {
         return attach_command(&options, None, CreateMode::IfNone, None, Vec::new());
     };

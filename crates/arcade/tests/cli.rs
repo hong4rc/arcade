@@ -219,7 +219,7 @@ fn the_terminal_settings_come_back_after_a_detach_command() {
     host.type_line("arcade run session.detach");
     assert_eq!(host.wait_exit(WAIT), Some(0), "{}", host.screen_text());
     assert_eq!(&host.settings(), host.initial_settings());
-    host.wait_for_text("[detached]").unwrap();
+    host.wait_for_text("[detached: a]").unwrap();
     // Cursor and screen are back to normal too.
     assert_eq!(host.screen.mode_alt_screen(), Some(false));
 }
@@ -833,7 +833,7 @@ fn a_working_session_with_the_authors_settings() {
     host.send(b"only-other");
     host.send(b"\r");
     host.send(b"Vy");
-    wait_row_has(&mut host, 0, "sent 10 characters");
+    wait_row_has(&mut host, 0, "copied 10 characters");
     assert!(!host.screen_rows()[0].contains(" COPY "));
 
     // Detach, and attach again to the first session: everything is as it was left.
@@ -851,4 +851,22 @@ fn a_working_session_with_the_authors_settings() {
     wait_screen_has(&mut again, "left-pane");
     again.send(b"\x1b[50;7u");
     wait_screen_has(&mut again, "in-window-two");
+}
+
+#[test]
+fn a_socket_path_that_is_too_long_is_named_in_plain_words() {
+    let path = format!("/tmp/{}/arcade.sock", "x".repeat(200));
+    let out = Command::new(ARCADE)
+        .args(["--socket", &path, "ls"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let text = stderr(&out);
+    assert!(
+        text.contains("socket path is too long (")
+            && text.contains(" bytes, the limit is ")
+            && text.contains("): /tmp/xxx"),
+        "{text}"
+    );
+    assert!(!text.contains("SUN_LEN"), "{text}");
 }

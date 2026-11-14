@@ -178,21 +178,39 @@ fn renaming_a_window_is_typed_on_the_prompt_line() {
     let daemon = TestDaemon::start();
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
+    run(&daemon, "window.rename", &["old"]);
+    status_has(&mut client, " old ");
     client.send(PREFIX);
     client.send(b",");
-    status_has(&mut client, "Window name: ");
-    client.send(b"buildx\x7f");
+    // The prompt starts with the name in use; three Backspaces clear it.
+    status_has(&mut client, "Window name: old");
+    client.send(b"\x7f\x7f\x7fbuildx\x7f");
     status_has(&mut client, "Window name: build");
     client.send(b"\r");
     status_has(&mut client, " build ");
     // Esc leaves the name as it was.
     client.send(PREFIX);
     client.send(b",");
-    status_has(&mut client, "Window name: ");
+    status_has(&mut client, "Window name: build");
     client.send(b"other");
     client.send(b"\x1b[27u");
     status_lacks(&mut client, "Window name");
     assert!(bar(&client).contains(" build "));
+}
+
+#[test]
+fn the_session_rename_prompt_starts_with_the_session_name() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon
+        .attach(arcade_testkit::AttachOptions::new().named("alpha"))
+        .unwrap();
+    client.wait_for_prompt().unwrap();
+    client.send(PREFIX);
+    client.send(b"$");
+    status_has(&mut client, "Session name: alpha");
+    // Adding to the old name is one small edit.
+    client.send(b"2\r");
+    status_has(&mut client, " alpha2 ");
 }
 
 /// Six windows named A to F with A the current one, in the order they were made.
@@ -314,6 +332,16 @@ fn an_old_style_enter_never_starts_a_prefix_of_ctrl_m() {
     // The same key as the new protocol reports it does start the prefix.
     client.send(b"\x1b[109;5u");
     status_has(&mut client, "PREFIX");
+}
+
+#[test]
+fn the_lock_says_which_key_unlocks() {
+    let daemon = TestDaemon::start();
+    let mut client = raw_pane(&daemon);
+    client.send(CTRL_ALT_G);
+    status_has(&mut client, "LOCK \u{b7} ctrl+alt+g to unlock");
+    client.send(CTRL_ALT_G);
+    status_lacks(&mut client, "to unlock");
 }
 
 #[test]

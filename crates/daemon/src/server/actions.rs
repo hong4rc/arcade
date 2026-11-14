@@ -192,7 +192,7 @@ impl Server {
             Command::WindowMoveLeft => self.move_window(ctx, -1),
             Command::WindowMoveRight => self.move_window(ctx, 1),
             Command::SessionDetach => {
-                self.detach_client(ctx.session, DetachReason::Requested, "detached");
+                self.detach_on_request(ctx.session);
                 Ok(String::new())
             }
             Command::SessionClose(None) => {
@@ -452,6 +452,17 @@ impl Server {
         direct.sort_by(order);
         after_prefix.extend(direct);
         after_prefix
+    }
+
+    /// The key of the direct table that ends the lock, as it is typed (the first by name when
+    /// several are bound).
+    pub(super) fn unlock_key_name(&self) -> Option<String> {
+        self.keymap
+            .direct
+            .iter()
+            .filter(|(_, b)| b.command == "arcade.lock")
+            .map(|(key, _)| typed_name(*key))
+            .min()
     }
 
     /// The bindings as text, one per line: the keys, a tab, the command.
