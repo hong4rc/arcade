@@ -382,23 +382,51 @@ impl Soak {
     }
 
     fn picker(&mut self) {
-        let sessions = self.rng.below(2) == 0;
-        self.note(format!(
-            "opens the {} list",
-            if sessions { "session" } else { "keys" }
-        ));
+        // Which list opens: sessions, keys, windows, the command palette, or none of them but the
+        // hint of the prefix keys (the prefix, then a wait past the hint's delay).
+        let which = self.rng.below(5);
+        let name = ["session", "keys", "window", "command", "hint"][which];
+        self.note(format!("opens the {name} list"));
         self.keys(PREFIX);
-        self.keys(if sessions { b"s" } else { b"\x1b[47;2u" });
+        if which == 4 {
+            std::thread::sleep(Duration::from_millis(560));
+            self.drain();
+            // A key closes the hint: Escape does nothing else, a letter runs its action.
+            let k: &[u8] = if self.rng.below(2) == 0 { ESCAPE } else { b"c" };
+            self.keys(k);
+            return;
+        }
+        let opening: &[u8] = match which {
+            0 => b"s",
+            1 => b"\x1b[47;2u",
+            2 => b"w",
+            _ => b"\x1b[59;2u",
+        };
+        self.keys(opening);
+        // Typing into the filter and taking it back.
+        if self.rng.below(2) == 0 {
+            let text = *self
+                .rng
+                .pick(&["a", "z", "pane", "w", "ctrl", "no-such-name"]);
+            self.note(format!("filters with {text:?}"));
+            self.keys(text.as_bytes());
+            match self.rng.below(3) {
+                0 => self.keys(b"\x7f"),
+                1 => self.keys(b"\x15"),
+                _ => {}
+            }
+        }
         for _ in 0..self.rng.below(4) {
-            let k: &[u8] = if self.rng.below(2) == 0 {
-                b"\x1b[B"
-            } else {
-                b"\x1b[A"
+            let k: &[u8] = match self.rng.below(4) {
+                0 => b"\x1b[B",
+                1 => b"\x1b[A",
+                2 => b"\x0e",
+                _ => b"\x10",
             };
             self.keys(k);
         }
-        // Closing the keys list is safe; choosing from it runs a command, which is fair too, but
-        // only half the time.
+        // Closing a list is safe; choosing from it runs a command, which is fair too, but only
+        // half the time.
         if self.rng.below(2) == 0 {
             self.keys(ESCAPE);
         } else {
