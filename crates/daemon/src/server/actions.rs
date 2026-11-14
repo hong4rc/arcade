@@ -42,6 +42,33 @@ pub(super) fn add_window(
     session.windows.insert(place, window);
 }
 
+/// Put a window in a session's bar right after another one: with the next number when numbers
+/// close up, else with the first free number after the other's.
+pub(super) fn add_window_after(
+    session: &mut Session,
+    mut window: Window,
+    after: u64,
+    base_index: usize,
+    renumber: bool,
+) {
+    let Some(at) = session.windows.iter().position(|w| w.id == after) else {
+        return add_window(session, window, base_index, renumber);
+    };
+    if renumber {
+        session.windows.insert(at + 1, window);
+        for (i, w) in session.windows.iter_mut().enumerate() {
+            w.number = base_index + i;
+        }
+    } else {
+        let after_number = session.windows[at].number;
+        window.number = (after_number + 1..)
+            .find(|n| session.windows.iter().all(|w| w.number != *n))
+            .unwrap_or(base_index);
+        session.windows.insert(at + 1, window);
+        session.windows.sort_by_key(|w| w.number);
+    }
+}
+
 impl Server {
     /// Look over the daemon's own books and say what does not add up: every window has one
     /// focused pane that is in its layout, the panes fill the window's room exactly (with the
@@ -1174,14 +1201,8 @@ impl Server {
         let Some(session) = self.sessions.get_mut(&ctx.session) else {
             return Ok(String::new());
         };
-        let after = session
-            .windows
-            .iter()
-            .position(|w| w.id == ctx.window)
-            .map_or(session.windows.len(), |i| i + 1);
-        let current_number = session.windows.get(after.wrapping_sub(1)).map(|w| w.number);
-        session.windows.insert(
-            after,
+        add_window_after(
+            session,
             Window {
                 id: window_id,
                 number: 0,
@@ -1193,20 +1214,10 @@ impl Server {
                 zoomed: false,
                 arrangement: None,
             },
+            ctx.window,
+            base_index,
+            renumber,
         );
-        if renumber {
-            for (i, w) in session.windows.iter_mut().enumerate() {
-                w.number = base_index + i;
-            }
-        } else {
-            // Numbers stay: the new window takes the first free number after this window's.
-            let taken: Vec<usize> = session.windows.iter().map(|w| w.number).collect();
-            let free = (current_number.unwrap_or(base_index) + 1..)
-                .find(|n| !taken.contains(n))
-                .unwrap_or(base_index);
-            session.windows[after].number = free;
-            session.windows.sort_by_key(|w| w.number);
-        }
         self.select_window(ctx.session, window_id);
         self.apply_window_sizes(ctx.session, window_id);
         if let Some(session) = self.sessions.get_mut(&ctx.session) {

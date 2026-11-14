@@ -560,3 +560,184 @@ fn a_lifted_pane_that_exits_leaves_a_usable_tree_with_a_notice() {
     quiet(&mut client);
     assert!(!box_rows(&client).is_empty());
 }
+
+// ---- Lifting a window and putting it down ----
+
+/// Open the tree with the window of the client lifted (`M`).
+fn lift_window(client: &mut TestClient) {
+    client.send(PREFIX);
+    client.send(b"M");
+    let ok = client.wait_until(WAIT, |c| !box_rows(c).is_empty());
+    assert!(ok, "{}", client.screen_text());
+}
+
+/// The windows the tree shows for a session when the client looks at it from another session:
+/// walk to the session, open it, and read the box.
+fn windows_of_other_session(client: &mut TestClient) -> String {
+    open_tree(client);
+    client.send(LEFT);
+    client.send(LEFT);
+    client.send(UP);
+    client.send(RIGHT);
+    quiet(client);
+    let text = box_rows(client).join("\n");
+    client.send(ESC);
+    closed(client);
+    text
+}
+
+#[test]
+fn capital_m_opens_with_the_window_lifted_and_the_choice_on_its_session() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    lift_window(&mut client);
+    wait_chosen(&mut client, "▾ alpha *");
+    let text = box_rows(&client).join("\n");
+    assert!(
+        text.contains("1 editor *") && text.contains("[lifted]"),
+        "{text}"
+    );
+    client.send(ESC);
+    let ok = client.wait_until(WAIT, |c| !box_rows(c).join("\n").contains("[lifted]"));
+    assert!(ok, "{}", client.screen_text());
+    assert!(!box_rows(&client).is_empty());
+    client.send(ESC);
+    closed(&mut client);
+}
+
+#[test]
+fn a_window_put_on_a_window_of_its_session_stands_right_after_it() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    lift_window(&mut client);
+    client.send(RIGHT);
+    client.send(DOWN);
+    wait_chosen(&mut client, "▸ 2 server");
+    wait_footer(
+        &mut client,
+        "move window 1 editor of alpha after window 2 server of alpha",
+    );
+    client.send(ENTER);
+    closed(&mut client);
+    let ok = client.wait_until(WAIT, |c| {
+        let b = bar(c);
+        matches!((b.find("server"), b.find("editor")), (Some(s), Some(e)) if s < e)
+            && c.screen_text().contains("in-nvim")
+            && c.screen_text().contains("in-zsh")
+    });
+    assert!(ok, "{}\n{}", client.screen_text(), bar(&client));
+}
+
+#[test]
+fn a_window_put_on_a_window_of_another_session_moves_there_with_its_processes() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    client.send(PREFIX);
+    client.send(b"2");
+    assert!(client.wait_until(WAIT, |c| c.screen_text().contains("in-htop")));
+    let before = shell_pid(&mut client, "before");
+    lift_window(&mut client);
+    client.send(DOWN);
+    client.send(RIGHT);
+    wait_footer(&mut client, "after window 1");
+    client.send(ENTER);
+    closed(&mut client);
+    let ok = client.wait_until(WAIT, |c| {
+        bar(c).contains(" beta ")
+            && bar(c).contains("server")
+            && c.screen_text().contains("in-htop")
+    });
+    assert!(ok, "{}\n{}", client.screen_text(), bar(&client));
+    let after = shell_pid(&mut client, "after");
+    assert_eq!(before, after);
+    // Alpha keeps only its first window.
+    let text = windows_of_other_session(&mut client);
+    let alpha = &text[text.find("alpha").unwrap()..text.find("beta").unwrap()];
+    assert!(
+        alpha.contains("1 editor") && !alpha.contains("server"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_window_put_on_a_session_becomes_its_last_window_and_the_client_follows() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    lift_window(&mut client);
+    client.send(DOWN);
+    wait_chosen(&mut client, "▸ beta");
+    wait_footer(&mut client, "to the end of session beta");
+    client.send(ENTER);
+    closed(&mut client);
+    let ok = client.wait_until(WAIT, |c| {
+        let b = bar(c);
+        b.contains(" beta ")
+            && matches!((b.find(" 1 "), b.find("editor")), (Some(one), Some(e)) if one < e)
+            && c.screen_text().contains("in-nvim")
+            && c.screen_text().contains("in-zsh")
+    });
+    assert!(ok, "{}\n{}", client.screen_text(), bar(&client));
+}
+
+#[test]
+fn a_window_put_on_its_own_session_goes_to_the_end_unless_it_is_there() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    lift_window(&mut client);
+    wait_footer(&mut client, "to the end of session alpha");
+    client.send(ENTER);
+    closed(&mut client);
+    let ok = client.wait_until(WAIT, |c| {
+        let b = bar(c);
+        matches!((b.find("server"), b.find("editor")), (Some(s), Some(e)) if s < e)
+    });
+    assert!(ok, "{}", bar(&client));
+    // The window is the last now: the same again says why and does nothing.
+    lift_window(&mut client);
+    wait_footer(&mut client, "last of its session already");
+    client.send(ENTER);
+    quiet(&mut client);
+    assert!(!box_rows(&client).is_empty());
+}
+
+#[test]
+fn the_only_window_of_a_session_takes_the_session_with_it_and_the_client_lives_on() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    client.send(PREFIX);
+    client.send(b"s");
+    client.send(b"beta");
+    client.send(ENTER);
+    assert!(client.wait_until(WAIT, |c| bar(c).contains(" beta ")));
+    lift_window(&mut client);
+    client.send(UP);
+    wait_chosen(&mut client, "▸ alpha");
+    client.send(ENTER);
+    closed(&mut client);
+    let ok = client.wait_until(WAIT, |c| {
+        bar(c).contains(" alpha ") && c.screen_text().contains("in-emacs")
+    });
+    assert!(ok, "{}\n{}", client.screen_text(), bar(&client));
+    assert!(!client.closed);
+    let (_, sessions) = run(&daemon, "session.list", &[]);
+    assert!(!sessions.contains("beta"), "{sessions}");
+}
+
+#[test]
+fn a_window_cannot_be_put_on_a_pane_or_on_itself() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    lift_window(&mut client);
+    client.send(RIGHT);
+    wait_chosen(&mut client, "▾ 1 editor * [lifted]");
+    wait_footer(&mut client, "lifted");
+    client.send(RIGHT);
+    wait_footer(&mut client, "put on a window or a session");
+    client.send(ENTER);
+    quiet(&mut client);
+    assert!(!box_rows(&client).is_empty());
+    client.send(ESC);
+    client.send(ESC);
+    closed(&mut client);
+    assert!(client.screen_text().contains("in-nvim"));
+}

@@ -2,7 +2,7 @@
 //! books, what its keys do, and going to what was chosen.
 
 use super::actions::Ctx;
-use super::actions::add_window;
+use super::actions::{add_window, add_window_after};
 use super::*;
 use crate::commands::ListCommand;
 use crate::layout::{Axis, Layout, LayoutError};
@@ -26,6 +26,15 @@ enum PaneDest {
     Beside(u64),
     /// In a new window at the end of this session.
     NewWindow(u64),
+}
+
+/// Where a lifted window is put down.
+#[derive(Clone, Copy)]
+enum WindowDest {
+    /// Right after this window, in its session.
+    After(u64),
+    /// At the end of this session.
+    End(u64),
 }
 
 impl Server {
@@ -175,7 +184,12 @@ impl Server {
             Action::PaneToSession { pane, session } => {
                 self.move_pane(session_id, pane, PaneDest::NewWindow(session))
             }
-            _ => Err("moving a window is not done yet".to_string()),
+            Action::WindowAfter { window, target } => {
+                self.put_window(session_id, window, WindowDest::After(target))
+            }
+            Action::WindowToSession { window, session } => {
+                self.put_window(session_id, window, WindowDest::End(session))
+            }
         }
     }
 
@@ -316,6 +330,95 @@ impl Server {
             s.relayout = true;
             s.chrome_dirty = true;
         }
+        self.follow(from, dst_session, emptied)
+    }
+
+    /// Put a window down: in the bar after another window, or at the end of a session. Its
+    /// panes and their processes go on as they are.
+    fn put_window(&mut self, from: u64, window: u64, dest: WindowDest) -> Result<String, String> {
+        let session_of = |server: &Server, w: u64| {
+            server
+                .sessions
+                .values()
+                .find(|s| s.window(w).is_some())
+                .map(|s| s.id)
+        };
+        let src_session =
+            session_of(self, window).ok_or_else(|| "that window is gone".to_string())?;
+        let dst_session = match dest {
+            WindowDest::After(target) => {
+                if target == window {
+                    return Err("a window cannot be put after itself".to_string());
+                }
+                session_of(self, target).ok_or_else(|| "that window is gone".to_string())?
+            }
+            WindowDest::End(s) => {
+                if !self.sessions.contains_key(&s) {
+                    return Err("that session is gone".to_string());
+                }
+                s
+            }
+        };
+        let same = src_session == dst_session;
+        let (windows_in_source, last_in_source) = {
+            let s = &self.sessions[&src_session];
+            (s.windows.len(), s.windows.last().map(|w| w.id))
+        };
+        if same && matches!(dest, WindowDest::End(_)) && last_in_source == Some(window) {
+            return Err("the window is the last of its session already".to_string());
+        }
+        let (base_index, renumber) = (self.config.base_index, self.config.renumber);
+        let status = self.config.status_position;
+
+        // Leave the old place.
+        let mut emptied = None;
+        let moved = if same {
+            let s = self
+                .sessions
+                .get_mut(&src_session)
+                .ok_or_else(|| "no such session".to_string())?;
+            let at = s.windows.iter().position(|w| w.id == window);
+            at.map(|i| s.windows.remove(i))
+        } else if windows_in_source > 1 {
+            let focus = self.sessions[&src_session]
+                .window(window)
+                .map_or(0, |w| w.focus);
+            self.take_window(Ctx {
+                session: src_session,
+                window,
+                pane: focus,
+            })
+        } else {
+            self.sessions.remove(&src_session).and_then(|mut old| {
+                let moved = old.windows.pop();
+                emptied = Some(old);
+                moved
+            })
+        };
+        let Some(mut moved) = moved else {
+            return Err("that window is gone".to_string());
+        };
+
+        // Take the new place.
+        let Some(destination) = self.sessions.get_mut(&dst_session) else {
+            return Err("that session is gone".to_string());
+        };
+        if !same {
+            let (cols, rows) = window_area(destination.cols, destination.rows, status);
+            moved.layout.set_area(cols, rows);
+        }
+        let after = match dest {
+            WindowDest::After(target) => Some(target),
+            WindowDest::End(_) => destination.windows.last().map(|w| w.id),
+        };
+        match after {
+            Some(after) => add_window_after(destination, moved, after, base_index, renumber),
+            None => add_window(destination, moved, base_index, renumber),
+        }
+        destination.chrome_dirty = true;
+        destination.relayout = true;
+        self.apply_window_sizes(dst_session, window);
+        self.select_window(dst_session, window);
         self.follow(from, dst_session, emptied)
     }
 
