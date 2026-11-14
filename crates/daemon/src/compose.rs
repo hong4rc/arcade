@@ -158,7 +158,8 @@ impl Screen {
     }
 
     /// Draw the dividers (their coordinates are relative to a window area that starts at row
-    /// `origin_y`). The cells that touch the focused pane's room get the focus color.
+    /// `origin_y`). The cells of the half of a divider that is on the focused pane's side, where
+    /// they touch its room, get the focus color.
     pub fn draw_dividers(&mut self, dividers: &[Divider], origin_y: u16, focus: Option<Rect>) {
         for d in dividers {
             for i in 0..d.len {
@@ -167,12 +168,20 @@ impl Screen {
                 } else {
                     (d.x + i, d.y)
                 };
+                // The focused pane marks only the half of the divider that is on its side: the
+                // upper half (left half for a row) when the pane is before the divider, the
+                // lower half (right half) when it is after. Without this, the one divider
+                // between two panes would look the same whichever of them has the focus. The
+                // rectangle of the pane counts rows from the top of the screen, the divider
+                // from the top of the window area.
                 let touches = focus.is_some_and(|f| {
-                    if d.vertical {
-                        f.contains(x.wrapping_sub(1), y) || f.contains(x + 1, y)
+                    let f = Rect::new(f.x, f.y.saturating_sub(origin_y), f.w, f.h);
+                    let (before, after) = if d.vertical {
+                        (f.contains(x.wrapping_sub(1), y), f.contains(x + 1, y))
                     } else {
-                        f.contains(x, y.wrapping_sub(1)) || f.contains(x, y + 1)
-                    }
+                        (f.contains(x, y.wrapping_sub(1)), f.contains(x, y + 1))
+                    };
+                    (before && i < d.len.div_ceil(2)) || (after && i >= d.len / 2)
                 });
                 let role = if touches {
                     Role::DividerFocus
@@ -258,8 +267,15 @@ mod tests {
         assert_eq!(cells.len(), 5);
     }
 
+    fn colors(screen: &Screen, cells: impl Iterator<Item = (u16, u16)>) -> Vec<bool> {
+        let focus = theme::style(Role::DividerFocus);
+        cells
+            .map(|(x, y)| screen.row(y)[usize::from(x)].style == focus)
+            .collect()
+    }
+
     #[test]
-    fn only_the_dividers_that_touch_the_focused_pane_get_the_focus_color() {
+    fn only_the_divider_cells_beside_the_focused_pane_and_on_its_side_get_the_focus_color() {
         let mut screen = Screen::new();
         screen.resize(11, 6);
         // A column divider at x = 5, rows 0 to 5; the focused pane is the left one, but only
@@ -271,13 +287,109 @@ mod tests {
             vertical: true,
         }];
         screen.draw_dividers(&dividers, 0, Some(Rect::new(0, 0, 5, 3)));
-        let focus = theme::style(Role::DividerFocus);
-        let plain = theme::style(Role::Divider);
-        for y in 0..3 {
-            assert_eq!(screen.row(y)[5].style, focus, "row {y}");
-        }
-        for y in 3..6 {
-            assert_eq!(screen.row(y)[5].style, plain, "row {y}");
-        }
+        let got = colors(&screen, (0..6).map(|y| (5, y)));
+        assert_eq!(got, [true, true, true, false, false, false]);
+    }
+
+    #[test]
+    fn between_two_panes_side_by_side_the_focus_marks_the_upper_half_or_the_lower_half() {
+        let mut screen = Screen::new();
+        screen.resize(11, 6);
+        let dividers = [Divider {
+            x: 5,
+            y: 0,
+            len: 6,
+            vertical: true,
+        }];
+        screen.draw_dividers(&dividers, 0, Some(Rect::new(0, 0, 5, 6)));
+        assert_eq!(
+            colors(&screen, (0..6).map(|y| (5, y))),
+            [true, true, true, false, false, false]
+        );
+        screen.draw_dividers(&dividers, 0, Some(Rect::new(6, 0, 5, 6)));
+        assert_eq!(
+            colors(&screen, (0..6).map(|y| (5, y))),
+            [false, false, false, true, true, true]
+        );
+    }
+
+    #[test]
+    fn between_two_panes_one_above_the_other_the_focus_marks_the_left_half_or_the_right_half() {
+        let mut screen = Screen::new();
+        screen.resize(8, 7);
+        let dividers = [Divider {
+            x: 0,
+            y: 3,
+            len: 8,
+            vertical: false,
+        }];
+        screen.draw_dividers(&dividers, 0, Some(Rect::new(0, 0, 8, 3)));
+        assert_eq!(
+            colors(&screen, (0..8).map(|x| (x, 3))),
+            [true, true, true, true, false, false, false, false]
+        );
+        screen.draw_dividers(&dividers, 0, Some(Rect::new(0, 4, 8, 3)));
+        assert_eq!(
+            colors(&screen, (0..8).map(|x| (x, 3))),
+            [false, false, false, false, true, true, true, true]
+        );
+    }
+
+    #[test]
+    fn a_top_bar_does_not_shift_which_cells_touch_the_focused_pane() {
+        let mut screen = Screen::new();
+        screen.resize(11, 7);
+        // The window area starts at row 1; the divider is in its rows 0 to 5 (screen rows 1
+        // to 6) and the focused pane is the left one, over the whole height.
+        let dividers = [Divider {
+            x: 5,
+            y: 0,
+            len: 6,
+            vertical: true,
+        }];
+        screen.draw_dividers(&dividers, 1, Some(Rect::new(0, 1, 5, 6)));
+        assert_eq!(
+            colors(&screen, (1..7).map(|y| (5, y))),
+            [true, true, true, false, false, false]
+        );
+    }
+
+    #[test]
+    fn with_three_panes_only_the_cells_beside_the_focused_pane_can_be_marked() {
+        let mut screen = Screen::new();
+        screen.resize(11, 7);
+        // One pane on the left over the whole height; two on the right, one above the other,
+        // with a row divider between them at row 3.
+        let dividers = [
+            Divider {
+                x: 5,
+                y: 0,
+                len: 7,
+                vertical: true,
+            },
+            Divider {
+                x: 6,
+                y: 3,
+                len: 5,
+                vertical: false,
+            },
+        ];
+        // The focus is on the upper right pane: the column divider is marked only where it
+        // touches that pane and is in the lower half, which is nowhere; the row divider is
+        // marked on its left half, since the pane is above it.
+        screen.draw_dividers(&dividers, 0, Some(Rect::new(6, 0, 5, 3)));
+        assert_eq!(colors(&screen, (0..7).map(|y| (5, y))), [false; 7]);
+        assert_eq!(
+            colors(&screen, (6..11).map(|x| (x, 3))),
+            [true, true, true, false, false]
+        );
+        // The focus is on the left pane: the upper half of the column divider is marked and
+        // the row divider, which does not touch it, is not.
+        screen.draw_dividers(&dividers, 0, Some(Rect::new(0, 0, 5, 7)));
+        assert_eq!(
+            colors(&screen, (0..7).map(|y| (5, y))),
+            [true, true, true, true, false, false, false]
+        );
+        assert_eq!(colors(&screen, (6..11).map(|x| (x, 3))), [false; 5]);
     }
 }
