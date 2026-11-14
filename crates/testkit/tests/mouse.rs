@@ -85,9 +85,13 @@ fn split(client: &mut TestClient) -> u16 {
 
 /// A pane whose program turned on the mouse reports in `modes` and shows each byte it gets, as
 /// `cat -vt` writes it.
+///
+/// The program says `ready` when it is set up. The shell redraws the line being typed bit by bit,
+/// so a half-drawn line that ends in `echo ready` must not be taken for the word the program
+/// prints: the typed line spells it `re''ady`, which the shell joins when it runs it.
 fn mouse_program(client: &mut TestClient, modes: &str) {
     client.type_line(&format!(
-        "stty raw -echo; printf '\\033[?{modes}'; echo ready; cat -vt"
+        "stty raw -echo; printf '\\033[?{modes}'; echo re''ady; cat -vt"
     ));
     let ok = client.wait_until(WAIT, |c| {
         c.screen_rows().iter().any(|r| r.ends_with("ready"))
@@ -346,7 +350,12 @@ fn a_selection_stops_at_the_edge_of_the_pane_it_began_in() {
     let mut client = client(&daemon);
     let divider = split(&mut client);
     client.type_line("echo right-text");
-    client.wait_for_row("right-text").unwrap_or(());
+    let ok = client.wait_until(WAIT, |c| {
+        c.region(divider + 1, 0, 99, 29)
+            .iter()
+            .any(|r| r == "right-text")
+    });
+    assert!(ok, "{}", client.screen_text());
     click(&mut client, 5, 3);
     client.type_line("echo left-text");
     let ok = client.wait_until(WAIT, |c| {
