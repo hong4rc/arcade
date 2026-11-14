@@ -80,6 +80,10 @@ If half a second after the prefix nothing else is pressed, a small panel appears
 | `t` | Tree of sessions, windows and panes: look and jump (section 3.5) | |
 | `m` | Lift the current pane to put it down somewhere else (section 3.5). `m` used to move a window to another session; the command `window.move-to-session` is still in the command palette (`:`) but has no default key | |
 | `M` | Lift the current window to put it down somewhere else (section 3.5) | |
+| `a` | Go to the pane whose notification is the most urgent (section 5.8); press again for the next one | |
+| `A` | List of the notifications (section 5.8) | |
+| `q` | Clear the notification of the pane you are in | |
+| `Q` | Clear every notification | |
 | `[` | Enter copy mode | |
 | `]` | Paste the internal buffer into the pane | |
 | `:` | Command palette: every named command, each line with the keys bound to it; type to filter, `Enter` to run (a command that needs a number or a name asks on the prompt line) | |
@@ -100,6 +104,7 @@ If half a second after the prefix nothing else is pressed, a small panel appears
 | `Ctrl+Alt` + `.` | Next window |
 | `Ctrl+Alt` + `o` | Go back to the previous pane |
 | `Ctrl+Alt` + `g` | Lock or unlock Arcade |
+| `Ctrl+Alt` + `a` | Go to the pane whose notification is the most urgent (section 5.8) |
 
 These keys do not repeat: hold the modifier and press again.
 
@@ -155,6 +160,8 @@ The prefix then `t` opens a tree with three tiers: sessions, the windows inside 
 | Letters, digits, punctuation | Go into the filter box; the tree turns flat, each matching line with its path, for example `work › 2 server › zsh` |
 
 The bottom line of the box always says in words what `Enter` will do, or why `Enter` does nothing.
+
+A pane line carries the mark of its own notification (`[!]`, `[?]`, `[x]` or `[i]`, section 5.8), and a window or session line carries the most urgent mark of the panes inside it, even when its branch is closed, so that you can see from the tree where something is waiting. The marks are plain text, without the colours the status bar uses.
 
 `m` opens the tree with the current pane already lifted (the choice on its window); `M` opens the tree with the current window already lifted (the choice on its session). Putting down works like this:
 
@@ -254,6 +261,9 @@ A program in a pane can also set the clipboard with OSC 52 when `allow-pane-writ
 - An `info` notification goes away as soon as you look at the pane (it takes the focus), and is not kept at all for the pane you are looking at. A notification of another class stays until you type into the pane.
 - A notification goes away with its pane, and stays when you detach and attach again.
 - A pane that sends more than 20 signals in a second keeps only the last of the excess.
+- **Going to a pane that needs you.** The prefix then `a` (or `Ctrl+Alt+a`) goes to the pane whose notification is the most urgent; among the same class, the pane that has waited longest comes first. The pane you are in is skipped, so pressing the key again goes to the next one; across sessions, the client changes session. When nothing waits, or only the pane you are in has a notification, a message says so.
+- **The list.** The prefix then `A` opens a list of the notifications, most urgent first, each line with the class, the source, the title and message, how long it has waited and where the pane is. Type to filter, Up and Down (or `Ctrl+p` and `Ctrl+n`) to move, `Enter` to go to the pane, `Delete` to clear the chosen notification (the list closes when none is left), `Esc` to close.
+- **Clearing by hand.** The prefix then `q` clears the notification of the pane you are in; the prefix then `Q` clears all of them. The command names are `notification.next`, `notification.list`, `notification.clear` and `notification.clear-all`; `arcade run notification.list` prints the notifications as lines of tab-separated fields (class, source, pane, seconds waited, place, title, message).
 - When a pane already has a notification, a new one from the same source replaces it; one from another source replaces it only when its class is at least as urgent, and is dropped otherwise.
 - Good to know: an `ESC ] 777 ; notify ; ; <body> ST` with an empty title counts as a message without a title (the same as OSC 9).
 
@@ -268,7 +278,7 @@ A program in a pane can also set the clipboard with OSC 52 when `allow-pane-writ
 
 Things that belong to Phase 1 or to the design but are not in the current build:
 
-- Notification: jumping to the pane that needs you and the list of notifications, passing BEL and OSC on to the outer terminal, jumping back to the pane when the terminal gets the focus again, and the `[notification]` settings.
+- Notification: passing BEL and OSC on to the outer terminal, jumping back to the pane when the terminal gets the focus again, and the `[notification]` settings.
 - Mouse: double click to select a word, triple click to select a line, an option to copy on release, scrolling by itself when dragging past a pane edge, dragging a border to resize, clicking a tab on the status bar.
 - `arcade keys list` and `arcade keys test` on the command line (inside Arcade, use the prefix then `?`).
 - A warning for bindings that cannot work (beyond the errors of `config check`).

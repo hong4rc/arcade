@@ -6,6 +6,7 @@ use crate::copy::{Copy, Outcome};
 use crate::keymap::{Binding, typed_name};
 use crate::layout::{Axis, Direction, LayoutError};
 use crate::picker::{Item, PickerKind};
+use crate::tree::Key as TreeKey;
 
 /// Where a command acts: a session, one of its windows, and a pane in that window.
 #[derive(Clone, Copy)]
@@ -342,6 +343,10 @@ impl Server {
             Command::SessionList => Ok(self.list_sessions()),
             Command::WindowList => self.list_windows(ctx.session),
             Command::KeysList => Ok(self.list_keys()),
+            Command::NotificationNext => self.notification_next(ctx.session),
+            Command::NotificationList => Ok(self.notification_lines()),
+            Command::NotificationClear => self.notification_clear_focused(ctx),
+            Command::NotificationClearAll => Ok(self.notification_clear_all()),
             Command::Palette => Ok(self.list_commands()),
             Command::TreeOpen | Command::PaneMove | Command::WindowMove => {
                 Err("this opens a list that is used at the keyboard".to_string())
@@ -563,6 +568,9 @@ impl Server {
 
     /// Open the list of sessions, to go to one or to move the current window to one.
     pub(super) fn open_picker(&mut self, session_id: u64, kind: PickerKind) -> Result<(), String> {
+        if kind == PickerKind::Notifications {
+            return self.open_notifications(session_id, 0);
+        }
         if kind == PickerKind::Keys {
             let bindings = self.key_bindings();
             // Every key name takes the room of the longest, so the command names line up.
@@ -658,6 +666,7 @@ impl Server {
             PickerKind::Keys => "Keys",
             PickerKind::Windows => "Windows",
             PickerKind::Commands => "Commands",
+            PickerKind::Notifications => "Notifications",
         };
         if let Some(s) = self.sessions.get_mut(&session_id) {
             s.picker = Some(Picker::new(kind, title, items, selected));
@@ -725,6 +734,14 @@ impl Server {
         match command {
             // Only the tree has anything to go into or lift.
             ListCommand::Left | ListCommand::Right | ListCommand::Lift => {}
+            ListCommand::Clear => {
+                if picker.kind == PickerKind::Notifications {
+                    let (pane, selected) = (picker.chosen().map(|i| i.id as u64), picker.selected);
+                    if let Some(pane) = pane {
+                        return self.clear_from_list(session_id, pane, selected);
+                    }
+                }
+            }
             ListCommand::Up => picker.up(),
             ListCommand::Down => picker.down(),
             ListCommand::FilterDelete | ListCommand::FilterClear => {
@@ -781,6 +798,9 @@ impl Server {
                             self.select_window(session_id, window);
                         }
                         Ok(String::new())
+                    }
+                    PickerKind::Notifications => {
+                        self.jump_to(session_id, TreeKey::Pane(index as u64))
                     }
                     PickerKind::Sessions => self.switch_session(session_id, &name),
                     PickerKind::MoveWindow => {

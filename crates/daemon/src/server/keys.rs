@@ -397,6 +397,7 @@ impl Server {
             ("window.move-to-session", true) => Some(PickerKind::MoveWindow),
             ("keys.list", true) => Some(PickerKind::Keys),
             ("command.list", true) => Some(PickerKind::Commands),
+            ("notification.list", true) => Some(PickerKind::Notifications),
             _ => None,
         };
         if let Some(kind) = picker {

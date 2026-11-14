@@ -237,6 +237,20 @@ impl Store {
         counts
     }
 
+    /// The panes that have a notification, the most urgent first and, within a class, the one
+    /// that has waited longest first.
+    pub fn by_priority(&self) -> Vec<(u64, &Notification)> {
+        let mut all: Vec<(u64, &Notification)> =
+            self.standing.iter().map(|(p, n)| (*p, n)).collect();
+        all.sort_by(|a, b| {
+            b.1.class
+                .cmp(&a.1.class)
+                .then(a.1.since.cmp(&b.1.since))
+                .then(a.0.cmp(&b.0))
+        });
+        all
+    }
+
     /// The most urgent class among these panes.
     pub fn highest(&self, panes: impl IntoIterator<Item = u64>) -> Option<Class> {
         panes

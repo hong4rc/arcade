@@ -49,6 +49,8 @@ pub enum ListCommand {
     Left,
     Right,
     Lift,
+    /// In the list of notifications: clear the one on the chosen line.
+    Clear,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +90,13 @@ pub enum Command {
     CopyEnter,
     Copy(CopyCommand),
     List(ListCommand),
+    /// Go to the pane whose notification is the most urgent (and has waited longest), skipping
+    /// the pane that is looked at.
+    NotificationNext,
+    NotificationList,
+    /// Clear the notification of the pane that has the focus, or of every pane.
+    NotificationClear,
+    NotificationClearAll,
     ArcadeLock,
     ArcadeReloadConfig,
     ArcadeRedraw,
@@ -184,6 +193,11 @@ const NAMES: &[(&str, Command)] = &[
     ("list.left", Command::List(ListCommand::Left)),
     ("list.right", Command::List(ListCommand::Right)),
     ("list.lift", Command::List(ListCommand::Lift)),
+    ("list.clear", Command::List(ListCommand::Clear)),
+    ("notification.next", Command::NotificationNext),
+    ("notification.list", Command::NotificationList),
+    ("notification.clear", Command::NotificationClear),
+    ("notification.clear-all", Command::NotificationClearAll),
     ("tree.open", Command::TreeOpen),
     ("pane.move", Command::PaneMove),
     ("window.move", Command::WindowMove),

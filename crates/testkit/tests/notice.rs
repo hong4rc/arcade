@@ -149,3 +149,211 @@ fn a_notification_is_kept_when_the_client_detaches_and_attaches_again() {
         .unwrap();
     assert!(mark_shown(&mut again, "[i]1"), "{}", bar(&again));
 }
+
+// ---- Going to the pane that needs you, the list, clearing, and the marks in the tree ----
+
+const ENTER: &[u8] = b"\r";
+const DOWN: &[u8] = b"\x1b[B";
+const DELETE: &[u8] = b"\x1b[3~";
+const RIGHT: &[u8] = b"\x1b[C";
+
+fn notify(daemon: &TestDaemon, pane: u64, class: &str, source: &str, text: &str) {
+    let target = format!("target={pane}");
+    let class = format!("class={class}");
+    let source = format!("source={source}");
+    let message = format!("message={text}");
+    let (ok, why) = daemon
+        .command(
+            "notify.send",
+            &["version=1", &target, &class, &source, &message],
+        )
+        .unwrap();
+    assert!(ok, "{why}");
+}
+
+/// Three panes in a row, the focus in the last. Returns the three numbers in order.
+fn three_panes(daemon: &TestDaemon) -> (TestClient, [u64; 3]) {
+    let mut client = start(daemon);
+    let first = client.focused_pane_id();
+    client.send(PREFIX);
+    client.send(b"|");
+    assert!(client.wait_until(WAIT, |c| c.screen_text().contains('│')));
+    let second = client.focused_pane_id();
+    client.send(PREFIX);
+    client.send(b"|");
+    assert!(client.wait_until(WAIT, |c| c.screen_text().matches('│').count() >= 2));
+    let third = client.focused_pane_id();
+    (client, [first, second, third])
+}
+
+#[test]
+fn next_goes_to_the_most_urgent_pane_then_the_next_and_skips_the_pane_it_is_in() {
+    let daemon = TestDaemon::start();
+    let (mut client, [p1, p2, p3]) = three_panes(&daemon);
+    let _ = p3;
+    notify(&daemon, p1, "error", "a", "old");
+    notify(&daemon, p2, "approval", "b", "newer");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    // The key after the prefix goes to the approval; every key press after it leaves the pane it
+    // is in for the other one, so four presses end in the error pane. (Looking at the pane with
+    // a typed command would clear what waits there, so the focus is asked for only at the end.)
+    client.send(PREFIX);
+    client.send(b"a");
+    std::thread::sleep(Duration::from_millis(300));
+    for _ in 0..3 {
+        let (ok, _) = daemon.command("notification.next", &[]).unwrap();
+        assert!(ok);
+    }
+    assert!(client.wait_until(WAIT, |c| c.screen_text().contains('│')));
+    assert_eq!(client.focused_pane_id(), p1);
+}
+
+#[test]
+fn within_a_class_the_pane_that_waited_longest_comes_first() {
+    let daemon = TestDaemon::start();
+    let (mut client, [p1, p2, _]) = three_panes(&daemon);
+    notify(&daemon, p1, "input", "a", "first");
+    std::thread::sleep(Duration::from_millis(50));
+    notify(&daemon, p2, "input", "b", "second");
+    assert!(mark_shown(&mut client, "[?]2"), "{}", bar(&client));
+    let (ok, _) = daemon.command("notification.next", &[]).unwrap();
+    assert!(ok);
+    assert_eq!(client.focused_pane_id(), p1);
+}
+
+#[test]
+fn next_with_nothing_waiting_says_so() {
+    let daemon = TestDaemon::start();
+    let _client = start(&daemon);
+    let (ok, why) = daemon.command("notification.next", &[]).unwrap();
+    assert!(!ok);
+    assert!(why.contains("no notification"), "{why}");
+}
+
+#[test]
+fn the_list_shows_what_waits_and_enter_goes_to_the_chosen_pane() {
+    let daemon = TestDaemon::start();
+    let (mut client, [p1, p2, _]) = three_panes(&daemon);
+    notify(&daemon, p1, "error", "build", "failed");
+    notify(&daemon, p2, "approval", "claude", "may I");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    client.send(PREFIX);
+    client.send(b"A");
+    assert!(
+        client.wait_until(WAIT, |c| c.screen_text().contains("Notifications")),
+        "{}",
+        client.screen_text()
+    );
+    let text = client.screen_text();
+    assert!(text.contains("claude") && text.contains("may I"), "{text}");
+    assert!(text.contains("build") && text.contains("failed"), "{text}");
+    assert!(text.contains("waited"), "{text}");
+    // The most urgent is first and chosen: moving down picks the error one.
+    client.send(DOWN);
+    client.send(ENTER);
+    assert!(client.wait_until(WAIT, |c| !c.screen_text().contains("Notifications")));
+    assert_eq!(client.focused_pane_id(), p1);
+}
+
+#[test]
+fn delete_in_the_list_clears_the_chosen_line_and_the_list_closes_when_empty() {
+    let daemon = TestDaemon::start();
+    let (mut client, [p1, p2, _]) = three_panes(&daemon);
+    notify(&daemon, p1, "error", "build", "failed");
+    notify(&daemon, p2, "approval", "claude", "may I");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    client.send(PREFIX);
+    client.send(b"A");
+    assert!(client.wait_until(WAIT, |c| c.screen_text().contains("Notifications")));
+    client.send(DELETE);
+    assert!(
+        client.wait_until(WAIT, |c| !c.screen_text().contains("may I")
+            && c.screen_text().contains("failed")),
+        "{}",
+        client.screen_text()
+    );
+    assert!(gone(&mut client, "[!]"), "{}", bar(&client));
+    client.send(DELETE);
+    assert!(
+        client.wait_until(WAIT, |c| !c.screen_text().contains("Notifications")),
+        "{}",
+        client.screen_text()
+    );
+    assert!(gone(&mut client, "[x]"), "{}", bar(&client));
+}
+
+fn gone(client: &mut TestClient, mark: &str) -> bool {
+    client.wait_until(WAIT, |c| !bar(c).contains(mark))
+}
+
+#[test]
+fn the_keys_clear_the_pane_in_focus_or_every_pane() {
+    let daemon = TestDaemon::start();
+    let (mut client, [p1, p2, p3]) = three_panes(&daemon);
+    notify(&daemon, p3, "approval", "a", "here");
+    notify(&daemon, p1, "error", "a", "there");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    client.send(PREFIX);
+    client.send(b"q");
+    assert!(gone(&mut client, "[!]"), "{}", bar(&client));
+    assert!(bar(&client).contains("[x]1"), "{}", bar(&client));
+    notify(&daemon, p2, "input", "a", "x");
+    assert!(mark_shown(&mut client, "[?]1"), "{}", bar(&client));
+    client.send(PREFIX);
+    client.send(b"Q");
+    assert!(
+        client.wait_until(WAIT, |c| !bar(c).contains("[?]") && !bar(c).contains("[x]")),
+        "{}",
+        bar(&client)
+    );
+}
+
+#[test]
+fn the_tree_marks_panes_windows_and_sessions_and_the_marks_follow_clearing() {
+    let daemon = TestDaemon::start();
+    let mut other = daemon
+        .attach(AttachOptions::new().size(100, 30).named("other"))
+        .unwrap();
+    other.wait_for_prompt().unwrap();
+    let far = other.focused_pane_id();
+    other.detach();
+    assert!(other.wait_closed(WAIT));
+    let mut client = start(&daemon);
+    notify(&daemon, far, "error", "build", "boom");
+    client.send(PREFIX);
+    client.send(b"t");
+    // The session of the pane is closed in the tree, and its line already carries the mark.
+    let row_of = |c: &TestClient, word: &str| -> Option<String> {
+        c.screen_rows().into_iter().find(|r| r.contains(word))
+    };
+    assert!(
+        client.wait_until(WAIT, |c| row_of(c, "other")
+            .is_some_and(|r| r.contains("[x]"))),
+        "{}",
+        client.screen_text()
+    );
+    // Opening the branch shows the pane line with its own mark.
+    for _ in 0..3 {
+        client.send(b"\x1b[A");
+    }
+    client.send(RIGHT);
+    client.send(RIGHT);
+    client.send(RIGHT);
+    assert!(
+        client.wait_until(WAIT, |c| {
+            c.screen_rows().iter().filter(|r| r.contains("[x]")).count() >= 3
+        }),
+        "{}",
+        client.screen_text()
+    );
+    // Clearing takes every mark away at the next drawing.
+    let (ok, _) = daemon
+        .command("notify.clear", &[&format!("target={far}")])
+        .unwrap();
+    assert!(ok);
+    assert!(
+        client.wait_until(WAIT, |c| !c.screen_text().contains("[x]")),
+        "{}",
+        client.screen_text()
+    );
+}

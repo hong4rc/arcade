@@ -34,6 +34,8 @@ pub struct Entry {
     pub inner: Option<Key>,
     /// A pane: there is room beside it to put another pane.
     pub room: bool,
+    /// The most urgent notification of the pane, or of the panes inside the window or session.
+    pub notice: Option<crate::notify::Class>,
 }
 
 /// What Enter does.
@@ -464,7 +466,11 @@ impl Tree {
         } else {
             ""
         };
-        format!("{mark}{indent}{opener}{name}{here}{lifted}")
+        let notice = e
+            .notice
+            .map(|c| format!(" {}", theme::notice_symbol(c)))
+            .unwrap_or_default();
+        format!("{mark}{indent}{opener}{name}{notice}{here}{lifted}")
     }
 
     pub fn draw(&self, cols: u16, rows: u16) -> Drawn {
@@ -507,6 +513,7 @@ mod tests {
     /// notes: window 1 "todo" (pane vim).
     fn entries() -> Vec<Entry> {
         let e = |key, label: &str, parent, here, inner, room| Entry {
+            notice: None,
             key,
             label: label.to_string(),
             parent,

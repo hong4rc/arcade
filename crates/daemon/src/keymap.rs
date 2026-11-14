@@ -421,6 +421,7 @@ impl Keymap {
         bind(t, with_mods(ch('.'), m), "window.next", &[], false);
         bind(t, with_mods(ch('o'), m), "pane.focus-last", &[], false);
         bind(t, with_mods(ch('g'), m), "arcade.lock", &[], false);
+        bind(t, with_mods(ch('a'), m), "notification.next", &[], false);
     }
 
     fn fill_prefix(&mut self, config: &KeysConfig) {
@@ -481,6 +482,10 @@ impl Keymap {
         bind(t, ch('t'), "tree.open", &[], false);
         bind(t, ch('m'), "pane.move", &[], false);
         bind(t, ch('M'), "window.move", &[], false);
+        bind(t, ch('a'), "notification.next", &[], false);
+        bind(t, ch('A'), "notification.list", &[], false);
+        bind(t, ch('q'), "notification.clear", &[], false);
+        bind(t, ch('Q'), "notification.clear-all", &[], false);
         bind(t, ch('['), "copy.enter", &[], false);
         bind(t, ch(']'), "pane.paste", &[], false);
         bind(t, ch(':'), "command.list", &[], false);
@@ -557,6 +562,14 @@ impl Keymap {
             false,
         );
         bind(t, plain(Code::Char(' ')), "list.lift", &[], false);
+        // Only the list of notifications uses this one.
+        bind(
+            t,
+            plain(Code::Named(Named::Delete)),
+            "list.clear",
+            &[],
+            false,
+        );
     }
 
     fn fill_copy(&mut self, config: &KeysConfig) {

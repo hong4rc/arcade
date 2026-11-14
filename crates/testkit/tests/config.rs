@@ -138,34 +138,34 @@ fn no_file_means_the_defaults() {
 fn reloading_replaces_the_key_tables_and_a_file_with_mistakes_changes_nothing() {
     let dir = config_dir();
     let file = dir.join("config.toml");
-    std::fs::write(&file, "[keys.prefix]\n\"q\" = \"pane.zoom\"\n").unwrap();
+    std::fs::write(&file, "[keys.prefix]\n\"b\" = \"pane.zoom\"\n").unwrap();
     let daemon = daemon_with(&file);
     let mut client = daemon
         .attach(AttachOptions::new().size(100, 30).named("w"))
         .unwrap();
     client.wait_for_prompt().unwrap();
     run(&daemon, "pane.split-right", &[]);
-    client.send(b"\x1b[109;5uq");
+    client.send(b"\x1b[109;5ub");
     assert!(client.wait_until(WAIT, |c| c.status_row().contains("[Z]")));
-    client.send(b"\x1b[109;5uq");
+    client.send(b"\x1b[109;5ub");
     assert!(client.wait_until(WAIT, |c| !c.status_row().contains("[Z]")));
 
     // A file with two mistakes: the old tables stay, and the lines are named.
     std::fs::write(
         &file,
-        "[keys.prefix]\n\"q\" = \"pane.fly\"\n\"w\" = \"pane.zoom\"\n[nope]\n",
+        "[keys.prefix]\n\"b\" = \"pane.fly\"\n\"w\" = \"pane.zoom\"\n[nope]\n",
     )
     .unwrap();
     let (ok, message) = run(&daemon, "arcade.reload-config", &[]);
     assert!(!ok);
     assert!(message.contains("line 2"), "{message}");
     assert!(message.contains("1 more"), "{message}");
-    client.send(b"\x1b[109;5uq");
+    client.send(b"\x1b[109;5ub");
     assert!(client.wait_until(WAIT, |c| c.status_row().contains("[Z]")));
-    client.send(b"\x1b[109;5uq");
+    client.send(b"\x1b[109;5ub");
     assert!(client.wait_until(WAIT, |c| !c.status_row().contains("[Z]")));
 
-    // A fixed file replaces the tables: `w` zooms now and `q` does nothing more.
+    // A fixed file replaces the tables: `w` zooms now and `b` does nothing more.
     std::fs::write(&file, "[keys.prefix]\n\"w\" = \"pane.zoom\"\n").unwrap();
     let (ok, message) = run(&daemon, "arcade.reload-config", &[]);
     assert!(ok, "{message}");
@@ -173,8 +173,8 @@ fn reloading_replaces_the_key_tables_and_a_file_with_mistakes_changes_nothing() 
     assert!(client.wait_until(WAIT, |c| c.status_row().contains("[Z]")));
     client.send(b"\x1b[109;5uw");
     assert!(client.wait_until(WAIT, |c| !c.status_row().contains("[Z]")));
-    client.send(b"\x1b[109;5uq");
-    assert!(client.wait_until(WAIT, |c| c.status_row().contains("no binding for q")));
+    client.send(b"\x1b[109;5ub");
+    assert!(client.wait_until(WAIT, |c| c.status_row().contains("no binding for b")));
 }
 
 #[test]

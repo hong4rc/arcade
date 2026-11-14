@@ -4,8 +4,11 @@
 
 use std::collections::VecDeque;
 
+use super::actions::Ctx;
 use super::*;
 use crate::notify::{Class, Outcome, Signal, TERMINAL_SOURCE};
+use crate::picker::{Item, Picker, PickerKind};
+use crate::tree::Key as TreeKey;
 
 /// The version of the signal contract the daemon accepts over the socket.
 const SIGNAL_VERSION: u32 = 1;
@@ -56,11 +59,13 @@ impl Server {
     /// What is drawn about notifications changed: the status bar and the marks on the panes are
     /// drawn again.
     fn notices_changed(&mut self, pane: u64) {
-        if let Some((session_id, _)) = self.locate_pane(pane)
-            && let Some(s) = self.sessions.get_mut(&session_id)
-        {
-            s.relayout = true;
-            s.chrome_dirty = true;
+        let owner = self.locate_pane(pane).map(|(s, _)| s);
+        for s in self.sessions.values_mut() {
+            // A tree that is open shows the marks of every session.
+            if Some(s.id) == owner || s.tree.is_some() {
+                s.relayout = true;
+                s.chrome_dirty = true;
+            }
         }
     }
 
@@ -144,6 +149,157 @@ impl Server {
     pub(super) fn typed_into(&mut self, pane: u64) {
         if self.notices.clear(pane) {
             self.notices_changed(pane);
+        }
+    }
+
+    /// The session, window and pane a notification sits in, for a person to read.
+    fn notice_place(&self, pane: u64) -> String {
+        let Some((session_id, window_id)) = self.locate_pane(pane) else {
+            return "gone".to_string();
+        };
+        let session = self.sessions.get(&session_id);
+        let window = session
+            .and_then(|s| s.window(window_id))
+            .map(|w| w.name.clone());
+        format!(
+            "{} {} {}",
+            session.map_or("?", |s| s.name.as_str()),
+            window.unwrap_or_default(),
+            self.pane_label(pane)
+        )
+    }
+
+    /// Go to the pane whose notification is the most urgent, the one that waited longest first
+    /// within a class. The pane that is looked at is skipped, so that pressing the key again goes
+    /// on to the next.
+    pub(super) fn notification_next(&mut self, session_id: u64) -> Result<String, String> {
+        let seen = self.sessions.get(&session_id).and_then(Self::seen_pane);
+        let next = self
+            .notices
+            .by_priority()
+            .into_iter()
+            .map(|(pane, _)| pane)
+            .find(|pane| Some(*pane) != seen && self.locate_pane(*pane).is_some());
+        match next {
+            Some(pane) => self.jump_to(session_id, TreeKey::Pane(pane)),
+            None if self.notices.is_empty() => Err("no notification is waiting".to_string()),
+            None => Err("no other pane has a notification".to_string()),
+        }
+    }
+
+    pub(super) fn notification_clear_focused(&mut self, ctx: Ctx) -> Result<String, String> {
+        let had = self.notices.clear(ctx.pane);
+        if had {
+            self.notices_changed(ctx.pane);
+        }
+        self.log_signal(
+            "key",
+            None,
+            "key",
+            Some(ctx.pane),
+            if had { "cleared" } else { "nothing to clear" },
+        );
+        Ok(String::new())
+    }
+
+    pub(super) fn notification_clear_all(&mut self) -> String {
+        let panes: Vec<u64> = self.panes.keys().copied().collect();
+        let mut cleared = 0;
+        for pane in panes {
+            if self.notices.clear(pane) {
+                self.notices_changed(pane);
+                cleared += 1;
+            }
+        }
+        self.log_signal("key", None, "key", None, &format!("cleared {cleared}"));
+        String::new()
+    }
+
+    /// The notifications as text, one per line with tab-separated fields: class, source, pane,
+    /// seconds waited, where, title, message. The most urgent first.
+    pub(super) fn notification_lines(&self) -> String {
+        let now = Instant::now();
+        self.notices
+            .by_priority()
+            .into_iter()
+            .map(|(pane, n)| {
+                format!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    n.class.name(),
+                    n.source,
+                    pane,
+                    now.duration_since(n.since).as_secs(),
+                    self.notice_place(pane),
+                    n.title,
+                    n.message
+                )
+            })
+            .collect()
+    }
+
+    /// Open the list of notifications with the line at `selected` chosen.
+    pub(super) fn open_notifications(
+        &mut self,
+        session_id: u64,
+        selected: usize,
+    ) -> Result<(), String> {
+        let now = Instant::now();
+        let items: Vec<Item> = self
+            .notices
+            .by_priority()
+            .into_iter()
+            .map(|(pane, n)| {
+                let mark = crate::theme::notice_symbol(n.class);
+                let text = match (n.title.is_empty(), n.message.is_empty()) {
+                    (false, false) => format!("{}: {}", n.title, n.message),
+                    (false, true) => n.title.clone(),
+                    (true, false) => n.message.clone(),
+                    (true, true) => String::new(),
+                };
+                let name = format!("{mark} {}  {}", n.class.name(), n.source);
+                let detail = format!(
+                    "{text}  waited {}s  {}",
+                    now.duration_since(n.since).as_secs(),
+                    self.notice_place(pane)
+                );
+                Item::new(pane as usize, name, detail.clone(), false).also_found_by(&detail)
+            })
+            .collect();
+        if items.is_empty() {
+            if let Some(s) = self.sessions.get_mut(&session_id) {
+                s.picker = None;
+                s.relayout = true;
+                s.chrome_dirty = true;
+            }
+            return Err("no notification is waiting".to_string());
+        }
+        if let Some(s) = self.sessions.get_mut(&session_id) {
+            s.picker = Some(Picker::new(
+                PickerKind::Notifications,
+                "Notifications",
+                items,
+                selected,
+            ));
+            s.relayout = true;
+            s.chrome_dirty = true;
+        }
+        Ok(())
+    }
+
+    /// Delete in the list: clear the chosen notification and show the list again without it.
+    pub(super) fn clear_from_list(
+        &mut self,
+        session_id: u64,
+        pane: u64,
+        selected: usize,
+    ) -> Result<String, String> {
+        if self.notices.clear(pane) {
+            self.notices_changed(pane);
+        }
+        self.log_signal("key", None, "key", Some(pane), "cleared");
+        // The list is made again; when nothing is left it closes.
+        match self.open_notifications(session_id, selected) {
+            Ok(()) | Err(_) => Ok(String::new()),
         }
     }
 

@@ -23,6 +23,8 @@ pub enum PickerKind {
     Windows,
     /// Run the command on the line.
     Commands,
+    /// Go to the pane on the line, which has a notification; Delete clears it.
+    Notifications,
 }
 
 pub struct Item {

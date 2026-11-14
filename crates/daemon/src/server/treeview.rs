@@ -46,7 +46,13 @@ impl Server {
         for s in sessions {
             let here = s.id == viewing;
             let session_at = entries.len();
+            let session_notice = self.notices.highest(
+                s.windows
+                    .iter()
+                    .flat_map(|w| w.layout.rects().into_iter().map(|(p, _)| p)),
+            );
             entries.push(Entry {
+                notice: session_notice,
                 key: TreeKey::Session(s.id),
                 label: s.name.clone(),
                 parent: None,
@@ -58,6 +64,9 @@ impl Server {
                 let window_here = here && w.id == s.current;
                 let window_at = entries.len();
                 entries.push(Entry {
+                    notice: self
+                        .notices
+                        .highest(w.layout.rects().into_iter().map(|(p, _)| p)),
                     key: TreeKey::Window(w.id),
                     label: format!("{} {}", w.number, w.name),
                     parent: Some(session_at),
@@ -68,6 +77,7 @@ impl Server {
                 for (pane, _) in w.layout.rects() {
                     let mut probe = w.layout.clone();
                     entries.push(Entry {
+                        notice: self.notices.get(pane).map(|n| n.class),
                         key: TreeKey::Pane(pane),
                         label: self.pane_label(pane),
                         parent: Some(window_at),
@@ -85,7 +95,7 @@ impl Server {
     /// program the pane started; then where it stands (the last part of its directory), and
     /// the program in the foreground when that is not the first one. Several panes that run the
     /// same shell tell apart by these.
-    fn pane_label(&self, pane: u64) -> String {
+    pub(super) fn pane_label(&self, pane: u64) -> String {
         let Some(p) = self.panes.get(&pane) else {
             return "pane".to_string();
         };
@@ -173,6 +183,7 @@ impl Server {
             ListCommand::Left => tree.left(),
             ListCommand::Right => tree.right(),
             ListCommand::Lift => tree.toggle_lift(),
+            ListCommand::Clear => {}
             ListCommand::FilterDelete => tree.delete_char(),
             ListCommand::FilterClear => tree.clear_filter(),
             ListCommand::Cancel => {
@@ -459,7 +470,7 @@ impl Server {
     }
 
     /// Go to a session, a window or a pane: the client changes session when it has to.
-    fn jump_to(&mut self, from: u64, key: TreeKey) -> Result<String, String> {
+    pub(super) fn jump_to(&mut self, from: u64, key: TreeKey) -> Result<String, String> {
         let (target, window, pane) = match key {
             TreeKey::Session(s) => (s, None, None),
             TreeKey::Window(w) => {
