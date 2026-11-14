@@ -176,17 +176,31 @@ fn a_ab_b(daemon: &TestDaemon) -> TestClient {
     client
 }
 
-/// The names on the lines of the open list, in order.
+/// The names on the lines of the open list, in order: what is inside the box, from the row
+/// under its top edge to the row above its bottom edge, without the filter line.
 fn lines_of_the_list(client: &mut TestClient) -> Vec<String> {
-    client
-        .content_rows()
-        .into_iter()
-        .filter(|r| r.contains('│'))
-        .filter_map(|r| {
-            let inside = r.split('│').nth(1)?.trim().to_string();
-            (!inside.is_empty() && !inside.starts_with('/')).then_some(inside)
-        })
-        .collect()
+    let rows = client.content_rows();
+    let Some(top) = rows.iter().position(|r| r.contains('┌')) else {
+        return Vec::new();
+    };
+    let left = rows[top].chars().position(|c| c == '┌').unwrap_or(0);
+    let right = rows[top].chars().position(|c| c == '┐').unwrap_or(0);
+    let mut lines = Vec::new();
+    for row in rows.iter().skip(top + 1) {
+        if row.contains('└') {
+            break;
+        }
+        let inside: String = row
+            .chars()
+            .skip(left + 1)
+            .take(right.saturating_sub(left + 1))
+            .collect();
+        let inside = inside.trim().to_string();
+        if !inside.is_empty() && !inside.starts_with('/') {
+            lines.push(inside);
+        }
+    }
+    lines
 }
 
 fn names_in_list(client: &mut TestClient, wanted: &[&str]) {
