@@ -320,6 +320,32 @@ fn a_key_that_does_not_repeat_is_typing_inside_the_repeat_window() {
 }
 
 #[test]
+fn a_message_on_the_status_bar_goes_away_by_itself_after_three_seconds() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    client.send(PREFIX);
+    client.send(b"q");
+    assert!(client.wait_until(WAIT, |c| c.status_row().contains("no binding for q")));
+    let shown = std::time::Instant::now();
+    // Not before three seconds, and back with the tabs in four.
+    let gone = client.wait_until(Duration::from_secs(4), |c| {
+        !c.status_row().contains("no binding")
+    });
+    assert!(gone, "{}", client.status_row());
+    assert!(
+        shown.elapsed() >= Duration::from_millis(2900),
+        "{:?}",
+        shown.elapsed()
+    );
+    assert!(
+        client.status_row().contains(" 1 "),
+        "{}",
+        client.status_row()
+    );
+}
+
+#[test]
 fn the_command_run_from_a_pane_gives_the_same_result_as_the_key() {
     let daemon = TestDaemon::start();
     let mut client = daemon

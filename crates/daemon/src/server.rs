@@ -1043,7 +1043,7 @@ impl Server {
             session.key_state.prompt = None;
             session.picker = None;
             if let Some(message) = self.startup_message.take() {
-                session.key_state.message = Some(message);
+                session.key_state.show_message(message, Instant::now());
             }
             session.need_full = true;
             session.sent_title = None;

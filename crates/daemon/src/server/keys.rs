@@ -6,6 +6,9 @@ use crate::keymap::{self, Binding, Keymap, typed_name};
 use crate::picker::PickerKind;
 use crate::status::Prompt;
 
+/// How long a message stays on the status bar when no key is pressed.
+const MESSAGE_LIFETIME: Duration = Duration::from_secs(3);
+
 /// Where the prefix table stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PrefixState {
@@ -38,8 +41,9 @@ pub(super) struct KeyState {
     pub prefix: PrefixState,
     pub locked: bool,
     pub prompt: Option<PromptState>,
-    /// A line shown in place of the status bar until the next key.
+    /// A line shown in place of the status bar until the next key, or until `message_until`.
     pub message: Option<String>,
+    pub message_until: Option<Instant>,
 }
 
 impl KeyState {
@@ -49,7 +53,20 @@ impl KeyState {
             locked: false,
             prompt: None,
             message: None,
+            message_until: None,
         }
+    }
+
+    /// Show a line on the status bar for `MESSAGE_LIFETIME`, or until the next key.
+    pub fn show_message(&mut self, text: String, now: Instant) {
+        self.message = Some(text);
+        self.message_until = Some(now + MESSAGE_LIFETIME);
+    }
+
+    /// Take the line away; whether there was one.
+    pub fn clear_message(&mut self) -> bool {
+        self.message_until = None;
+        self.message.take().is_some()
     }
 
     /// The prefix table is the one in effect.
@@ -59,9 +76,13 @@ impl KeyState {
 
     /// When the repeat window ends, if one is open.
     pub fn deadline(&self) -> Option<Instant> {
-        match self.prefix {
+        let repeat = match self.prefix {
             PrefixState::Repeating(t) => Some(t),
             _ => None,
+        };
+        match (repeat, self.message_until) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
     }
 
@@ -140,12 +161,15 @@ impl Server {
                 s.key_state.prefix = PrefixState::Idle;
                 s.chrome_dirty = true;
             }
+            if s.key_state.message_until.is_some_and(|t| now >= t) && s.key_state.clear_message() {
+                s.chrome_dirty = true;
+            }
         }
     }
 
     pub(super) fn set_message(&mut self, session_id: u64, text: &str) {
         if let Some(s) = self.sessions.get_mut(&session_id) {
-            s.key_state.message = Some(text.to_string());
+            s.key_state.show_message(text.to_string(), Instant::now());
             s.chrome_dirty = true;
         }
     }
@@ -173,7 +197,7 @@ impl Server {
             s.key_state.prefix = PrefixState::Idle;
             s.chrome_dirty = true;
         }
-        if s.key_state.message.take().is_some() {
+        if s.key_state.clear_message() {
             s.chrome_dirty = true;
         }
         if s.picker.is_some() {
