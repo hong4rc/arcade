@@ -450,7 +450,7 @@ fn the_command_names_in_the_keys_list_start_in_one_column_whatever_the_key_name_
     client.send(PREFIX);
     client.send(b"\x1b[47;2u");
     assert!(client.wait_until(WAIT, |c| the_keys_list_is_open(c)));
-    let mut column_of = |client: &mut TestClient, command: &str, key: &str| -> usize {
+    let column_of = |client: &mut TestClient, command: &str, key: &str| -> usize {
         step_down_until(client, key);
         let row = client
             .content_rows()
