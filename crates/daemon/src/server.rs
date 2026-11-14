@@ -969,6 +969,7 @@ impl Server {
                 let _ = self.poll.registry().deregister(&mut client.stream);
                 self.targets.remove(&(id as usize));
                 // A client that disappears only detaches; the session carries on.
+                let mut idle_panes = Vec::new();
                 for s in self.sessions.values_mut() {
                     if s.client == Some(id) {
                         s.client = None;
@@ -976,6 +977,12 @@ impl Server {
                         // The next attach redraws everything and builds them again.
                         s.screen = Screen::new();
                         s.renderer = Renderer::new();
+                        idle_panes.extend(s.all_panes());
+                    }
+                }
+                for pane in idle_panes {
+                    if let Some(pane) = self.panes.get_mut(&pane) {
+                        pane.term.release_snapshot_state();
                     }
                 }
             }

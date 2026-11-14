@@ -312,6 +312,18 @@ impl Term {
         })
     }
 
+    /// Give back what reading the screen out holds on to (a copy of every row it last read).
+    /// The next `snapshot` builds it again, and it must then be asked for in full.
+    pub fn release_snapshot_state(&mut self) {
+        if let (Ok(render), Ok(rows_iter), Ok(cells_iter)) =
+            (RenderState::new(), RowIterator::new(), CellIterator::new())
+        {
+            self.render = render;
+            self.rows_iter = rows_iter;
+            self.cells_iter = cells_iter;
+        }
+    }
+
     pub fn cols(&self) -> u16 {
         self.cols
     }
