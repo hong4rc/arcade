@@ -187,6 +187,31 @@ impl Picker {
     }
 }
 
+/// Give the notification marks in a line the colour of their class, as the status bar does, and
+/// leave the rest of the cell's style (the background of the chosen line) as it is.
+fn color_notice_marks(cells: &mut [Cell]) {
+    for class in crate::notify::Class::BY_URGENCY {
+        let mark: Vec<String> = theme::notice_symbol(class)
+            .chars()
+            .map(|c| c.to_string())
+            .collect();
+        let n = mark.len();
+        let marked = theme::notice_style(class);
+        let mut i = 0;
+        while i + n <= cells.len() {
+            if (0..n).all(|k| cells[i + k].text == mark[k]) {
+                for cell in &mut cells[i..i + n] {
+                    cell.style.fg = marked.fg;
+                    cell.style.bold = marked.bold;
+                }
+                i += n;
+            } else {
+                i += 1;
+            }
+        }
+    }
+}
+
 /// A framed box for a screen of this size: the title in the top edge, the filter line, the lines
 /// (the ones that fit, ending with the chosen one when it would be out of sight), and, when
 /// there is one, a line of its own at the bottom.
@@ -260,6 +285,7 @@ pub fn draw_box(
         let mut row = side(Symbol::PickerVertical);
         let mut body = vec![blank(style)];
         body.extend(text_cells(line, style));
+        color_notice_marks(&mut body);
         row.extend(fit(body, inner, style));
         row.extend(side(Symbol::PickerVertical));
         out.push(row);

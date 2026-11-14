@@ -50,6 +50,16 @@ pub fn footprint_kib(pid: u32) -> u64 {
         .unwrap_or(0)
 }
 
+/// The processor time this process has used so far (user and system), all threads together.
+pub fn cpu_time() -> Duration {
+    // SAFETY: getrusage fills the struct we pass.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: as above; usage is a live local.
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    let of = |t: libc::timeval| Duration::new(t.tv_sec as u64, (t.tv_usec as u32) * 1000);
+    of(usage.ru_utime) + of(usage.ru_stime)
+}
+
 /// How long the tests wait for something that should happen right away.
 pub const WAIT: Duration = Duration::from_secs(10);
 

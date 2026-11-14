@@ -803,4 +803,33 @@ mod tests {
         assert!(t.index_of(t.selected_key()).is_some());
         assert_ne!(t.selected_key(), Key::Pane(103));
     }
+
+    #[test]
+    fn the_marks_in_the_tree_have_the_colour_of_their_class() {
+        let mut list = entries();
+        list[0].notice = Some(crate::notify::Class::Error);
+        let tree = Tree::new(list, Key::Pane(101), None);
+        let drawn = tree.draw(100, 30);
+        let mut found = false;
+        for row in &drawn.rows {
+            let text: String = row
+                .iter()
+                .map(|c| {
+                    if c.text.is_empty() {
+                        " "
+                    } else {
+                        c.text.as_str()
+                    }
+                })
+                .collect();
+            if let Some(at) = text.find("[x]") {
+                let cells: Vec<&arcade_term::Cell> = row.iter().collect();
+                let style = theme::notice_style(crate::notify::Class::Error);
+                let at = text[..at].chars().count();
+                assert_eq!(cells[at].style.fg, style.fg, "{text}");
+                found = true;
+            }
+        }
+        assert!(found, "no mark was drawn");
+    }
 }

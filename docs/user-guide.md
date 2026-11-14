@@ -160,7 +160,7 @@ The prefix then `t` opens a tree with three tiers: sessions, the windows inside 
 
 The bottom line of the box always says in words what `Enter` will do, or why `Enter` does nothing.
 
-A pane line carries the mark of its own notification (`[!]`, `[?]`, `[x]` or `[i]`, section 5.8), and a window or session line carries the most urgent mark of the panes inside it, even when its branch is closed, so that you can see from the tree where something is waiting. The marks are plain text, without the colours the status bar uses.
+A pane line carries the mark of its own notification (`[!]`, `[?]`, `[x]` or `[i]`, section 5.8), and a window or session line carries the most urgent mark of the panes inside it, even when its branch is closed, so that you can see from the tree where something is waiting. The marks have the same colours as on the status bar.
 
 `m` opens the tree with the current pane already lifted (the choice on its window); `M` opens the tree with the current window already lifted (the choice on its session). Putting down works like this:
 
@@ -288,6 +288,21 @@ A program in a pane can also set the clipboard with OSC 52 when `allow-pane-writ
 - `arcade notify check [--target <pane>]` is for you to run by hand: it says which pane and which socket would be used and where the pane came from, tells whether the daemon answers, sends a test `info` notification, and exits with a non-zero code when any step fails.
 - `arcade notify log` lists what became of the last 100 signals (how long ago, from where, class, source, pane, and what happened). It keeps no title and no message.
 - It is made not to disturb the program that calls it: it waits at most 200 milliseconds, never retries, never starts a daemon, never prints, and exits with 0 whatever goes wrong. With `--strict` it prints the reason on the error output and exits with 1. Control characters in the title and message are removed, and the title, message and source are cut to 64, 256 and 32 characters.
+
+**5.10 Example: telling Arcade when Claude Code needs you.** Arcade has no code of its own for any coding agent; this is only an example of the two ways to use what is above.
+- *Nothing to set up.* Set the notification channel of Claude Code to a kind that writes an OSC escape sequence (for example the `ghostty` kind, which writes OSC 777). Arcade reads it from the pane, shows an `info` mark, and sends a notification out to your terminal as in 5.8.
+- *With classes.* Add hooks to the Claude Code settings that call `arcade notify`. The names of the hooks and the values of `notification_type` change from one Claude Code version to the next, so check them against its current hooks documentation (these were seen on version 2.1.314, except the last one, which was not tried):
+
+| Hook | Command |
+|---|---|
+| `Notification` with `notification_type` `permission_prompt` | `arcade notify --class approval --source claude-code` |
+| `Notification` with `notification_type` `agent_needs_input`, `elicitation_dialog` or `elicitation_url_dialog` | `arcade notify --class input --source claude-code` |
+| `Stop` | `arcade notify --class info --source claude-code` |
+| `StopFailure` | `arcade notify --class error --source claude-code` |
+| `UserPromptSubmit` | `arcade notify clear` |
+
+If you use both ways, the notification from the hook replaces the one from the escape sequence that comes at the same time (same source or a class at least as urgent wins, see 5.8). To tell "finished a reply" from "finished the whole task", give the hooks different `--title` values; Arcade only knows the four classes. Keep prompts, commands and transcripts out of `--message`: Arcade keeps the class, title, message, source and time of each notification in memory until it is cleared.
+- Run `arcade notify check` inside a pane to see which pane and socket a hook would use, and `arcade notify log` to see what became of the latest signals.
 
 ## 6. Not built yet
 
