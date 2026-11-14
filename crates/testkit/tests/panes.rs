@@ -315,3 +315,50 @@ fn a_column_divider_that_starts_on_a_row_divider_is_drawn_with_a_joining_sign() 
     });
     assert!(ok, "{}", client.screen_text());
 }
+
+/// Two panes side by side: `A` on the left and `B` on the right, the focus on the left one.
+fn a_left_b_right(daemon: &TestDaemon) -> TestClient {
+    let mut client = client_with_shell(daemon);
+    run(daemon, "pane.split-right");
+    client.type_line("echo B-is-here");
+    wait_in(&mut client, (51, 0, 50, 30), "B-is-here");
+    run(daemon, "pane.focus-left");
+    client.type_line("echo A-is-here");
+    wait_in(&mut client, (0, 0, 50, 30), "A-is-here");
+    client
+}
+
+#[test]
+fn swapping_trades_the_places_of_two_panes_and_the_focus_stays_with_the_pane() {
+    let daemon = TestDaemon::start();
+    let mut client = a_left_b_right(&daemon);
+    let focused = client.focused_pane_id();
+    run(&daemon, "pane.swap-right");
+    wait_in(&mut client, (51, 0, 50, 30), "A-is-here");
+    wait_in(&mut client, (0, 0, 50, 30), "B-is-here");
+    assert_eq!(client.focused_pane_id(), focused);
+    // The program in the pane was told its room (the same size here), and still answers.
+    client.type_line("echo still-A");
+    wait_in(&mut client, (51, 0, 50, 30), "still-A");
+    // With no pane that way there is a message and nothing changes.
+    let (ok, output) = daemon.command("pane.swap-right", &[]).unwrap();
+    assert!(
+        !ok && output.contains("no pane to swap with right"),
+        "{output}"
+    );
+    wait_in(&mut client, (51, 0, 50, 30), "A-is-here");
+}
+
+#[test]
+fn ctrl_and_a_direction_after_the_prefix_swaps_and_repeats() {
+    let daemon = TestDaemon::start();
+    let mut client = a_left_b_right(&daemon);
+    // Ctrl and the right arrow, as the new protocol reports it.
+    client.send(b"\x1b[109;5u");
+    client.send(b"\x1b[1;5C");
+    wait_in(&mut client, (51, 0, 50, 30), "A-is-here");
+    // The prefix table is still open: the same key again, with no prefix, swaps back.
+    client.send(b"\x1b[1;5D");
+    wait_in(&mut client, (0, 0, 50, 30), "A-is-here");
+    wait_in(&mut client, (51, 0, 50, 30), "B-is-here");
+}

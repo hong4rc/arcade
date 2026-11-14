@@ -441,6 +441,19 @@ impl Keymap {
                     &[],
                     true,
                 );
+                bind(
+                    t,
+                    with_mods(
+                        plain(code),
+                        Mods {
+                            ctrl: true,
+                            ..Mods::NONE
+                        },
+                    ),
+                    &format!("pane.swap-{}", direction_word(*d)),
+                    &[],
+                    true,
+                );
             }
         }
         bind(t, ch('|'), "pane.split-right", &[], false);

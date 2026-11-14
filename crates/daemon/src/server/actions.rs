@@ -243,6 +243,7 @@ impl Server {
             Command::PaneFocus(direction) => self.focus_direction(ctx, direction),
             Command::PaneFocusLast => self.focus_last(ctx),
             Command::PaneResize(direction) => self.resize_pane(ctx, direction),
+            Command::PaneSwap(direction) => self.swap_pane(ctx, direction),
             Command::PaneSplit(axis) => self.split_pane(ctx, axis),
             Command::PaneZoom => self.zoom_pane(ctx),
             Command::PaneClose => {
@@ -990,8 +991,9 @@ impl Server {
         }
     }
 
-    fn focus_direction(&mut self, ctx: Ctx, direction: Direction) -> Result<String, String> {
-        self.unzoom(ctx);
+    /// The pane next to the one in `ctx` in the direction, looked for from the line its cursor is
+    /// on; `None` when there is none.
+    fn pane_towards(&self, ctx: Ctx, direction: Direction) -> Result<Option<PaneId>, String> {
         let cursor = self.panes.get(&ctx.pane).map(|p| p.last_cursor);
         let Some(window) = self
             .sessions
@@ -1008,9 +1010,36 @@ impl Server {
             Direction::Left | Direction::Right => rect.y + cy,
             Direction::Up | Direction::Down => rect.x + cx,
         };
-        if let Some(next) = window.layout.neighbour(ctx.pane, direction, line) {
+        Ok(window.layout.neighbour(ctx.pane, direction, line))
+    }
+
+    fn focus_direction(&mut self, ctx: Ctx, direction: Direction) -> Result<String, String> {
+        self.unzoom(ctx);
+        if let Some(next) = self.pane_towards(ctx, direction)? {
             self.set_focus(ctx, next);
         }
+        Ok(String::new())
+    }
+
+    /// The pane trades places with the one next to it; the focus stays with it.
+    fn swap_pane(&mut self, ctx: Ctx, direction: Direction) -> Result<String, String> {
+        self.unzoom(ctx);
+        let Some(other) = self.pane_towards(ctx, direction)? else {
+            return Err(format!(
+                "no pane to swap with {}",
+                direction_name(direction)
+            ));
+        };
+        let window = self
+            .sessions
+            .get_mut(&ctx.session)
+            .and_then(|s| s.window_mut(ctx.window))
+            .ok_or_else(|| "no such window".to_string())?;
+        window
+            .layout
+            .swap(ctx.pane, other)
+            .map_err(|_| "no such pane".to_string())?;
+        self.window_changed(ctx);
         Ok(String::new())
     }
 
@@ -1343,5 +1372,14 @@ fn binding_line(binding: &Binding) -> String {
         binding.command.clone()
     } else {
         format!("{} {}", binding.command, binding.args.join(" "))
+    }
+}
+
+fn direction_name(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Left => "left",
+        Direction::Down => "down",
+        Direction::Up => "up",
+        Direction::Right => "right",
     }
 }

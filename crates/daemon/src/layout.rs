@@ -124,6 +124,19 @@ fn split_sizes(
 }
 
 impl Node {
+    /// Put `a` where `b` is and `b` where `a` is.
+    fn swap_leaves(&mut self, a: PaneId, b: PaneId) {
+        match self {
+            Node::Leaf(p) if *p == a => *p = b,
+            Node::Leaf(p) if *p == b => *p = a,
+            Node::Leaf(_) => {}
+            Node::Split(s) => {
+                s.a.swap_leaves(a, b);
+                s.b.swap_leaves(a, b);
+            }
+        }
+    }
+
     /// The room this subtree needs along `along` for every pane in it to have `cols` columns and
     /// `rows` rows.
     fn need(&self, along: Axis, cols: u16, rows: u16) -> u16 {
@@ -426,6 +439,15 @@ impl Layout {
             self.root = before;
             Err(LayoutError::TooSmall)
         }
+    }
+
+    /// Put two panes in each other's place; the rooms stay as they are.
+    pub fn swap(&mut self, a: PaneId, b: PaneId) -> Result<(), LayoutError> {
+        if !self.contains(a) || !self.contains(b) {
+            return Err(LayoutError::NoSuchPane);
+        }
+        self.root.swap_leaves(a, b);
+        Ok(())
     }
 
     /// Remove a pane and give its room to its neighbour. Returns the pane that took the room.
@@ -812,5 +834,26 @@ mod tests {
             );
         }
         assert_eq!(l.least_room(), (3, 5));
+    }
+
+    #[test]
+    fn swapping_two_panes_keeps_every_room_and_trades_who_is_in_it() {
+        let mut l = Layout::new(1, 101, 30);
+        l.split(1, Axis::LeftRight, 2).unwrap();
+        l.split(2, Axis::TopBottom, 3).unwrap();
+        let before = l.rects();
+        l.swap(1, 3).unwrap();
+        let after = l.rects();
+        assert_eq!(after.len(), before.len());
+        for ((pa, ra), (pb, rb)) in before.iter().zip(&after) {
+            assert_eq!(ra, rb);
+            let expected = match pa {
+                1 => 3,
+                3 => 1,
+                other => *other,
+            };
+            assert_eq!(*pb, expected);
+        }
+        assert_eq!(l.swap(1, 9), Err(LayoutError::NoSuchPane));
     }
 }
