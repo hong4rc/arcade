@@ -602,3 +602,79 @@ fn a_prefix_set_to_ctrl_b_works_with_the_old_byte() {
     client.send(b"|");
     wait_panes(&mut client, &daemon, 2);
 }
+
+fn hint_is_shown(client: &TestClient) -> bool {
+    client.screen_text().contains("After ctrl+m")
+}
+
+#[test]
+fn the_prefix_with_no_key_after_it_shows_the_hint_and_a_key_closes_it_and_runs() {
+    let daemon = TestDaemon::start();
+    let mut client = raw_pane(&daemon);
+    client.send(PREFIX);
+    // Not at once: the hint waits for half a second.
+    std::thread::sleep(Duration::from_millis(100));
+    client.read_more(std::time::Instant::now() + Duration::from_millis(50));
+    assert!(!hint_is_shown(&client), "{}", client.screen_text());
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        client.wait_until(WAIT, |c| hint_is_shown(c)),
+        "{}",
+        client.screen_text()
+    );
+    let text = client.screen_text();
+    assert!(
+        text.contains("pane.split-right") && text.contains("window.new"),
+        "{text}"
+    );
+    let row_of = |needle: &str| {
+        text.lines()
+            .find(|l| l.contains(needle))
+            .unwrap()
+            .to_string()
+    };
+    assert!(row_of("pane.split-right").contains("| "), "{text}");
+    assert!(row_of("window.new").contains("c "), "{text}");
+    // A key closes it and its action runs as it always does.
+    client.send(b"c");
+    assert!(
+        client.wait_until(WAIT, |c| !hint_is_shown(c)),
+        "{}",
+        client.screen_text()
+    );
+    let (_, windows) = daemon.command("window.list", &[]).unwrap();
+    assert_eq!(windows.lines().count(), 2, "{windows}");
+}
+
+#[test]
+fn a_key_that_follows_the_prefix_quickly_never_shows_the_hint() {
+    let daemon = TestDaemon::start();
+    let mut client = raw_pane(&daemon);
+    client.send(PREFIX);
+    std::thread::sleep(Duration::from_millis(100));
+    client.send(b"c");
+    // Look for longer than the delay: the hint must not come.
+    let deadline = std::time::Instant::now() + Duration::from_millis(900);
+    while std::time::Instant::now() < deadline {
+        client.read_more(std::time::Instant::now() + Duration::from_millis(50));
+        assert!(!hint_is_shown(&client), "{}", client.screen_text());
+    }
+    let (_, windows) = daemon.command("window.list", &[]).unwrap();
+    assert_eq!(windows.lines().count(), 2, "{windows}");
+}
+
+#[test]
+fn the_hint_does_not_show_in_the_repeat_window() {
+    let daemon = TestDaemon::start();
+    let mut client = raw_pane(&daemon);
+    run(&daemon, "pane.split-right", &[]);
+    // `H` is repeatable: after it the table stays open, and no hint comes of that.
+    client.send(PREFIX);
+    client.send(b"H");
+    std::thread::sleep(Duration::from_millis(300));
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+    while std::time::Instant::now() < deadline {
+        client.read_more(std::time::Instant::now() + Duration::from_millis(50));
+        assert!(!hint_is_shown(&client), "{}", client.screen_text());
+    }
+}

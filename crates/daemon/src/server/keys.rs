@@ -9,6 +9,9 @@ use crate::status::Prompt;
 /// How long a message stays on the status bar when no key is pressed.
 const MESSAGE_LIFETIME: Duration = Duration::from_secs(3);
 
+/// How long the prefix waits for a key before the hint of the keys shows.
+const HINT_DELAY: Duration = Duration::from_millis(500);
+
 /// Where the prefix table stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PrefixState {
@@ -46,6 +49,10 @@ pub(super) struct KeyState {
     /// A line shown in place of the status bar until the next key, or until `message_until`.
     pub message: Option<String>,
     pub message_until: Option<Instant>,
+    /// When the key hint shows, while the prefix is waiting for a key and it is not showing yet.
+    pub hint_at: Option<Instant>,
+    /// The hint of the keys is on the screen.
+    pub hint_shown: bool,
 }
 
 impl KeyState {
@@ -56,7 +63,14 @@ impl KeyState {
             prompt: None,
             message: None,
             message_until: None,
+            hint_at: None,
+            hint_shown: false,
         }
+    }
+
+    /// The key hint is on the screen.
+    pub fn hint_visible(&self) -> bool {
+        self.prefix == PrefixState::Awaiting && self.hint_shown
     }
 
     /// Show a line on the status bar for `MESSAGE_LIFETIME`, or until the next key.
@@ -82,10 +96,13 @@ impl KeyState {
             PrefixState::Repeating(t) => Some(t),
             _ => None,
         };
-        match (repeat, self.message_until) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let hint = self
+            .hint_at
+            .filter(|_| self.prefix == PrefixState::Awaiting);
+        [repeat, self.message_until, hint]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     pub fn status_prompt(&self) -> Option<Prompt> {
@@ -174,6 +191,13 @@ impl Server {
             if s.key_state.message_until.is_some_and(|t| now >= t) && s.key_state.clear_message() {
                 s.chrome_dirty = true;
             }
+            if s.key_state.prefix == PrefixState::Awaiting
+                && s.key_state.hint_at.is_some_and(|t| now >= t)
+            {
+                s.key_state.hint_at = None;
+                s.key_state.hint_shown = true;
+                s.chrome_dirty = true;
+            }
         }
     }
 
@@ -188,8 +212,19 @@ impl Server {
         if let Some(s) = self.sessions.get_mut(&session_id)
             && s.key_state.prefix != state
         {
+            let was_awaiting = s.key_state.prefix == PrefixState::Awaiting;
             s.key_state.prefix = state;
             s.chrome_dirty = true;
+            if state == PrefixState::Awaiting {
+                s.key_state.hint_at = Some(Instant::now() + HINT_DELAY);
+                s.key_state.hint_shown = false;
+            } else if was_awaiting {
+                s.key_state.hint_at = None;
+                if std::mem::take(&mut s.key_state.hint_shown) {
+                    // What the hint covered is drawn again.
+                    s.relayout = true;
+                }
+            }
         }
     }
 
@@ -501,5 +536,30 @@ impl Server {
         if bracketed {
             self.write_to_pane(pane_id, b"\x1b[201~");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nothing_is_waited_for_when_idle_and_the_hint_is_a_single_deadline() {
+        let mut state = KeyState::new();
+        assert_eq!(state.deadline(), None);
+        let at = Instant::now() + HINT_DELAY;
+        state.prefix = PrefixState::Awaiting;
+        state.hint_at = Some(at);
+        assert_eq!(state.deadline(), Some(at));
+        // Once the hint is up there is nothing more to wait for.
+        state.hint_at = None;
+        state.hint_shown = true;
+        assert_eq!(state.deadline(), None);
+        assert!(state.hint_visible());
+        // A hint time left behind by a prefix that ended is not a deadline.
+        state.prefix = PrefixState::Idle;
+        state.hint_at = Some(at);
+        assert_eq!(state.deadline(), None);
+        assert!(!state.hint_visible());
     }
 }

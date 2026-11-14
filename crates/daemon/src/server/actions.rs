@@ -332,6 +332,8 @@ impl Server {
                 }
                 session.key_state.locked = !session.key_state.locked;
                 session.key_state.prefix = keys::PrefixState::Idle;
+                session.key_state.hint_shown = false;
+                session.relayout = true;
                 session.chrome_dirty = true;
                 Ok(String::new())
             }

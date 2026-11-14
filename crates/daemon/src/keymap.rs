@@ -175,6 +175,39 @@ pub fn parse_key(text: &str) -> Result<Key, String> {
 /// The words for a key, as `parse_key` reads them.
 /// The key as a person would say it: what was typed (`?`, `A`, `|`) for a shifted symbol or
 /// letter, and `key_name` for the rest. The symbols are those of the US layout, as in `normalize`.
+/// The lines of the key hint: one for each thing the table does, with the keys that do it
+/// (`h/left`), in the order of the things.
+pub fn hint_lines(table: &Table) -> Vec<String> {
+    let mut by_action: Vec<(String, Vec<String>)> = Vec::new();
+    for (key, b) in table {
+        let action = if b.args.is_empty() {
+            b.command.clone()
+        } else {
+            format!("{} {}", b.command, b.args.join(" "))
+        };
+        match by_action.iter_mut().find(|(a, _)| *a == action) {
+            Some((_, keys)) => keys.push(typed_name(*key)),
+            None => by_action.push((action, vec![typed_name(*key)])),
+        }
+    }
+    by_action.sort();
+    let keys: Vec<(String, String)> = by_action
+        .into_iter()
+        .map(|(action, mut keys)| {
+            keys.sort();
+            (keys.join("/"), action)
+        })
+        .collect();
+    let width = keys
+        .iter()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0);
+    keys.into_iter()
+        .map(|(k, action)| format!("{k:<width$}  {action}"))
+        .collect()
+}
+
 pub fn typed_name(key: Key) -> String {
     let only_shift = key.mods.shift && !key.mods.ctrl && !key.mods.alt && !key.mods.super_key;
     if let (true, Code::Char(c)) = (only_shift, key.code) {

@@ -268,6 +268,15 @@ impl Server {
             let drawn = picker.draw(cols, rows);
             session.screen.overlay(drawn.x, drawn.y, &drawn.rows);
         }
+        if !picker_open && session.key_state.hint_visible() {
+            let lines = crate::keymap::hint_lines(&self.keymap.prefix);
+            let title = format!(
+                "After {}",
+                crate::keymap::typed_name(self.config.keys.prefix)
+            );
+            let drawn = crate::picker::draw_hint(&title, &lines, cols, rows);
+            session.screen.overlay(drawn.x, drawn.y, &drawn.rows);
+        }
         let cursor_override = if picker_open {
             Some((0, 0))
         } else {

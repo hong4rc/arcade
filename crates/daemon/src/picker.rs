@@ -246,6 +246,69 @@ impl Picker {
     }
 }
 
+/// The key hint: a framed box of lines in as many columns as the screen has room for. Lines
+/// that do not fit are left out.
+pub fn draw_hint(title: &str, lines: &[String], cols: u16, rows: u16) -> Drawn {
+    let plain = theme::style(Role::Picker);
+    let side = |c: Symbol| text_cells(theme::symbol(c), plain);
+    let rule = text_cells(theme::symbol(Symbol::PickerHorizontal), plain);
+    let line_width = lines
+        .iter()
+        .map(|l| text_cells(l, Default::default()).len())
+        .max()
+        .unwrap_or(0);
+    // The frame and one column of room on each side take four columns, two rows go to the frame.
+    let room = usize::from(rows).saturating_sub(2).max(1);
+    let most = usize::from(cols).saturating_sub(4).max(1);
+    let gap = 3;
+    let per_column = room.min(lines.len()).max(1);
+    let columns_wanted = lines.len().div_ceil(per_column);
+    let columns = columns_wanted.min(((most + gap) / (line_width + gap)).max(1));
+    let shown = &lines[..lines.len().min(columns * per_column)];
+    let height = per_column.min(shown.len());
+    let inner = (columns * line_width + (columns - 1) * gap + 2)
+        .max(text_cells(title, Default::default()).len() + 4)
+        .min(usize::from(cols).saturating_sub(2).max(1));
+    let width = inner + 2;
+    let x = (usize::from(cols).saturating_sub(width) / 2) as u16;
+    let y = (usize::from(rows).saturating_sub(height + 2) / 2) as u16;
+
+    let mut out: Vec<Vec<Cell>> = Vec::new();
+    let mut top = side(Symbol::PickerTopLeft);
+    let title_text = format!(" {title} ");
+    let title_len = text_cells(&title_text, plain).len();
+    let mut title_cells = fit(text_cells(&title_text, plain), inner, plain);
+    for cell in title_cells.iter_mut().skip(title_len) {
+        *cell = rule[0].clone();
+    }
+    top.extend(title_cells);
+    top.extend(side(Symbol::PickerTopRight));
+    out.push(top);
+    for row_index in 0..height {
+        let mut body = vec![blank(plain)];
+        for column in 0..columns {
+            let line = shown.get(column * per_column + row_index);
+            let mut cells = line.map_or_else(Vec::new, |l| text_cells(l, plain));
+            cells = fit(cells, line_width, plain);
+            body.extend(cells);
+            if column + 1 < columns {
+                body.extend((0..gap).map(|_| blank(plain)));
+            }
+        }
+        let mut row = side(Symbol::PickerVertical);
+        row.extend(fit(body, inner, plain));
+        row.extend(side(Symbol::PickerVertical));
+        out.push(row);
+    }
+    let mut bottom = side(Symbol::PickerBottomLeft);
+    for _ in 0..inner {
+        bottom.extend(rule.clone());
+    }
+    bottom.extend(side(Symbol::PickerBottomRight));
+    out.push(bottom);
+    Drawn { x, y, rows: out }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,5 +434,23 @@ mod tests {
         p.type_text("zoom");
         assert_eq!(p.shown().count(), 1);
         assert_eq!(p.chosen().unwrap().id, 0);
+    }
+
+    #[test]
+    fn the_hint_uses_more_columns_when_the_lines_do_not_fit_in_one() {
+        let lines: Vec<String> = (0..30).map(|i| format!("k{i}  action-{i}")).collect();
+        let d = draw_hint("Prefix", &lines, 80, 12);
+        // Ten lines in a column, three columns, and the frame.
+        assert_eq!(d.rows.len(), 12);
+        assert!(text(&d.rows[1]).contains("k0 ") && text(&d.rows[1]).contains("k10"));
+        let width = d.rows[0].len();
+        assert!(d.rows.iter().all(|r| r.len() == width) && width <= 80);
+    }
+
+    #[test]
+    fn a_hint_on_a_tiny_screen_still_fits() {
+        let lines: Vec<String> = (0..30).map(|i| format!("k{i}  an-action-{i}")).collect();
+        let d = draw_hint("Prefix", &lines, 20, 5);
+        assert!(d.rows.len() <= 5 && d.rows[0].len() <= 20);
     }
 }
