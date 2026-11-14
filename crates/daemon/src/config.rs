@@ -94,7 +94,7 @@ impl Default for Config {
             clipboard: ClipboardConfig {
                 mode: ClipboardMode::Osc52,
                 command: None,
-                allow_pane_write: false,
+                allow_pane_write: true,
             },
         }
     }

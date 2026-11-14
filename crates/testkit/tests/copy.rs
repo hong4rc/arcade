@@ -293,11 +293,19 @@ fn pasting_with_nothing_copied_says_so() {
 }
 
 #[test]
-fn a_program_writing_the_clipboard_is_heard_only_when_the_settings_allow_it() {
+fn a_program_writing_the_clipboard_is_heard_by_default_and_not_when_the_settings_forbid_it() {
     let ask = r"printf '\033]52;c;%s\a' $(printf from-pane | base64)";
-    // Off by default: nothing is sent, and the buffer stays empty.
+    // On by default: the client is sent exactly one sequence.
     let daemon = TestDaemon::start();
     let mut client = client(&daemon);
+    client.type_line(ask);
+    wait_clipboard(&mut client, 1);
+    std::thread::sleep(Duration::from_millis(200));
+    client.read_more(std::time::Instant::now() + Duration::from_millis(50));
+    assert_eq!(client.clipboard_writes, vec![b"from-pane".to_vec()]);
+    // Forbidden by `allow-pane-write = false`: nothing is sent, and the buffer stays empty.
+    let daemon = TestDaemon::start_with(|c| c.config.clipboard.allow_pane_write = false);
+    let mut client = self::client(&daemon);
     client.type_line(ask);
     client.wait_for_prompt().unwrap();
     std::thread::sleep(Duration::from_millis(200));
@@ -306,12 +314,6 @@ fn a_program_writing_the_clipboard_is_heard_only_when_the_settings_allow_it() {
     client.send(PREFIX);
     client.send(b"]");
     message_has(&mut client, "nothing has been copied");
-    // Allowed: it is sent the way a copy is.
-    let daemon = TestDaemon::start_with(|c| c.config.clipboard.allow_pane_write = true);
-    let mut client = self::client(&daemon);
-    client.type_line(ask);
-    wait_clipboard(&mut client, 1);
-    assert_eq!(client.clipboard_writes[0], b"from-pane".to_vec());
 }
 
 #[test]
