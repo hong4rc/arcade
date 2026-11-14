@@ -119,7 +119,7 @@ fn paste_and_compare(bracketed: bool, reader_starts_after: &str) {
     let mut client = raw_pane(
         &daemon,
         &format!(
-            "{on}{reader_starts_after}head -c {total} > {}; stty sane; echo finished",
+            "{on}{reader_starts_after}head -c {total} > {}; stty sane; echo fin''ished",
             file.display()
         ),
     );
