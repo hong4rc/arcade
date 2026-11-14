@@ -163,6 +163,21 @@ impl Server {
                 problems.push(format!("pane {pane} belongs to no window"));
             }
         }
+        for (pane, n) in self.notices.by_priority() {
+            if !self.panes.contains_key(&pane) || !in_layouts.contains(&pane) {
+                problems.push(format!("pane {pane} has a notification and is gone"));
+            }
+            let texts = [
+                (&n.title, crate::notify::TITLE_LIMIT),
+                (&n.message, crate::notify::MESSAGE_LIMIT),
+                (&n.source, crate::notify::SOURCE_LIMIT),
+            ];
+            for (text, limit) in texts {
+                if text.chars().count() > limit || text.chars().any(char::is_control) {
+                    problems.push(format!("pane {pane}: a notification text is not clean"));
+                }
+            }
+        }
         if problems.is_empty() {
             (true, "ok".to_string())
         } else {

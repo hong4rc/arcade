@@ -331,13 +331,17 @@ impl Server {
         let session = self.sessions.get(&session_id);
         let window = session
             .and_then(|s| s.window(window_id))
-            .map(|w| w.name.clone());
-        format!(
-            "{} {} {}",
-            session.map_or("?", |s| s.name.as_str()),
-            window.unwrap_or_default(),
-            self.pane_label(pane)
-        )
+            .map(|w| format!("{} {}", w.number, w.name))
+            .unwrap_or_default();
+        // The same path the tree shows when it is filtered: session, window, pane.
+        [
+            session.map_or("?", |s| s.name.as_str()).to_string(),
+            window,
+            self.pane_label(pane),
+        ]
+        .join(crate::theme::symbol(
+            crate::theme::Symbol::TreePathSeparator,
+        ))
     }
 
     /// Go to the pane whose notification is the most urgent, the one that waited longest first

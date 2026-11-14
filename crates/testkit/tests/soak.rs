@@ -366,6 +366,7 @@ impl Soak {
                 self.note("types a run of output".to_string());
                 self.keys(b"yes 'soak line' | head -n 700\r");
             }
+            97..=98 => self.notice(),
             _ => self.command("arcade.reload-config", &[]),
         }
         self.drain();
@@ -526,6 +527,67 @@ impl Soak {
         self.keys(ESCAPE);
     }
 
+    /// Signals for panes (the numbers are guesses: some panes are gone, and the daemon must
+    /// say so and go on), the keys that go to and clear notifications, and the terminal losing
+    /// and getting the focus.
+    fn notice(&mut self) {
+        let pane = (self.rng.below(40) + 1).to_string();
+        match self.rng.below(10) {
+            0..=3 => {
+                let class = *self.rng.pick(&["info", "input", "approval", "error"]);
+                let source = *self.rng.pick(&["a", "b", "claude-code"]);
+                let text = *self
+                    .rng
+                    .pick(&["done", "need you\x1b]0;x\x07", "tab\there", ""]);
+                self.note(format!("signals pane {pane}: {class} from {source}"));
+                let args = [
+                    "version=1".to_string(),
+                    format!("target={pane}"),
+                    format!("class={class}"),
+                    format!("source={source}"),
+                    format!("message={text}"),
+                ];
+                let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                let _ = self.daemon.command("notify.send", &refs);
+            }
+            4 => {
+                self.note(format!("clears pane {pane}"));
+                let _ = self
+                    .daemon
+                    .command("notify.clear", &[&format!("target={pane}")]);
+            }
+            5 => {
+                self.note("jumps to a notification".to_string());
+                self.keys(b"\x1b[97;7u");
+            }
+            6 => {
+                self.note("opens the list of notifications".to_string());
+                self.keys(PREFIX);
+                self.keys(b"a");
+                for k in [&b"\x1b[B"[..], b"\x1b[3~", b"x", b"\r"]
+                    .iter()
+                    .take(self.rng.below(5))
+                {
+                    self.keys(k);
+                }
+                self.keys(ESCAPE);
+            }
+            7 => {
+                self.note("clears every notification".to_string());
+                self.keys(PREFIX);
+                self.keys(b"A");
+            }
+            8 => {
+                self.note("the terminal loses the focus".to_string());
+                self.keys(b"\x1b[O");
+            }
+            _ => {
+                self.note("the terminal gets the focus".to_string());
+                self.keys(b"\x1b[I");
+            }
+        }
+    }
+
     fn second_session(&mut self) {
         let names = self.session_names();
         if names.len() >= 3 {
@@ -573,9 +635,12 @@ impl Soak {
 
     /// Everything that must hold, looked at when the daemon is quiet.
     fn check(&mut self) {
-        // Quiet: close lists and prompts, end the repeat window, clear any message.
+        // Quiet: close lists and prompts, end the repeat window, clear any message. The terminal
+        // is looked at: a client that takes the session over starts out looking at it, and what
+        // goes away when the pane is looked at must have gone away on this one too.
         self.keys(ESCAPE);
         self.keys(ESCAPE);
+        self.keys(b"\x1b[I");
         settle(&mut self.client);
         if ended(&self.client) {
             self.reattach();

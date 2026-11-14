@@ -175,13 +175,9 @@ fn notify(daemon: &TestDaemon, pane: u64, class: &str, source: &str, text: &str)
 fn three_panes(daemon: &TestDaemon) -> (TestClient, [u64; 3]) {
     let mut client = start(daemon);
     let first = client.focused_pane_id();
-    client.send(PREFIX);
-    client.send(b"|");
-    assert!(client.wait_until(WAIT, |c| c.screen_text().contains('│')));
+    client.split_right();
     let second = client.focused_pane_id();
-    client.send(PREFIX);
-    client.send(b"|");
-    assert!(client.wait_until(WAIT, |c| c.screen_text().matches('│').count() >= 2));
+    client.split_right();
     let third = client.focused_pane_id();
     (client, [first, second, third])
 }
@@ -247,6 +243,8 @@ fn the_list_shows_what_waits_and_enter_goes_to_the_chosen_pane() {
     assert!(text.contains("claude") && text.contains("may I"), "{text}");
     assert!(text.contains("build") && text.contains("failed"), "{text}");
     assert!(text.contains("waited"), "{text}");
+    // Where the pane is, as the tree path: session, window number and name, pane.
+    assert!(text.contains("work \u{203a} 1 "), "{text}");
     // The most urgent is first and chosen: moving down picks the error one.
     client.send(DOWN);
     client.send(ENTER);
