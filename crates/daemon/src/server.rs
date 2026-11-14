@@ -44,6 +44,7 @@ use keys::KeyState;
 mod actions;
 mod frame;
 mod keys;
+mod mouse;
 
 const LISTENER: Token = Token(0);
 const WAKER: Token = Token(1);
@@ -257,6 +258,8 @@ struct Session {
     key_state: KeyState,
     /// The floating list, while one is open.
     picker: Option<Picker>,
+    /// A mouse button held down since a press in a pane.
+    drag: Option<mouse::Drag>,
 }
 
 /// The shortest time between two looks at the panes' directories for the windows' names.
@@ -1063,6 +1066,9 @@ impl Server {
         if let Some(c) = self.clients.get_mut(&id) {
             c.state = ClientState::Attached(session_id);
         }
+        if let Some(session) = self.sessions.get_mut(&session_id) {
+            session.drag = None;
+        }
         self.send(id, &ServerMessage::Attached { session: name });
         self.resize_session(session_id, cols, rows);
     }
@@ -1256,6 +1262,7 @@ impl Server {
                 keys: KeyReader::new(),
                 key_state: KeyState::new(),
                 picker: None,
+                drag: None,
             },
         );
         Ok(session_id)
@@ -1293,6 +1300,7 @@ impl Server {
         else {
             return;
         };
+        self.send_output(client_id, crate::render::MOUSE_OFF);
         self.send(
             client_id,
             &ServerMessage::Detached {

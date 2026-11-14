@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicI32, Ordering};
 /// What to write to the host terminal when the client leaves, whatever the way it leaves:
 /// give the keyboard back (the kitty protocol off), show the cursor, restore its shape and the colors, end synchronized output, turn off the key
 /// modes the pane had turned on, go back to the normal screen, and give back the title the
-/// terminal's window had before (`CSI 23;2t`).
-pub const RESTORE_SEQUENCE: &[u8] =
-    b"\x1b[<u\x1b[0m\x1b[0 q\x1b[?25h\x1b[?2026l\x1b[?1l\x1b[?2004l\x1b[?1049l\x1b[23;2t";
+/// terminal's window had before (`CSI 23;2t`). The mouse reports the daemon asked for are turned
+/// off too, in case the daemon could not do it.
+pub const RESTORE_SEQUENCE: &[u8] = b"\x1b[<u\x1b[0m\x1b[0 q\x1b[?25h\x1b[?2026l\x1b[?1l\x1b[?2004l\x1b[?1002l\x1b[?1006l\x1b[?1049l\x1b[23;2t";
 
 /// Save the title of the terminal's window (`CSI 22;2t`), switch to the alternate screen, where the multiplexer draws, and ask for the kitty keyboard
 /// protocol (flag 1) so that Esc, Ctrl+m and Ctrl+i can be told from Enter and Tab.
@@ -156,5 +156,16 @@ impl Drop for Signals {
             libc::close(self.read_fd);
             libc::close(self.write_fd);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leaving_gives_the_mouse_back_even_when_the_daemon_could_not() {
+        let has = |needle: &[u8]| RESTORE_SEQUENCE.windows(needle.len()).any(|w| w == needle);
+        assert!(has(b"\x1b[?1002l") && has(b"\x1b[?1006l"));
     }
 }

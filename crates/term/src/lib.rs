@@ -205,6 +205,19 @@ pub enum Mode {
     AppCursorKeys,
 }
 
+/// How much of the mouse a program asked to be told about (DEC modes 9 and 1000 to 1003).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MouseLevel {
+    /// The program did not ask: the mouse is not its business.
+    Off,
+    /// Presses, releases and the wheel (modes 9 and 1000).
+    Press,
+    /// Also moves while a button is held (mode 1002).
+    Drag,
+    /// Also every move (mode 1003).
+    Any,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompressProgress {
     /// More work remains; call [`Term::compress_step`] again while the pane stays idle.
@@ -546,6 +559,20 @@ impl Term {
                 .kitty_keyboard_flags()
                 .ok()
                 .map(|flags| flags != KittyKeyFlags::DISABLED),
+        }
+    }
+
+    /// How much of the mouse the program asked to be told about.
+    pub fn mouse_level(&self) -> MouseLevel {
+        let on = |m: GMode| self.term.mode(m).unwrap_or(false);
+        if on(GMode::ANY_MOUSE) {
+            MouseLevel::Any
+        } else if on(GMode::BUTTON_MOUSE) {
+            MouseLevel::Drag
+        } else if on(GMode::NORMAL_MOUSE) || on(GMode::X10_MOUSE) {
+            MouseLevel::Press
+        } else {
+            MouseLevel::Off
         }
     }
 

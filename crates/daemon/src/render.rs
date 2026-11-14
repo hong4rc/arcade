@@ -135,7 +135,14 @@ pub struct HostModes {
     pub app_cursor_keys: bool,
     /// Pasted text is wrapped in `ESC [ 200 ~` and `ESC [ 201 ~`.
     pub bracketed_paste: bool,
+    /// The host terminal reports the mouse (presses, releases, moves with a button held, the
+    /// wheel), in the SGR form.
+    pub mouse: bool,
 }
+
+/// Ask the host terminal for the mouse, and give it back.
+pub const MOUSE_ON: &[u8] = b"\x1b[?1002h\x1b[?1006h";
+pub const MOUSE_OFF: &[u8] = b"\x1b[?1002l\x1b[?1006l";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SentCursor {
@@ -214,6 +221,9 @@ impl Renderer {
         }
         if modes_changed {
             let previous = self.modes.unwrap_or_default();
+            if self.modes.is_none() || previous.mouse != modes.mouse {
+                out.extend_from_slice(if modes.mouse { MOUSE_ON } else { MOUSE_OFF });
+            }
             if self.modes.is_none() || previous.app_cursor_keys != modes.app_cursor_keys {
                 out.extend_from_slice(if modes.app_cursor_keys {
                     b"\x1b[?1h"
@@ -235,5 +245,41 @@ impl Renderer {
         self.cursor = Some(sent);
         self.modes = Some(modes);
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn has(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn the_mouse_is_asked_for_once_and_given_back_when_it_is_turned_off() {
+        let mut screen = Screen::new();
+        screen.resize(10, 3);
+        let cursor = Cursor {
+            x: 0,
+            y: 0,
+            visible: true,
+            shape: CursorShape::Block,
+            blinking: false,
+        };
+        let mut renderer = Renderer::new();
+        let on = HostModes {
+            mouse: true,
+            ..HostModes::default()
+        };
+        let first = renderer.render(&mut screen, &cursor, on);
+        assert!(has(&first, MOUSE_ON));
+        let again = renderer.render(&mut screen, &cursor, on);
+        assert!(
+            !has(&again, b"?1002") && !has(&again, b"?1006"),
+            "{again:?}"
+        );
+        let off = renderer.render(&mut screen, &cursor, HostModes::default());
+        assert!(has(&off, MOUSE_OFF));
     }
 }

@@ -71,6 +71,9 @@ pub struct Copy {
     pub search: Option<(String, bool)>,
     /// The view must be drawn again.
     pub dirty: bool,
+    /// A turn of the wheel opened copy mode (and nothing else has been done in it since): it
+    /// closes by itself when the wheel brings the view back to the live screen.
+    pub by_wheel: bool,
     /// What the oldest row, the cursor's row and the selected row said when copy mode last
     /// looked, to find them again when old lines have been cut off the top of the scrollback.
     marks: Marks,
@@ -295,6 +298,7 @@ impl Copy {
             selection: None,
             search: None,
             dirty: true,
+            by_wheel: false,
             marks: Marks::default(),
         }
         .remembered(src)
@@ -379,8 +383,50 @@ impl Copy {
         self.settle(src);
     }
 
+    /// Move the view `lines` rows (up when negative) and keep the cursor inside it.
+    pub fn scroll<S: Source>(&mut self, src: &S, lines: isize) {
+        self.follow(src);
+        let total = src.total().max(1);
+        let rows = usize::from(self.rows.max(1));
+        let last_top = total.saturating_sub(rows);
+        self.top = self.top.saturating_add_signed(lines).min(last_top);
+        self.row = self
+            .row
+            .clamp(self.top, (self.top + rows - 1).min(total - 1));
+        self.settle(src);
+        self.remember(src);
+    }
+
+    /// The view shows the last rows, the live screen.
+    pub fn at_bottom<S: Source>(&self, src: &S) -> bool {
+        self.top + usize::from(self.rows) >= src.total()
+    }
+
+    /// Select from one cell of the view to another, character by character, with the cursor at
+    /// the second. Cells outside the view are moved into it.
+    pub fn select_between<S: Source>(&mut self, src: &S, from: (u16, u16), to: (u16, u16)) {
+        self.follow(src);
+        let last_row = self.rows.saturating_sub(1);
+        let last_col = self.cols.saturating_sub(1);
+        let anchor_row = self.top + usize::from(from.1.min(last_row));
+        let anchor_line = self.line_at(src, anchor_row);
+        self.selection = Some(Selection {
+            kind: SelectionKind::Char,
+            row: anchor_row,
+            col: snap(&anchor_line, from.0.min(last_col)),
+        });
+        self.go(
+            src,
+            self.top + usize::from(to.1.min(last_row)),
+            to.0.min(last_col),
+        );
+        self.by_wheel = false;
+        self.remember(src);
+    }
+
     /// Run one command. The commands that end copy mode or copy something say so in the result.
     pub fn apply<S: Source>(&mut self, src: &S, command: CopyCommand) -> Outcome {
+        self.by_wheel = false;
         if let Some(message) = self.follow(src) {
             return Outcome::Message(message);
         }

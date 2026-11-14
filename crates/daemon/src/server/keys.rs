@@ -145,6 +145,7 @@ impl Server {
             match input {
                 Input::Key { key, raw } => self.handle_key(session_id, key, &raw),
                 Input::Paste(text) => self.handle_paste(session_id, &text),
+                Input::Mouse(mouse) => self.handle_mouse(session_id, mouse),
                 Input::Raw(raw) => {
                     if self.in_prompt(session_id)
                         || self.picker_open(session_id)
@@ -160,7 +161,7 @@ impl Server {
         }
     }
 
-    fn picker_open(&self, session_id: u64) -> bool {
+    pub(super) fn picker_open(&self, session_id: u64) -> bool {
         self.sessions
             .get(&session_id)
             .is_some_and(|s| s.picker.is_some())
@@ -173,7 +174,7 @@ impl Server {
             .is_some_and(|p| p.copy.is_some())
     }
 
-    fn in_prompt(&self, session_id: u64) -> bool {
+    pub(super) fn in_prompt(&self, session_id: u64) -> bool {
         self.sessions
             .get(&session_id)
             .is_some_and(|s| s.key_state.prompt.is_some())

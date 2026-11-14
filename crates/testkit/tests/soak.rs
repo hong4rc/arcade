@@ -347,7 +347,7 @@ impl Soak {
                 }
                 self.size = (c, r);
             }
-            85..=93 => {
+            85..=90 => {
                 if self.rng.below(4) == 0 {
                     let k = *self.rng.pick(KEYS);
                     self.note(format!("keys {k:?}"));
@@ -360,6 +360,7 @@ impl Soak {
                     self.keys(&bytes);
                 }
             }
+            91..=93 => self.mouse(),
             94..=96 => {
                 self.note("types a run of output".to_string());
                 self.keys(b"yes 'soak line' | head -n 700\r");
@@ -370,6 +371,51 @@ impl Soak {
         if ended(&self.client) {
             self.reattach();
         }
+    }
+
+    /// A click, a turn of the wheel or a drag, on any cell of the screen: panes, dividers, the
+    /// status bar, and the cells outside them. Sometimes with Alt held.
+    fn mouse(&mut self) {
+        let (cols, rows) = self.size;
+        let cell = |rng: &mut Rng| {
+            (
+                rng.below(usize::from(cols)) as u16,
+                rng.below(usize::from(rows)) as u16,
+            )
+        };
+        let alt = if self.rng.below(5) == 0 { 8 } else { 0 };
+        let report = |code: u16, at: (u16, u16), up: bool| {
+            let end = if up { 'm' } else { 'M' };
+            format!("\x1b[<{code};{};{}{end}", at.0 + 1, at.1 + 1).into_bytes()
+        };
+        let mut bytes = Vec::new();
+        match self.rng.below(4) {
+            0 => {
+                let at = cell(&mut self.rng);
+                self.note(format!("clicks at {at:?}"));
+                bytes.extend(report(alt, at, false));
+                bytes.extend(report(alt, at, true));
+            }
+            1 => {
+                let at = cell(&mut self.rng);
+                let notches = 1 + self.rng.below(4);
+                let code = 64 + self.rng.below(2) as u16;
+                self.note(format!(
+                    "turns the wheel {notches} times ({code}) at {at:?}"
+                ));
+                for _ in 0..notches {
+                    bytes.extend(report(code | alt, at, false));
+                }
+            }
+            _ => {
+                let (from, to) = (cell(&mut self.rng), cell(&mut self.rng));
+                self.note(format!("drags from {from:?} to {to:?}"));
+                bytes.extend(report(alt, from, false));
+                bytes.extend(report(32 | alt, to, false));
+                bytes.extend(report(alt, to, true));
+            }
+        }
+        self.keys(&bytes);
     }
 
     fn copy_mode(&mut self) {

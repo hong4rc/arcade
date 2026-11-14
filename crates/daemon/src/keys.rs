@@ -27,8 +27,88 @@ pub enum Input {
     Key { key: Key, raw: Vec<u8> },
     /// Text pasted between the bracketed paste markers (the markers are not included).
     Paste(Vec<u8>),
-    /// Bytes that are not a key Arcade knows (mouse reports, focus reports, odd sequences).
+    /// A mouse report in the SGR form.
+    Mouse(Mouse),
+    /// Bytes that are not a key Arcade knows (focus reports, odd sequences).
     Raw(Vec<u8>),
+}
+
+/// What a mouse report says happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseKind {
+    /// A button went down (0 left, 1 middle, 2 right).
+    Press(u8),
+    /// A button came up.
+    Release(u8),
+    /// The mouse moved with a button held.
+    Drag(u8),
+    /// The mouse moved with no button held.
+    Move,
+    /// The wheel turned; `up` and `down` are the vertical turns, `left` and `right` the sideways.
+    Wheel(Wheel),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wheel {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// A mouse report: where, what, and the modifier keys held. `x` and `y` count from 0 at the
+/// top left of the host terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mouse {
+    pub kind: MouseKind,
+    pub mods: Mods,
+    pub x: u16,
+    pub y: u16,
+}
+
+impl Mouse {
+    /// Read `CSI < code ; column ; row M` (`m` for a release).
+    fn from_sgr(params: &[u8], last: u8) -> Option<Mouse> {
+        let text = std::str::from_utf8(params.strip_prefix(b"<")?).ok()?;
+        let mut numbers = text.split(';').map(|n| n.parse::<u16>().ok());
+        let code = numbers.next()??;
+        let column = numbers.next()??;
+        let row = numbers.next()??;
+        if numbers.next().is_some() || column == 0 || row == 0 || code > 127 {
+            return None;
+        }
+        let mods = Mods {
+            shift: code & 4 != 0,
+            alt: code & 8 != 0,
+            ctrl: code & 16 != 0,
+            super_key: false,
+        };
+        let button = (code & 3) as u8;
+        let kind = if code & 64 != 0 {
+            match code & 3 {
+                0 => MouseKind::Wheel(Wheel::Up),
+                1 => MouseKind::Wheel(Wheel::Down),
+                2 => MouseKind::Wheel(Wheel::Left),
+                _ => MouseKind::Wheel(Wheel::Right),
+            }
+        } else if code & 32 != 0 {
+            if button == 3 {
+                MouseKind::Move
+            } else {
+                MouseKind::Drag(button)
+            }
+        } else if last == b'm' {
+            MouseKind::Release(button)
+        } else {
+            MouseKind::Press(button)
+        };
+        Some(Mouse {
+            kind,
+            mods,
+            x: column - 1,
+            y: row - 1,
+        })
+    }
 }
 
 #[derive(Default)]
@@ -192,6 +272,9 @@ fn csi(buf: &[u8]) -> Step {
             )),
             None => Some(Input::Raw(raw.to_vec())),
         },
+        b'M' | b'm' if params.first() == Some(&b'<') => Some(
+            Mouse::from_sgr(params, last).map_or_else(|| Input::Raw(raw.to_vec()), Input::Mouse),
+        ),
         b'Z' if params.is_empty() => Some(key(
             Code::Named(Named::Tab),
             Mods {
@@ -583,9 +666,10 @@ mod tests {
 
     #[test]
     fn things_that_are_not_keys_pass_through_as_raw_bytes() {
-        // A mouse report, a focus report, an unknown private sequence and a bare bad byte.
+        // A damaged mouse report, a focus report, an unknown private sequence and a bare bad byte.
         for bytes in [
-            &b"\x1b[<0;10;5M"[..],
+            &b"\x1b[<0;10M"[..],
+            b"\x1b[<0;0;5M",
             b"\x1b[I",
             b"\x1b[?1;2c",
             b"\x1b[57399;5u",
@@ -594,6 +678,47 @@ mod tests {
             assert_eq!(got, vec![Input::Raw(bytes.to_vec())], "{bytes:?}");
         }
         assert_eq!(read_all(b"\xff"), vec![Input::Raw(vec![0xff])]);
+    }
+
+    #[test]
+    fn mouse_reports_are_read_with_their_place_and_modifiers() {
+        let one = |bytes: &[u8]| match read_all(bytes).as_slice() {
+            [Input::Mouse(m)] => *m,
+            other => panic!("{bytes:?} gave {other:?}"),
+        };
+        let at = |m: Mouse| (m.x, m.y);
+        let m = one(b"\x1b[<0;10;5M");
+        assert_eq!(
+            (m.kind, at(m), m.mods),
+            (MouseKind::Press(0), (9, 4), Mods::NONE)
+        );
+        assert_eq!(one(b"\x1b[<0;10;5m").kind, MouseKind::Release(0));
+        assert_eq!(one(b"\x1b[<2;1;1M").kind, MouseKind::Press(2));
+        assert_eq!(one(b"\x1b[<32;3;4M").kind, MouseKind::Drag(0));
+        assert_eq!(one(b"\x1b[<35;3;4M").kind, MouseKind::Move);
+        assert_eq!(one(b"\x1b[<64;3;4M").kind, MouseKind::Wheel(Wheel::Up));
+        assert_eq!(one(b"\x1b[<65;3;4M").kind, MouseKind::Wheel(Wheel::Down));
+        assert_eq!(one(b"\x1b[<66;3;4M").kind, MouseKind::Wheel(Wheel::Left));
+        assert_eq!(one(b"\x1b[<67;3;4M").kind, MouseKind::Wheel(Wheel::Right));
+        let m = one(b"\x1b[<28;300;70M");
+        assert_eq!(at(m), (299, 69));
+        assert!(m.mods.shift && m.mods.alt && m.mods.ctrl);
+    }
+
+    #[test]
+    fn a_mouse_report_cut_anywhere_is_put_together() {
+        let bytes = b"a\x1b[<0;123;45Mb";
+        for cut in 1..bytes.len() {
+            let mut r = KeyReader::new();
+            let now = Instant::now();
+            let mut got = r.feed(&bytes[..cut], now);
+            got.extend(r.feed(&bytes[cut..], now));
+            assert_eq!(got.len(), 3, "cut at {cut}: {got:?}");
+            assert!(
+                matches!(got[1], Input::Mouse(m) if (m.x, m.y) == (122, 44)),
+                "{got:?}"
+            );
+        }
     }
 
     #[test]
@@ -653,9 +778,11 @@ mod tests {
             }
             got.extend(r.expire(now + Duration::from_secs(1)));
             let mut back = Vec::new();
+            let mut saw_mouse = false;
             for i in got {
                 match i {
                     Input::Key { raw, .. } | Input::Raw(raw) => back.extend(raw),
+                    Input::Mouse(_) => saw_mouse = true,
                     Input::Paste(p) => {
                         back.extend_from_slice(PASTE_START);
                         back.extend(p);
@@ -665,7 +792,10 @@ mod tests {
             }
             // A key release is dropped by design, and a paste that never ended is held back, so
             // compare only when neither happened.
-            if !bytes.windows(3).any(|w| w == b"\x1b[2") && find(&bytes, b"3u").is_none() {
+            if !saw_mouse
+                && !bytes.windows(3).any(|w| w == b"\x1b[2")
+                && find(&bytes, b"3u").is_none()
+            {
                 assert_eq!(back, bytes);
             }
         }

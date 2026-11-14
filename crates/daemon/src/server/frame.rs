@@ -325,10 +325,13 @@ impl Server {
                 blinking: false,
             },
         };
-        let modes = self
-            .panes
-            .get(&focus)
-            .map_or_else(HostModes::default, |p| HostModes {
+        let modes = self.panes.get(&focus).map_or_else(
+            || HostModes {
+                mouse: true,
+                ..HostModes::default()
+            },
+            |p| HostModes {
+                mouse: true,
                 app_cursor_keys: p
                     .term
                     .mode(arcade_term::Mode::AppCursorKeys)
@@ -337,7 +340,8 @@ impl Server {
                     .term
                     .mode(arcade_term::Mode::BracketedPaste)
                     .unwrap_or(false),
-            });
+            },
+        );
         let Some(session) = self.sessions.get_mut(&session_id) else {
             return;
         };

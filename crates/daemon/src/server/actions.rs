@@ -957,7 +957,7 @@ impl Server {
 
     // ---- Focus ----
 
-    fn set_focus(&mut self, ctx: Ctx, pane: u64) {
+    pub(super) fn set_focus(&mut self, ctx: Ctx, pane: u64) {
         let Some(session) = self.sessions.get_mut(&ctx.session) else {
             return;
         };
@@ -1460,6 +1460,7 @@ impl Server {
         self.log
             .line(&format!("session {} closed: {note}", session.id));
         if let Some(client_id) = session.client {
+            self.send_output(client_id, crate::render::MOUSE_OFF);
             self.send(
                 client_id,
                 &ServerMessage::SessionEnded {
