@@ -192,6 +192,25 @@ fn the_kitty_keyboard_protocol_is_on_while_attached_and_off_after() {
     assert_eq!(host.screen.mode(Mode::KittyKeyboard), Some(false));
 }
 
+/// The client saves the title of the host terminal's window before it sets its own, and gives
+/// the saved one back when it leaves, however it leaves.
+#[test]
+fn the_title_of_the_host_window_is_saved_when_attaching_and_given_back_when_leaving() {
+    fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+    let env = Env::new();
+    let mut host = env.host(&["new", "-s", "titles"]);
+    host.wait_for_prompt().unwrap();
+    let save = find(&host.raw, b"\x1b[22;2t").expect("the title was saved");
+    let first_title = find(&host.raw, b"\x1b]2;").expect("a title was set");
+    assert!(save < first_title);
+    assert!(find(&host.raw, b"\x1b[23;2t").is_none());
+    host.type_line("arcade run session.detach");
+    assert_eq!(host.wait_exit(WAIT), Some(0));
+    assert!(find(&host.raw, b"\x1b[23;2t").is_some());
+}
+
 #[test]
 fn the_terminal_settings_come_back_after_a_detach_command() {
     let env = Env::new();

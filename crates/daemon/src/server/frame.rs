@@ -25,7 +25,60 @@ fn status_info(s: &Session, copy: bool) -> StatusInfo {
     }
 }
 
+/// The longest pane title that goes to the host terminal, in characters.
+const TITLE_LIMIT: usize = 200;
+
+/// Text from a program or a name, made safe to put inside an escape sequence for the host
+/// terminal: no control characters of any kind, and not longer than `limit` characters.
+fn clean_title(text: &str, limit: usize) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(limit)
+        .collect()
+}
+
 impl Server {
+    /// The title of the host terminal's window: what the focused pane's program calls itself
+    /// (or the window's name when it has set no title), then the session and the window number.
+    fn host_title(&self, s: &Session) -> String {
+        let window = s.current_window();
+        let pane_title = self
+            .panes
+            .get(&window.focus)
+            .and_then(|p| p.title.as_deref())
+            .unwrap_or(&window.name);
+        format!(
+            "{} \u{b7} {}:{}",
+            clean_title(pane_title, TITLE_LIMIT),
+            clean_title(&s.name, TITLE_LIMIT),
+            window.number
+        )
+    }
+
+    /// Tell each attached client's terminal the title of its window, when and only when it is
+    /// not the one it was told last.
+    pub(super) fn send_titles(&mut self) {
+        let mut due = Vec::new();
+        for s in self.sessions.values() {
+            let Some(client) = s.client else {
+                continue;
+            };
+            if !self.clients.get(&client).is_some_and(|c| !c.gone) {
+                continue;
+            }
+            let title = self.host_title(s);
+            if s.sent_title.as_deref() != Some(title.as_str()) {
+                due.push((s.id, client, title));
+            }
+        }
+        for (session_id, client, title) in due {
+            self.send_output(client, format!("\x1b]2;{title}\x07").as_bytes());
+            if let Some(s) = self.sessions.get_mut(&session_id) {
+                s.sent_title = Some(title);
+            }
+        }
+    }
+
     /// When the next screen update for this session may be sent: `None` when there is nothing
     /// to send or the client is still busy taking the last one.
     pub(super) fn frame_time(&self, s: &Session, now: Instant) -> Option<Instant> {
@@ -274,5 +327,20 @@ impl Server {
             self.send_output(client_id, &bytes);
         }
         self.exited.extend(failed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_title_loses_every_control_character_and_is_cut_to_the_limit() {
+        assert_eq!(clean_title("a\x1b[31m\x07b\u{9b}c\x7f", 200), "a[31mbc");
+        let long = "x".repeat(500);
+        assert_eq!(clean_title(&long, TITLE_LIMIT).chars().count(), TITLE_LIMIT);
+        // Characters, not bytes: a wide character is not cut in the middle.
+        let wide = "\u{6f22}".repeat(300);
+        assert_eq!(clean_title(&wide, TITLE_LIMIT).chars().count(), TITLE_LIMIT);
     }
 }

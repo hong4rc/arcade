@@ -161,6 +161,8 @@ struct Pane {
     last_cursor: Cursor,
     /// Set while the pane is in copy mode: the pane then shows this instead of its screen.
     copy: Option<Copy>,
+    /// The title the program in the pane set (OSC 0 or 2); `None` while it has set none.
+    title: Option<String>,
 }
 
 impl Pane {
@@ -243,6 +245,8 @@ struct Session {
     last_frame: Option<Instant>,
     /// When the windows' automatic names were last compared with the panes' directories.
     names_checked: Option<Instant>,
+    /// The title last sent to the attached client's terminal; `None` until one is sent.
+    sent_title: Option<String>,
     /// The attached client's keyboard bytes that are not complete yet.
     keys: KeyReader,
     /// The prefix, the lock, the prompt and the message line.
@@ -564,6 +568,7 @@ impl Server {
             self.finish_exited_panes();
             // (4) Screen updates.
             self.send_frames();
+            self.send_titles();
             // (5) Panes that have been quiet shrink their old scrollback, a little at a time.
             self.compress_idle_panes();
             // Push out what was queued.
@@ -981,6 +986,7 @@ impl Server {
                 session.key_state.message = Some(message);
             }
             session.need_full = true;
+            session.sent_title = None;
             session.last_used = self.use_counter;
             session.name.clone()
         };
@@ -1109,6 +1115,7 @@ impl Server {
                 blinking: false,
             },
             copy: None,
+            title: None,
         })
     }
 
@@ -1173,6 +1180,7 @@ impl Server {
                 renderer: Renderer::new(),
                 last_frame: None,
                 names_checked: None,
+                sent_title: None,
                 keys: KeyReader::new(),
                 key_state: KeyState::new(),
                 picker: None,
@@ -1323,18 +1331,23 @@ impl Server {
         }
         // Answers the terminal wants to give to the program go back to it at once.
         let mut clipboard_writes = Vec::new();
+        let mut new_title = None;
         if pane.term.has_events() {
             let mut replies = Vec::new();
             for event in pane.term.drain_events() {
                 match event {
                     TermEvent::Reply(bytes) => replies.extend_from_slice(&bytes),
                     TermEvent::ClipboardWrite(data) => clipboard_writes.push(data),
+                    TermEvent::Title(title) => new_title = Some(title),
                     _ => {}
                 }
             }
             if !replies.is_empty() {
                 queue_pane_input(pane, &replies);
             }
+        }
+        if let Some(title) = new_title {
+            pane.title = Some(title).filter(|t| !t.is_empty());
         }
         for data in clipboard_writes {
             self.pane_wrote_clipboard(pane_id, &data);

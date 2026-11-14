@@ -423,6 +423,8 @@ pub struct TestClient {
     pub output_bytes: usize,
     /// What the host terminal was asked to put on its clipboard (OSC 52), decoded, in order.
     pub clipboard_writes: Vec<Vec<u8>>,
+    /// The titles the host terminal's window was given (OSC 0 or 2), in order.
+    pub titles: Vec<String>,
 }
 
 impl TestClient {
@@ -438,6 +440,7 @@ impl TestClient {
             output_messages: 0,
             output_bytes: 0,
             clipboard_writes: Vec::new(),
+            titles: Vec::new(),
         };
         client.send_message(&ClientMessage::Hello {
             version: PROTOCOL_VERSION,
@@ -579,8 +582,10 @@ impl TestClient {
                             // The virtual screen's own replies go nowhere; what it was asked to
                             // put on the clipboard is kept.
                             for event in self.screen.drain_events() {
-                                if let Event::ClipboardWrite(data) = event {
-                                    self.clipboard_writes.push(data);
+                                match event {
+                                    Event::ClipboardWrite(data) => self.clipboard_writes.push(data),
+                                    Event::Title(title) => self.titles.push(title),
+                                    _ => {}
                                 }
                             }
                         }
@@ -654,6 +659,10 @@ pub struct PtyHost {
     pub screen: Term,
     closed: bool,
     initial: TermSettings,
+    /// Every byte the program wrote to the terminal, in order.
+    pub raw: Vec<u8>,
+    /// The titles the terminal's window was given, in order.
+    pub titles: Vec<String>,
 }
 
 impl PtyHost {
@@ -690,6 +699,8 @@ impl PtyHost {
                 local_flags: 0,
                 control_chars: Vec::new(),
             },
+            raw: Vec::new(),
+            titles: Vec::new(),
         };
         host.initial = host.settings();
         host
@@ -805,11 +816,16 @@ impl Screened for PtyHost {
                 false
             }
             Ok(n) => {
+                self.raw.extend_from_slice(&buf[..n]);
                 self.screen.feed(&buf[..n]);
                 // Answer the program's queries the way a real terminal would.
                 for event in self.screen.drain_events() {
-                    if let arcade_term::Event::Reply(bytes) = event {
-                        let _ = self.master.write_all(&bytes);
+                    match event {
+                        arcade_term::Event::Reply(bytes) => {
+                            let _ = self.master.write_all(&bytes);
+                        }
+                        arcade_term::Event::Title(title) => self.titles.push(title),
+                        _ => {}
                     }
                 }
                 true
