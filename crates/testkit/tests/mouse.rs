@@ -130,7 +130,16 @@ fn the_host_terminal_is_asked_for_the_mouse_and_gives_it_back_whenever_the_clien
     assert!(one.wait_until(WAIT, |c| c.screen.mode(Mode::MouseTracking) == Some(false)));
     assert_eq!(two.screen.mode(Mode::MouseTracking), Some(true));
 
-    // The session ends: the client in it gives the mouse back.
+    // The session ends with no other session to go to (the first one is closed): the client in
+    // it gives the mouse back.
+    let (_, list) = daemon.command("session.list", &[]).unwrap();
+    for name in list
+        .lines()
+        .filter_map(|l| l.split('\t').next())
+        .filter(|n| *n != "shared")
+    {
+        daemon.command("session.close", &[name]).unwrap();
+    }
     two.type_line("exit");
     assert!(two.wait_until(WAIT, |c| c.screen.mode(Mode::MouseTracking) == Some(false)));
 }

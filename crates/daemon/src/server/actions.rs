@@ -1525,6 +1525,9 @@ impl Server {
     }
 
     /// End a session: hang up every pane and tell the client.
+    ///
+    /// A client that was in it goes to another session, when there is one nobody else is
+    /// attached to and the settings say so (`[session] on-end`).
     pub(super) fn end_session(&mut self, session_id: u64, note: &str) {
         let Some(session) = self.sessions.remove(&session_id) else {
             return;
@@ -1532,7 +1535,42 @@ impl Server {
         for pane in session.all_panes() {
             self.drop_pane(pane);
         }
+        if let Some(client) = session.client
+            && self.config.on_session_end == config::OnSessionEnd::Switch
+            && let Some(target) = self.session_to_go_to()
+        {
+            self.log
+                .line(&format!("session {} closed: {note}", session.id));
+            self.bind_client(client, target, session.cols, session.rows);
+            let now = self
+                .sessions
+                .get(&target)
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            self.set_message(
+                target,
+                &format!("session {} ended; now in {now}", session.name),
+            );
+            return;
+        }
         self.finish_session(&session, note);
+    }
+
+    /// The session a client goes to when its own ends: the one that was used last, and when none
+    /// ever was, the first by name. Only a session with no client of its own: no one is thrown
+    /// out of theirs.
+    fn session_to_go_to(&self) -> Option<u64> {
+        let mut free: Vec<&Session> = self
+            .sessions
+            .values()
+            .filter(|s| s.client.is_none())
+            .collect();
+        free.sort_by(|a, b| a.name.cmp(&b.name));
+        let used = free
+            .iter()
+            .filter(|s| s.last_used > 0)
+            .max_by_key(|s| s.last_used);
+        used.or(free.first()).map(|s| s.id)
     }
 
     /// A session that is already out of the books: log it and tell its client goodbye. The

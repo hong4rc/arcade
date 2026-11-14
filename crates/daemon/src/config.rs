@@ -148,6 +148,15 @@ impl NotificationConfig {
     }
 }
 
+/// What happens to a client whose session ends while other sessions exist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OnSessionEnd {
+    /// The client goes to another session.
+    Switch,
+    /// The client leaves, with the message that the session ended.
+    Detach,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub keys: KeysConfig,
@@ -161,6 +170,7 @@ pub struct Config {
     pub clipboard: ClipboardConfig,
     /// Whether the daemon keeps the machine from sleeping because it sat idle.
     pub prevent_sleep: bool,
+    pub on_session_end: OnSessionEnd,
     pub notification: NotificationConfig,
 }
 
@@ -174,6 +184,7 @@ impl Default for Config {
             renumber: true,
             scrollback_lines: None,
             prevent_sleep: true,
+            on_session_end: OnSessionEnd::Switch,
             notification: NotificationConfig::default(),
             clipboard: ClipboardConfig {
                 mode: ClipboardMode::Osc52,
@@ -784,6 +795,29 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                     }
                 }
             }
+            "session" => {
+                for (n, v) in table.iter() {
+                    match n.get_ref().as_ref() {
+                        "on-end" => {
+                            if let Some(text) = r.string("on-end", v) {
+                                match text {
+                                    "switch" => config.on_session_end = OnSessionEnd::Switch,
+                                    "detach" => config.on_session_end = OnSessionEnd::Detach,
+                                    other => r.error(
+                                        v.span().start,
+                                        format!(
+                                            "on-end is \"switch\" or \"detach\", not \"{other}\""
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        other => {
+                            r.error(n.span().start, unknown_key("session", other, &["on-end"]))
+                        }
+                    }
+                }
+            }
             "notification" => read_notification(&mut r, table, &mut config.notification),
             "scrollback" => {
                 for (n, v) in table.iter() {
@@ -849,6 +883,7 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                         "scrollback",
                         "clipboard",
                         "power",
+                        "session",
                         "notification",
                     ],
                 ),
@@ -877,6 +912,25 @@ nav = "hnei"
 [status]
 position = "top"
 "#;
+
+    #[test]
+    fn what_happens_when_a_session_ends_is_set_by_on_end() {
+        assert_eq!(Config::default().on_session_end, OnSessionEnd::Switch);
+        assert_eq!(
+            parse("[session]\non-end = \"detach\"\n")
+                .unwrap()
+                .on_session_end,
+            OnSessionEnd::Detach
+        );
+        assert_eq!(
+            parse("[session]\non-end = \"switch\"\n")
+                .unwrap()
+                .on_session_end,
+            OnSessionEnd::Switch
+        );
+        let errors = parse("[session]\non-end = \"stay\"\n").unwrap_err();
+        assert!(errors[0].message.contains("switch"), "{errors:?}");
+    }
 
     #[test]
     fn the_authors_file_loads_without_errors() {

@@ -191,6 +191,7 @@ TOML format. A misspelled key is reported with a suggestion ("did you mean ...")
 | `[keys.copy]` | Rebind the copy mode keys | table in 3.3 |
 | `[keys.list]` | Rebind the selection list keys (a letter that is bound no longer goes into the filter box) | tables in 3.4 and 3.5 |
 | `[status] position` | `"bottom"`, `"top"` or `"off"` | `"bottom"` |
+| `[session] on-end` | What happens to your screen when the session you are in ends: `"switch"` moves you to another session (the one you used last, else the first in the list) and shows `session <old> ended; now in <new>` on the status bar for a few seconds; `"detach"` leaves Arcade as before. With no other session left, Arcade exits either way | `"switch"` |
 | `[window] base-index` | The number of the first window | `1` |
 | `[window] renumber` | Number the windows again when a window goes away | `true` |
 | `[scrollback] lines` | How many lines of scrollback to keep for each pane | `50000` |
@@ -309,6 +310,8 @@ If you use both ways, the notification from the hook replaces the one from the e
 **5.11 Keys that cannot work, and what Arcade receives.** A terminal without the kitty keyboard protocol sends old key codes, and some keys cannot be told apart in them: `Ctrl` with a digit or a symbol, `Ctrl+m` and Enter, `Ctrl+i` and Tab, `Ctrl+Shift` and `Ctrl` with a letter, and anything with Cmd. Arcade asks the terminal when you attach. If it has only old key codes and a binding of your tables needs one of these keys, the status bar shows one line, for example `3 key bindings cannot work here (first: ctrl+m); run arcade keys list`, and again each time you reload the configuration. `arcade config check` and `arcade keys list` name every such binding with the reason, for example `warning: [keys.direct] ctrl+alt+1: the terminal does not send Ctrl with a digit`; run in a terminal they ask it themselves, and `--host legacy` or `--host kitty` says what to assume when there is no terminal to ask (without either, they say the host is not known and do not guess). Two more warnings do not depend on the terminal: a `direct` binding on the prefix key is never reached, and a `prefix` binding on the prefix key stops "prefix twice" from sending it to the program; on macOS, `Ctrl+Space` never reaches the terminal. The warnings never stop Arcade from starting.
 
 To see what really arrives, run `arcade keys test` in the terminal you use. A key that shows nothing was taken by the system, the window manager or the terminal before it reached Arcade (for example `Alt+h` under AeroSpace), while `Ctrl+Alt+h` shows its name and the command it runs.
+
+**5.12 Ending the session you are in.** Closing its last pane, `session.close` and `arcade kill-session` on it all follow `[session] on-end` (section 4). Sessions that already have a client of their own are not taken over; the move goes to a session nobody is looking at. Notifications of the ended session are dropped from the counter.
 
 ## 6. Not built yet
 

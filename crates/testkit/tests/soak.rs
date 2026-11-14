@@ -591,8 +591,14 @@ impl Soak {
     fn second_session(&mut self) {
         let names = self.session_names();
         if names.len() >= 3 {
-            let name = self.rng.pick(&names).clone();
-            self.command("session.close", &[&name]);
+            if self.rng.below(2) == 0 {
+                // The session this client looks at: the client moves to another one.
+                self.note("closes the session it is in".to_string());
+                self.command("session.close", &[]);
+            } else {
+                let name = self.rng.pick(&names).clone();
+                self.command("session.close", &[&name]);
+            }
             return;
         }
         let name = self.fresh_name();
