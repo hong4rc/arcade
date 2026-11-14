@@ -258,11 +258,13 @@ impl Soak {
     /// The session ended or the client was detached: attach to what is left, or to a new one.
     fn reattach(&mut self) {
         let (c, r) = self.size;
-        if self.daemon.is_stopped() {
-            // The last session ended and the daemon, which has nothing left to keep, stopped by
-            // itself; it must have done that cleanly. A new one takes its place.
+        // With no session left the daemon stops by itself (after the clients took their last
+        // messages); it must do that cleanly and soon. A new one takes its place.
+        if self.daemon.is_stopped() || self.session_names().is_empty() {
             if let Err(e) = self.daemon.wait_stopped(Duration::from_secs(5)) {
-                self.fail(&format!("the daemon did not stop cleanly: {e}"));
+                self.fail(&format!(
+                    "no session is left but the daemon did not stop cleanly: {e}"
+                ));
             }
             self.note("the last session ended; a new daemon starts".to_string());
             self.daemon = start_daemon();
