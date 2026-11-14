@@ -90,15 +90,56 @@ struct Split {
     b: Node,
 }
 
-/// Sizes of the two children of a split that has `total` cells along its axis.
-fn split_sizes(total: u16, ratio: f64, min: u16) -> (u16, u16) {
+/// Sizes of the two children of a split that has `total` cells along its axis. `need_*` is what
+/// each child's subtree needs along the axis for all its panes to have the minimum size, and
+/// `least_*` what it needs for all its panes to have one cell. The ratio decides, but never at
+/// the cost of a pane that could still be given its room.
+fn split_sizes(
+    total: u16,
+    ratio: f64,
+    need_a: u16,
+    need_b: u16,
+    least_a: u16,
+    least_b: u16,
+) -> (u16, u16) {
     let avail = total.saturating_sub(1);
-    let lo = min.min(avail / 2);
-    let a = ((ratio * f64::from(avail)).round() as u16).clamp(lo, avail - lo);
+    let (lo_a, lo_b) = if need_a + need_b <= avail {
+        (need_a, need_b)
+    } else if least_a + least_b <= avail {
+        // Not room for every pane at the minimum size: each child keeps up to half of the room
+        // at the minimum it would like, and never less than it needs to show at all.
+        let want_a = least_a.max(need_a.min(avail / 2));
+        let want_b = least_b.max(need_b.min(avail / 2));
+        if want_a + want_b <= avail {
+            (want_a, want_b)
+        } else {
+            (least_a, least_b)
+        }
+    } else {
+        // Not even one cell for every pane: some panes have to go without.
+        (0, 0)
+    };
+    let a = ((ratio * f64::from(avail)).round() as u16).clamp(lo_a, avail - lo_b);
     (a, avail - a)
 }
 
 impl Node {
+    /// The room this subtree needs along `along` for every pane in it to have `cols` columns and
+    /// `rows` rows.
+    fn need(&self, along: Axis, cols: u16, rows: u16) -> u16 {
+        match self {
+            Node::Leaf(_) => match along {
+                Axis::LeftRight => cols,
+                Axis::TopBottom => rows,
+            },
+            Node::Split(s) => {
+                let a = s.a.need(along, cols, rows);
+                let b = s.b.need(along, cols, rows);
+                if s.axis == along { a + b + 1 } else { a.max(b) }
+            }
+        }
+    }
+
     fn contains(&self, pane: PaneId) -> bool {
         match self {
             Node::Leaf(p) => *p == pane,
@@ -175,11 +216,23 @@ impl Split {
         }
     }
 
+    /// How many cells of `total` along the axis the first child gets, and the second.
+    fn sizes(&self, total: u16) -> (u16, u16) {
+        split_sizes(
+            total,
+            self.ratio,
+            self.a.need(self.axis, MIN_COLS, MIN_ROWS),
+            self.b.need(self.axis, MIN_COLS, MIN_ROWS),
+            self.a.need(self.axis, 1, 1),
+            self.b.need(self.axis, 1, 1),
+        )
+    }
+
     /// Rectangles of the two children and the divider, inside `rect`.
     fn children(&self, rect: Rect) -> (Rect, Rect, Divider) {
         match self.axis {
             Axis::LeftRight => {
-                let (aw, bw) = split_sizes(rect.w, self.ratio, self.min());
+                let (aw, bw) = self.sizes(rect.w);
                 (
                     Rect::new(rect.x, rect.y, aw, rect.h),
                     Rect::new(rect.x + aw + 1, rect.y, bw, rect.h),
@@ -192,7 +245,7 @@ impl Split {
                 )
             }
             Axis::TopBottom => {
-                let (ah, bh) = split_sizes(rect.h, self.ratio, self.min());
+                let (ah, bh) = self.sizes(rect.h);
                 (
                     Rect::new(rect.x, rect.y, rect.w, ah),
                     Rect::new(rect.x, rect.y + ah + 1, rect.w, bh),
@@ -251,7 +304,7 @@ fn resize_node(
         Axis::TopBottom => rect.h,
     };
     let avail = total.saturating_sub(1);
-    let (a_now, _) = split_sizes(total, s.ratio, s.min());
+    let (a_now, _) = s.sizes(total);
     let grow = matches!(direction, Direction::Right | Direction::Down);
     let a_new = if grow {
         i32::from(a_now) + i32::from(amount)
@@ -311,6 +364,14 @@ impl Layout {
 
     pub fn len(&self) -> usize {
         self.rects().len()
+    }
+
+    /// The room, in columns and rows, in which every pane could still have one cell.
+    pub fn least_room(&self) -> (u16, u16) {
+        (
+            self.root.need(Axis::LeftRight, 1, 1),
+            self.root.need(Axis::TopBottom, 1, 1),
+        )
     }
 
     pub fn contains(&self, pane: PaneId) -> bool {
@@ -710,5 +771,36 @@ mod tests {
         l.resize(3, Direction::Right, 5).unwrap();
         assert_eq!(l.rect_of(1).unwrap().w, 55);
         assert_covers(&l);
+    }
+
+    #[test]
+    fn a_window_squeezed_below_the_minimum_still_gives_every_pane_a_cell_when_it_can() {
+        // 1 | (2 | 3) made roomy, then the window shrinks: ratios alone would give pane 3 or
+        // pane 2 nothing at 6 columns, though 5 columns are enough for one cell each.
+        let mut l = Layout::new(1, 40, 10);
+        l.split(1, Axis::LeftRight, 2).unwrap();
+        l.split(2, Axis::LeftRight, 3).unwrap();
+        for cols in [5, 6, 7, 8, 9, 11] {
+            l.set_area(cols, 3);
+            let rects = l.rects();
+            assert!(
+                rects.iter().all(|(_, r)| r.w >= 1 && r.h >= 1),
+                "{cols} columns: {rects:?}"
+            );
+            assert_covers(&l);
+        }
+        // With a pane to the left, a pane up and a pane down in the second half.
+        let mut l = Layout::new(1, 40, 20);
+        l.split(1, Axis::LeftRight, 2).unwrap();
+        l.split(2, Axis::TopBottom, 3).unwrap();
+        l.split(3, Axis::TopBottom, 4).unwrap();
+        for rows in [5, 6, 7] {
+            l.set_area(40, rows);
+            assert!(
+                l.rects().iter().all(|(_, r)| r.w >= 1 && r.h >= 1),
+                "{rows} rows"
+            );
+        }
+        assert_eq!(l.least_room(), (3, 5));
     }
 }

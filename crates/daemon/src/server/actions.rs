@@ -38,6 +38,105 @@ fn add_window(session: &mut Session, mut window: Window, base_index: usize, renu
 }
 
 impl Server {
+    /// Look over the daemon's own books and say what does not add up: every window has one
+    /// focused pane that is in its layout, the panes fill the window's room exactly (with the
+    /// dividers), none is empty, and no pane is left without a window. For the soak test; not a
+    /// key command.
+    fn check_consistency(&self) -> (bool, String) {
+        let mut problems: Vec<String> = Vec::new();
+        let mut in_layouts: Vec<PaneId> = Vec::new();
+        for s in self.sessions.values() {
+            let who = format!("session {}", s.name);
+            if s.windows.is_empty() {
+                problems.push(format!("{who} has no window"));
+                continue;
+            }
+            if s.window(s.current).is_none() {
+                problems.push(format!("{who}: the current window does not exist"));
+            }
+            if s.cols == 0 || s.rows == 0 {
+                problems.push(format!("{who}: size {}x{}", s.cols, s.rows));
+            }
+            let mut numbers: Vec<usize> = s.windows.iter().map(|w| w.number).collect();
+            numbers.sort_unstable();
+            numbers.dedup();
+            if numbers.len() != s.windows.len() {
+                problems.push(format!("{who}: two windows share a number"));
+            }
+            for w in &s.windows {
+                let at = format!("{who}, window {}", w.number);
+                let area = w.layout.area();
+                let rects = w.layout.rects();
+                if rects.is_empty() || rects.len() != w.layout.len() {
+                    problems.push(format!(
+                        "{at}: {} rects for {} panes",
+                        rects.len(),
+                        w.layout.len()
+                    ));
+                }
+                if !w.layout.contains(w.focus) {
+                    problems.push(format!("{at}: the focused pane is not in the layout"));
+                }
+                if w.last_focus.is_some_and(|p| !w.layout.contains(p)) {
+                    problems.push(format!("{at}: the last focused pane is gone"));
+                }
+                let mut cells: u32 = 0;
+                // With less room than one cell for every pane, some panes cannot be shown; the
+                // window is then too small to say anything about the sizes.
+                let (least_w, least_h) = w.layout.least_room();
+                let too_small = area.w < least_w || area.h < least_h;
+                for (pane, _) in &rects {
+                    in_layouts.push(*pane);
+                    if !self.panes.contains_key(pane) {
+                        problems.push(format!("{at}: pane {pane} has no terminal"));
+                    }
+                }
+                if too_small {
+                    continue;
+                }
+                for (pane, r) in &rects {
+                    if r.w == 0 || r.h == 0 {
+                        problems.push(format!("{at}: pane {pane} has size {}x{}", r.w, r.h));
+                    }
+                    if r.x + r.w > area.w || r.y + r.h > area.h {
+                        problems.push(format!("{at}: pane {pane} sticks out of the window"));
+                    }
+                    cells += u32::from(r.w) * u32::from(r.h);
+                }
+                for (i, (a, ra)) in rects.iter().enumerate() {
+                    for (b, rb) in &rects[i + 1..] {
+                        let apart = ra.right() <= rb.x
+                            || rb.right() <= ra.x
+                            || ra.bottom() <= rb.y
+                            || rb.bottom() <= ra.y;
+                        if !apart {
+                            problems.push(format!("{at}: panes {a} and {b} overlap"));
+                        }
+                    }
+                }
+                for d in w.layout.dividers() {
+                    cells += u32::from(d.len);
+                }
+                if cells != u32::from(area.w) * u32::from(area.h) {
+                    problems.push(format!(
+                        "{at}: panes and dividers cover {cells} cells of {}",
+                        u32::from(area.w) * u32::from(area.h)
+                    ));
+                }
+            }
+        }
+        for pane in self.panes.keys() {
+            if !in_layouts.contains(pane) && !self.exited.contains(pane) {
+                problems.push(format!("pane {pane} belongs to no window"));
+            }
+        }
+        if problems.is_empty() {
+            (true, "ok".to_string())
+        } else {
+            (false, problems.join("\n"))
+        }
+    }
+
     pub(super) fn run_command(
         &mut self,
         name: &str,
@@ -46,6 +145,7 @@ impl Server {
     ) -> (bool, String) {
         match name {
             "server.ping" => return (true, "pong".to_string()),
+            "server.check" => return self.check_consistency(),
             "server.kill" => {
                 self.stopping = Some(Instant::now() + KILL_GRACE);
                 for p in self.panes.values() {
