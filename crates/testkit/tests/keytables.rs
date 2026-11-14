@@ -519,7 +519,7 @@ fn the_command_names_in_the_keys_list_start_in_one_column_whatever_the_key_name_
         row.find(command).unwrap()
     };
     // A short key name and a long one.
-    let short = column_of(&mut client, "window.new", "ctrl+m c");
+    let short = column_of(&mut client, "window.new", "ctrl+m c ");
     let long = column_of(&mut client, "pane.focus-left", "ctrl+alt+left");
     assert_eq!(short, long, "the command names do not line up");
 }
