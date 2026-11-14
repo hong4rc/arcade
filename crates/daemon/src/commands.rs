@@ -42,6 +42,9 @@ pub enum ListCommand {
     Down,
     Select,
     Cancel,
+    /// Take the last typed character off the filter, or all of it.
+    FilterDelete,
+    FilterClear,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,6 +154,11 @@ const NAMES: &[(&str, Command)] = &[
     ("list.down", Command::List(ListCommand::Down)),
     ("list.select", Command::List(ListCommand::Select)),
     ("list.cancel", Command::List(ListCommand::Cancel)),
+    (
+        "list.filter-delete",
+        Command::List(ListCommand::FilterDelete),
+    ),
+    ("list.filter-clear", Command::List(ListCommand::FilterClear)),
     ("keys.list", Command::KeysList),
     ("arcade.lock", Command::ArcadeLock),
     ("arcade.reload-config", Command::ArcadeReloadConfig),

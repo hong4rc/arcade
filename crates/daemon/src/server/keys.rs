@@ -94,6 +94,14 @@ impl KeyState {
     }
 }
 
+/// The text a key types, if it types any (not a control key and not an escape sequence).
+fn typed_text(key: Key, raw: &[u8]) -> Option<&str> {
+    std::str::from_utf8(raw)
+        .ok()
+        .filter(|t| !t.is_empty() && !t.starts_with('\x1b') && !key.mods.ctrl && !key.mods.alt)
+        .filter(|t| !t.chars().any(char::is_control))
+}
+
 impl Server {
     /// Keyboard bytes from a client, read as keys.
     pub(super) fn handle_input(&mut self, session_id: u64, bytes: &[u8]) {
@@ -200,9 +208,15 @@ impl Server {
         if s.key_state.clear_message() {
             s.chrome_dirty = true;
         }
-        if s.picker.is_some() {
+        if let Some(picker) = s.picker.as_mut() {
             if let Some(b) = Keymap::get(&self.keymap.list, key).cloned() {
                 self.run_binding(session_id, &b);
+            } else if let Some(text) = typed_text(key, raw) {
+                // Anything else that can be typed goes into the filter box.
+                picker.type_text(text);
+                // The box may be smaller now: what was under it is drawn again.
+                s.relayout = true;
+                s.chrome_dirty = true;
             }
             return;
         }
@@ -351,9 +365,7 @@ impl Server {
             return;
         };
         let confirm = prompt.kind == PromptKind::ClosePane;
-        let typed = std::str::from_utf8(raw)
-            .ok()
-            .filter(|t| !t.starts_with('\x1b') && !key.mods.ctrl && !key.mods.alt);
+        let typed = typed_text(key, raw);
         match key.code {
             Code::Named(Named::Escape) => {
                 self.close_prompt(session_id);

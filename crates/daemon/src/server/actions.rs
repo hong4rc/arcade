@@ -526,10 +526,11 @@ impl Server {
                 .unwrap_or(0);
             let items: Vec<Item> = bindings
                 .into_iter()
-                .map(|(label, binding)| Item {
-                    name: format!("{label:<width$}"),
-                    detail: binding_line(&binding),
-                    current: false,
+                .enumerate()
+                .map(|(id, (label, binding))| {
+                    let line = binding_line(&binding);
+                    Item::new(id, format!("{label:<width$}"), line.clone(), false)
+                        .also_found_by(&line)
                 })
                 .collect();
             if let Some(s) = self.sessions.get_mut(&session_id) {
@@ -550,13 +551,13 @@ impl Server {
         let items: Vec<Item> = sessions
             .iter()
             .filter(|s| kind == PickerKind::Sessions || s.id != session_id)
-            .map(|s| Item {
-                name: s.name.clone(),
-                detail: match s.windows.len() {
+            .enumerate()
+            .map(|(id, s)| {
+                let detail = match s.windows.len() {
                     1 => "1 window".to_string(),
                     n => format!("{n} windows"),
-                },
-                current: s.id == session_id,
+                };
+                Item::new(id, s.name.clone(), detail, s.id == session_id)
             })
             .collect();
         if items.is_empty() {
@@ -631,6 +632,15 @@ impl Server {
         match command {
             ListCommand::Up => picker.up(),
             ListCommand::Down => picker.down(),
+            ListCommand::FilterDelete | ListCommand::FilterClear => {
+                if command == ListCommand::FilterDelete {
+                    picker.delete_char();
+                } else {
+                    picker.clear_filter();
+                }
+                // The box changes size with the lines that are left: draw what was under it.
+                session.relayout = true;
+            }
             ListCommand::Cancel => {
                 session.picker = None;
                 // What was under the list is drawn again in full.
@@ -638,12 +648,11 @@ impl Server {
             }
             ListCommand::Select => {
                 let kind = picker.kind;
-                let index = picker.selected;
-                let name = picker.chosen().map(|i| i.name.clone());
+                let chosen = picker.chosen().map(|i| (i.id, i.name.clone()));
                 session.picker = None;
                 session.relayout = true;
                 session.chrome_dirty = true;
-                let Some(name) = name else {
+                let Some((index, name)) = chosen else {
                     return Ok(String::new());
                 };
                 return match kind {

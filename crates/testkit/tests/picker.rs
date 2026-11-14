@@ -1,7 +1,5 @@
 //! The floating list, switching between sessions, and moving a window to another session.
 
-use std::time::Duration;
-
 use arcade_proto::{DetachReason, ServerMessage};
 use arcade_testkit::{AttachOptions, Screened, TestClient, TestDaemon, WAIT};
 
@@ -71,7 +69,7 @@ fn the_session_list_shows_every_session_and_choosing_one_switches_to_it() {
         "{}",
         client.screen_text()
     );
-    client.send(b"j");
+    client.send(b"\x1b[B");
     screen_has(&mut client, "> beta");
     client.send(b"\r");
     // The screen is the other session's, the bar says its name, and the client stayed.
@@ -117,22 +115,148 @@ fn escape_closes_the_list_and_the_screen_is_as_it_was() {
 }
 
 #[test]
-fn the_list_follows_the_movement_keys_of_the_settings() {
+fn escape_after_filtering_leaves_the_screen_as_it_was() {
+    let daemon = TestDaemon::start();
+    let mut client = two_sessions(&daemon);
+    let before = cells(&mut client);
+    client.send(PREFIX);
+    client.send(b"s");
+    screen_has(&mut client, "Sessions");
+    client.send(b"alp");
+    screen_has(&mut client, "/ alp");
+    screen_lacks(&mut client, "beta");
+    client.send(b"\x1b[27u");
+    screen_lacks(&mut client, "Sessions");
+    let same = client.wait_until(WAIT, |c| cells(c) == before);
+    assert!(
+        same,
+        "the screen is not as it was:\n{}",
+        client.screen_text()
+    );
+}
+
+#[test]
+fn letters_go_into_the_filter_and_the_arrows_and_ctrl_n_and_ctrl_p_move() {
+    // The movement letters of the settings do not move in a list: it has a filter box.
     let daemon = TestDaemon::start_with(|c| c.config.keys.nav = ['h', 'n', 'e', 'i']);
     let mut client = two_sessions(&daemon);
     client.send(PREFIX);
     client.send(b"s");
     screen_has(&mut client, "> alpha");
-    client.send(b"n");
+    client.send(b"\x0e");
     screen_has(&mut client, "> beta");
-    client.send(b"e");
+    client.send(b"\x10");
     screen_has(&mut client, "> alpha");
-    // The old movement key does nothing now.
-    client.send(b"j");
-    std::thread::sleep(Duration::from_millis(50));
-    assert!(client.screen_text().contains("> alpha"));
-    client.send(b"q");
+    client.send(b"\x1b[B");
+    screen_has(&mut client, "> beta");
+    client.send(b"\x1b[A");
+    screen_has(&mut client, "> alpha");
+    // `n` is typed: only the sessions with an `n` in the name are left, and there is none.
+    client.send(b"n");
+    screen_has(&mut client, "no match");
+    screen_has(&mut client, "/ n");
+    client.send(b"\x1b");
     screen_lacks(&mut client, "Sessions");
+}
+
+/// Sessions `a`, `ab` and `b`; the client is attached to `a`.
+fn a_ab_b(daemon: &TestDaemon) -> TestClient {
+    for name in ["b", "ab"] {
+        let mut other = daemon
+            .attach(AttachOptions::new().size(100, 30).named(name))
+            .unwrap();
+        other.wait_for_prompt().unwrap();
+        other.detach();
+        assert!(other.wait_closed(WAIT));
+    }
+    let mut client = daemon
+        .attach(AttachOptions::new().size(100, 30).named("a"))
+        .unwrap();
+    client.wait_for_prompt().unwrap();
+    client
+}
+
+/// The names on the lines of the open list, in order.
+fn lines_of_the_list(client: &mut TestClient) -> Vec<String> {
+    client
+        .content_rows()
+        .into_iter()
+        .filter(|r| r.contains('│'))
+        .filter_map(|r| {
+            let inside = r.split('│').nth(1)?.trim().to_string();
+            (!inside.is_empty() && !inside.starts_with('/')).then_some(inside)
+        })
+        .collect()
+}
+
+fn names_in_list(client: &mut TestClient, wanted: &[&str]) {
+    let ok = client.wait_until(WAIT, |c| {
+        let lines = lines_of_the_list(c);
+        lines.len() == wanted.len()
+            && lines
+                .iter()
+                .zip(wanted)
+                .all(|(l, w)| l.trim_start_matches("> ").starts_with(w))
+    });
+    assert!(ok, "the list is not {wanted:?}:\n{}", client.screen_text());
+}
+
+#[test]
+fn typing_filters_the_sessions_and_backspace_brings_them_back() {
+    let daemon = TestDaemon::start();
+    let mut client = a_ab_b(&daemon);
+    client.send(PREFIX);
+    client.send(b"s");
+    names_in_list(&mut client, &["a", "ab", "b"]);
+    client.send(b"a");
+    names_in_list(&mut client, &["a", "ab"]);
+    client.send(b"b");
+    names_in_list(&mut client, &["ab"]);
+    client.send(b"\x7f\x7f");
+    names_in_list(&mut client, &["a", "ab", "b"]);
+    // The line chosen is the first of what is left; Enter goes to it.
+    client.send(b"b");
+    client.send(b"\r");
+    screen_lacks(&mut client, "Sessions");
+    let (_, output) = run(&daemon, "session.list", &[]);
+    // The columns are the name, the number, whether a client is attached, and more.
+    let attached: Vec<&str> = output
+        .lines()
+        .filter(|l| l.split('\t').nth(2) == Some("1"))
+        .collect();
+    assert_eq!(attached.len(), 1, "{output}");
+    assert!(attached[0].starts_with("ab\t"), "{output}");
+}
+
+#[test]
+fn ctrl_u_empties_the_filter() {
+    let daemon = TestDaemon::start();
+    let mut client = a_ab_b(&daemon);
+    client.send(PREFIX);
+    client.send(b"s");
+    client.send(b"ab");
+    names_in_list(&mut client, &["ab"]);
+    client.send(b"\x15");
+    names_in_list(&mut client, &["a", "ab", "b"]);
+}
+
+#[test]
+fn the_keys_list_is_filtered_by_what_the_command_is_called_and_enter_runs_it() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    client.send(b"\x1b[109;5u");
+    client.send(b"?");
+    screen_has(&mut client, "Keys");
+    client.send(b"copy.enter");
+    let ok = client.wait_until(WAIT, |c| {
+        let lines = lines_of_the_list(c);
+        lines.len() == 1 && lines[0].contains("copy.enter")
+    });
+    assert!(ok, "{}", client.screen_text());
+    client.send(b"\r");
+    screen_lacks(&mut client, "Keys");
+    screen_has(&mut client, "COPY");
 }
 
 #[test]

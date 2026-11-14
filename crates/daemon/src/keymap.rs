@@ -417,14 +417,33 @@ impl Keymap {
         bind(t, ch('R'), "arcade.redraw", &[], false);
     }
 
-    fn fill_list(&mut self, config: &KeysConfig) {
+    fn fill_list(&mut self, _config: &KeysConfig) {
         let t = &mut self.list;
-        // Up and down are the second and third movement keys and the arrows.
-        for (index, command) in [(2, "list.up"), (1, "list.down")] {
-            for code in direction_codes(config, index) {
-                bind(t, plain(code), command, &[], false);
-            }
-        }
+        // Letters go into the filter box, so the keys of the list are not letters: the arrows,
+        // and Ctrl+p and Ctrl+n as the other way up and down.
+        let ctrl = |c: char| Key {
+            code: Code::Char(c),
+            mods: Mods {
+                ctrl: true,
+                ..Mods::NONE
+            },
+        };
+        bind(
+            t,
+            plain(Code::Named(arrow(DIRECTIONS[2]))),
+            "list.up",
+            &[],
+            false,
+        );
+        bind(
+            t,
+            plain(Code::Named(arrow(DIRECTIONS[1]))),
+            "list.down",
+            &[],
+            false,
+        );
+        bind(t, ctrl('p'), "list.up", &[], false);
+        bind(t, ctrl('n'), "list.down", &[], false);
         bind(
             t,
             plain(Code::Named(Named::Enter)),
@@ -439,7 +458,14 @@ impl Keymap {
             &[],
             false,
         );
-        bind(t, ch('q'), "list.cancel", &[], false);
+        bind(
+            t,
+            plain(Code::Named(Named::Backspace)),
+            "list.filter-delete",
+            &[],
+            false,
+        );
+        bind(t, ctrl('u'), "list.filter-clear", &[], false);
     }
 
     fn fill_copy(&mut self, config: &KeysConfig) {

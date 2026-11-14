@@ -128,6 +128,9 @@ pub enum Symbol {
     PickerOtherMark,
     /// After the line that stands for what is current (the session shown).
     PickerCurrentMark,
+    /// In front of the text typed to filter the lines, and what the box says when none is left.
+    PickerFilterMark,
+    PickerNoMatch,
     /// Between a mode word on the status bar and what it tells the user to do.
     HintSeparator,
 }
@@ -151,6 +154,8 @@ pub fn symbol(symbol: Symbol) -> &'static str {
         Symbol::PickerSelectedMark => "> ",
         Symbol::PickerOtherMark => "  ",
         Symbol::PickerCurrentMark => " *",
+        Symbol::PickerFilterMark => "/ ",
+        Symbol::PickerNoMatch => "no match",
         Symbol::HintSeparator => " · ",
     }
 }
