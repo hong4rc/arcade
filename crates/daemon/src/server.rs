@@ -972,6 +972,10 @@ impl Server {
                 for s in self.sessions.values_mut() {
                     if s.client == Some(id) {
                         s.client = None;
+                        // Nobody is looking: the grid and the last frame sent are given back.
+                        // The next attach redraws everything and builds them again.
+                        s.screen = Screen::new();
+                        s.renderer = Renderer::new();
                     }
                 }
             }
