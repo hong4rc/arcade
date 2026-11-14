@@ -981,6 +981,7 @@ const DAEMON_ENCODED: u8 = 12;
 const DAEMON_SOCKET_WRITTEN: u8 = 13;
 const CLIENT_WAKE: u8 = 14;
 const CLIENT_STDOUT_WRITTEN: u8 = 15;
+const DAEMON_FRAME_START: u8 = 16;
 
 fn read_marks(path: &Path) -> Vec<Mark> {
     let Ok(text) = fs::read_to_string(path) else {
@@ -1016,7 +1017,7 @@ fn last_between(marks: &[Mark], point: u8, from: u64, until: u64) -> Option<Mark
 }
 
 /// The stretches between points that a key and its echo pass, in order.
-const STRETCHES: [(&str, &str); 16] = [
+const STRETCHES: [(&str, &str); 17] = [
     (
         "bench_write_to_client_read",
         "operating system: the test's terminal to the client's read",
@@ -1048,7 +1049,11 @@ const STRETCHES: [(&str, &str); 16] = [
         "pty_read_to_fed",
         "daemon: terminal emulation takes the echo in",
     ),
-    ("fed_to_snapshot", "daemon: panes' screens read out"),
+    (
+        "fed_to_frame_start",
+        "daemon: rest of the turn before the frame is begun",
+    ),
+    ("frame_start_to_snapshot", "daemon: panes' screens read out"),
     ("snapshot_to_composed", "daemon: grid composed"),
     (
         "composed_to_encoded",
@@ -1120,7 +1125,8 @@ fn stages_table(dir: &Path, socket_name: &str, sent: &[u64], seen: &[u64]) -> R<
             let o2 = first_after(&daemon, DAEMON_PTY_READ, k7.ns)?;
             let w2 = last_between(&daemon, DAEMON_WAKE, k7.ns, o2.ns)?;
             let o3 = first_after(&daemon, DAEMON_FED, o2.ns)?;
-            let o4 = first_after(&daemon, DAEMON_SNAPSHOT, o3.ns)?;
+            let o3b = first_after(&daemon, DAEMON_FRAME_START, o3.ns)?;
+            let o4 = first_after(&daemon, DAEMON_SNAPSHOT, o3b.ns)?;
             let o5 = first_after(&daemon, DAEMON_COMPOSED, o4.ns)?;
             let o6 = first_after(&daemon, DAEMON_ENCODED, o5.ns)?;
             let o7 = first_after(&daemon, DAEMON_SOCKET_WRITTEN, o6.ns)?;
@@ -1129,9 +1135,11 @@ fn stages_table(dir: &Path, socket_name: &str, sent: &[u64], seen: &[u64]) -> R<
             if c2.ns >= end {
                 return None;
             }
-            Some((k2, k3, k4, k5, k6, k7, w2, o2, o3, o4, o5, o6, o7, c1, c2))
+            Some((
+                k2, k3, k4, k5, k6, k7, w2, o2, o3, o3b, o4, o5, o6, o7, c1, c2,
+            ))
         })();
-        let Some((k2, k3, k4, k5, k6, k7, w2, o2, o3, o4, o5, o6, o7, c1, c2)) = chain else {
+        let Some((k2, k3, k4, k5, k6, k7, w2, o2, o3, o3b, o4, o5, o6, o7, c1, c2)) = chain else {
             continue;
         };
         used += 1;
@@ -1147,7 +1155,8 @@ fn stages_table(dir: &Path, socket_name: &str, sent: &[u64], seen: &[u64]) -> R<
             d(k7.ns, w2.ns),
             d(w2.ns, o2.ns),
             d(o2.ns, o3.ns),
-            d(o3.ns, o4.ns),
+            d(o3.ns, o3b.ns),
+            d(o3b.ns, o4.ns),
             d(o4.ns, o5.ns),
             d(o5.ns, o6.ns),
             d(o6.ns, c1.ns),

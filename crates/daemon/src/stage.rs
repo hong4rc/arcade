@@ -48,6 +48,8 @@ pub enum Point {
     ClientWake,
     /// The client has written the frame to its terminal.
     ClientStdoutWritten,
+    /// The daemon begins to build the frame (after the work of the turn that came before it).
+    DaemonFrameStart,
 }
 
 #[derive(Clone, Copy)]

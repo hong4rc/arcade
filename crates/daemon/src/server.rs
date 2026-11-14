@@ -814,6 +814,12 @@ impl Server {
                             client.read_pending = true;
                             break;
                         }
+                        // A read that did not fill the buffer took everything the socket held;
+                        // what arrives later reports itself again, so no read is needed just to
+                        // be told "nothing more".
+                        if n < buf.len() {
+                            break;
+                        }
                     }
                     Err(e) if would_block(&e) => break,
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}

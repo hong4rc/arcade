@@ -133,6 +133,7 @@ impl Server {
 
     /// Build the screen update for a session's client and queue it.
     pub(super) fn build_frame_for(&mut self, session_id: u64) {
+        stage_mark!(DaemonFrameStart);
         let status_position = self.config.status_position;
         let unlock_key = self.unlock_key_name();
         let Some(session) = self.sessions.get_mut(&session_id) else {
