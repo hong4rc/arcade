@@ -361,7 +361,8 @@ impl Soak {
                 }
             }
             91..=93 => self.mouse(),
-            94..=96 => {
+            96 => self.tree(),
+            94..=95 => {
                 self.note("types a run of output".to_string());
                 self.keys(b"yes 'soak line' | head -n 700\r");
             }
@@ -485,6 +486,44 @@ impl Soak {
         } else {
             self.keys(b"\r");
         }
+    }
+
+    /// The tree of sessions, windows and panes: opened (looking, with the pane lifted, or with
+    /// the window lifted), walked at random, lifted and dropped, and left with Escape or with
+    /// Enter, which jumps or moves whatever the choice happens to be.
+    fn tree(&mut self) {
+        let which = self.rng.below(3);
+        let name = ["tree", "pane move", "window move"][which];
+        self.note(format!("opens the {name}"));
+        self.keys(PREFIX);
+        self.keys([b"t", b"m", b"M"][which]);
+        for _ in 0..self.rng.below(8) {
+            let k: &[u8] = match self.rng.below(10) {
+                0 | 1 => b"\x1b[B",
+                2 | 3 => b"\x1b[A",
+                4 => b"\x1b[C",
+                5 => b"\x1b[D",
+                6 => b" ",
+                7 => b"\x0e",
+                8 => b"\x10",
+                _ => b"a",
+            };
+            self.keys(k);
+            if self.rng.below(6) == 0 {
+                self.drain();
+            }
+        }
+        match self.rng.below(4) {
+            0 => {
+                self.keys(ESCAPE);
+                self.keys(ESCAPE);
+            }
+            1 => self.keys(ESCAPE),
+            _ => self.keys(b"\r"),
+        }
+        // A tree left open is closed before the next operation, whatever happened.
+        self.keys(ESCAPE);
+        self.keys(ESCAPE);
     }
 
     fn second_session(&mut self) {

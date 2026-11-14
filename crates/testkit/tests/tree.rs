@@ -741,3 +741,35 @@ fn a_window_cannot_be_put_on_a_pane_or_on_itself() {
     closed(&mut client);
     assert!(client.screen_text().contains("in-nvim"));
 }
+
+// ---- Rebinding the keys of the tree ----
+
+#[test]
+fn the_lift_key_can_be_rebound_and_the_old_one_goes_into_the_filter() {
+    let dir = std::env::temp_dir().join(format!("arc-tree-keys-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("config.toml");
+    std::fs::write(
+        &file,
+        "[keys.list]\n\"x\" = \"list.lift\"\n\"space\" = false\n",
+    )
+    .unwrap();
+    let path = file.clone();
+    let daemon = TestDaemon::start_with(move |c| c.config_path = Some(path));
+    let mut client = world(&daemon);
+    open_tree(&mut client);
+    client.send(b"x");
+    let ok = client.wait_until(WAIT, |c| chosen(c).contains("[lifted]"));
+    assert!(ok, "{}", client.screen_text());
+    client.send(b"x");
+    let ok = client.wait_until(WAIT, |c| !chosen(c).contains("[lifted]"));
+    assert!(ok, "{}", client.screen_text());
+    // Space is a character of the filter now: "nvim " matches nothing.
+    client.send(b"nvim");
+    let ok = client.wait_until(WAIT, |c| box_rows(c).iter().any(|r| r.contains("› nvim")));
+    assert!(ok, "{}", client.screen_text());
+    client.send(b" ");
+    let ok = client.wait_until(WAIT, |c| !box_rows(c).iter().any(|r| r.contains("› nvim")));
+    assert!(ok, "{}", client.screen_text());
+    let _ = std::fs::remove_dir_all(&dir);
+}
