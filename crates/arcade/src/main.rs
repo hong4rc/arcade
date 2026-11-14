@@ -290,7 +290,7 @@ fn attach_command(
 /// Arcade inside Arcade.
 fn in_own_pane(options: &Options) -> bool {
     std::env::var_os("ARCADE_PANE").is_some()
-        && std::env::var_os("ARCADE").is_some_and(|v| PathBuf::from(v) == options.socket)
+        && std::env::var_os("ARCADE").is_some_and(|v| v == options.socket.as_os_str())
 }
 
 /// Move the screen that shows this pane to another session.
