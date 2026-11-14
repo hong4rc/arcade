@@ -117,12 +117,18 @@ fn the_command_mode_feeds_the_command_and_the_client_gets_no_sequence() {
     search(&mut client, true, "50");
     client.wait_for_row("50").unwrap();
     client.send(b"Vy");
-    let ok = client.wait_until(WAIT, |_| {
-        std::fs::read_to_string(&file).is_ok_and(|t| t == "50")
-    });
-    assert!(ok, "{:?}", std::fs::read_to_string(&file));
-    assert!(client.clipboard_writes.is_empty());
+    // The message stays for three seconds only, so it is looked at first.
     message_has(&mut client, "copied 2 characters");
+    let start = std::time::Instant::now();
+    while std::fs::read_to_string(&file).map_or(true, |t| t != "50") {
+        assert!(
+            start.elapsed() < WAIT,
+            "{:?}",
+            std::fs::read_to_string(&file)
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(client.clipboard_writes.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
