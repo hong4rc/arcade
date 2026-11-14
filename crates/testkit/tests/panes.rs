@@ -455,3 +455,93 @@ fn a_broken_out_pane_gets_the_place_right_after_its_window() {
     // The shown window is the second: the one just made.
     assert!(lines[1].ends_with("\t1"), "{lines:?}");
 }
+
+fn four_panes(daemon: &TestDaemon) -> TestClient {
+    let client = client_with_shell(daemon);
+    run(daemon, "pane.split-right");
+    run(daemon, "pane.split-down");
+    run(daemon, "pane.focus-left");
+    run(daemon, "pane.split-down");
+    client
+}
+
+/// How many columns of the 101 by 30 pane area have a divider all the way down, and how many
+/// rows have one all the way across.
+fn divider_lines(client: &mut TestClient) -> (usize, usize) {
+    let rows = client.region(0, 0, 101, 30);
+    let tall = (0..101)
+        .filter(|x| {
+            rows.iter()
+                .all(|r| r.chars().nth(*x).is_some_and(|c| "│├┤┼".contains(c)))
+        })
+        .count();
+    let wide = rows
+        .iter()
+        .filter(|r| !r.is_empty() && r.chars().all(|c| c == '─'))
+        .count();
+    (tall, wide)
+}
+
+#[test]
+fn space_goes_round_the_arrangements_and_every_pane_keeps_some_room() {
+    let daemon = TestDaemon::start();
+    let mut client = four_panes(&daemon);
+    let space = |client: &mut TestClient| {
+        client.send(b"\x1b[109;5u");
+        client.send(b" ");
+    };
+    // Even horizontal: three dividers all the way down, none across.
+    space(&mut client);
+    assert!(
+        client.wait_until(WAIT, |c| divider_lines(c) == (3, 0)),
+        "{}",
+        client.screen_text()
+    );
+    // Even vertical: three dividers across, none down.
+    space(&mut client);
+    assert!(
+        client.wait_until(WAIT, |c| divider_lines(c) == (0, 3)),
+        "{:?}\n{}",
+        divider_lines(&mut client),
+        client.screen_text()
+    );
+    // One main pane: one divider down the whole height, two across the right part.
+    space(&mut client);
+    assert!(
+        client.wait_until(WAIT, |c| divider_lines(c).0 == 1),
+        "{}",
+        client.screen_text()
+    );
+    let rows = client.region(0, 0, 101, 30);
+    let across = rows.iter().filter(|r| r.contains('─')).count();
+    assert_eq!(across, 2, "{}", client.screen_text());
+    // And round again; the repeat window lets the key go on without the prefix.
+    client.send(b" ");
+    assert!(
+        client.wait_until(WAIT, |c| divider_lines(c) == (3, 0)),
+        "{}",
+        client.screen_text()
+    );
+    // Every pane still has a program that answers with a size above zero.
+    let (_, sessions) = daemon.command("session.list", &[]).unwrap();
+    assert_eq!(sessions.trim().split('\t').nth(4), Some("4"));
+}
+
+#[test]
+fn equals_evens_out_panes_after_their_sizes_were_pushed_apart() {
+    let daemon = TestDaemon::start();
+    let mut client = client_with_shell(&daemon);
+    run(&daemon, "pane.split-right");
+    for _ in 0..3 {
+        run(&daemon, "pane.resize-left");
+    }
+    // The divider is 15 columns to the left of the middle.
+    assert!(client.wait_until(WAIT, |c| c.region(35, 0, 1, 30).iter().all(|r| r == "│")));
+    client.send(b"\x1b[109;5u");
+    client.send(b"=");
+    assert!(
+        client.wait_until(WAIT, |c| c.region(50, 0, 1, 30).iter().all(|r| r == "│")),
+        "{}",
+        client.screen_text()
+    );
+}

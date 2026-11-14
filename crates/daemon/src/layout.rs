@@ -123,7 +123,90 @@ fn split_sizes(
     (a, avail - a)
 }
 
+/// The layouts `window.layout-next` goes through, in this order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arrangement {
+    /// Every pane the same width, side by side.
+    EvenHorizontal,
+    /// Every pane the same height, one above the other.
+    EvenVertical,
+    /// The first pane takes the left part, the others share the right part, one above the other.
+    MainPane,
+}
+
+/// The share of the width the main pane takes.
+const MAIN_PANE_SHARE: f64 = 0.6;
+
+impl Arrangement {
+    /// The layout after the one applied last (the first when none was).
+    pub fn after(last: Option<Arrangement>) -> Arrangement {
+        match last {
+            None | Some(Arrangement::MainPane) => Arrangement::EvenHorizontal,
+            Some(Arrangement::EvenHorizontal) => Arrangement::EvenVertical,
+            Some(Arrangement::EvenVertical) => Arrangement::MainPane,
+        }
+    }
+}
+
+/// `panes` one after the other along `axis`, all of the same size.
+fn chain(panes: &[PaneId], axis: Axis) -> Node {
+    match panes {
+        [] | [_] => Node::Leaf(panes.first().copied().unwrap_or(0)),
+        [first, rest @ ..] => Node::Split(Box::new(Split {
+            axis,
+            ratio: 1.0 / panes.len() as f64,
+            a: Node::Leaf(*first),
+            b: chain(rest, axis),
+        })),
+    }
+}
+
 impl Node {
+    /// How many panes lie one after the other along `along` in the widest place of this subtree.
+    fn span(&self, along: Axis) -> usize {
+        match self {
+            Node::Leaf(_) => 1,
+            Node::Split(s) if s.axis == along => s.a.span(along) + s.b.span(along),
+            Node::Split(s) => s.a.span(along).max(s.b.span(along)),
+        }
+    }
+
+    /// Set every ratio so that the panes along each axis get the same room, to the cell: the
+    /// room that is left once the dividers are taken out is shared out, and the cells that do
+    /// not divide go to the first panes. `cols` and `rows` are the room of this subtree.
+    fn share_equally(&mut self, cols: u16, rows: u16) {
+        let Node::Split(s) = self else {
+            return;
+        };
+        let total = match s.axis {
+            Axis::LeftRight => cols,
+            Axis::TopBottom => rows,
+        };
+        let (pa, pb) = (s.a.span(s.axis), s.b.span(s.axis));
+        let avail = usize::from(total.saturating_sub(1));
+        // The panes in a row, and the dividers between them, take the room of the subtree.
+        let for_panes = avail.saturating_sub(pa - 1 + pb - 1);
+        let a_panes = (for_panes * pa).div_ceil(pa + pb);
+        let a_cells = a_panes + pa - 1;
+        s.ratio = if avail == 0 {
+            0.5
+        } else {
+            a_cells as f64 / avail as f64
+        };
+        let a_cells = u16::try_from(a_cells).unwrap_or(u16::MAX);
+        let b_cells = total.saturating_sub(1).saturating_sub(a_cells);
+        match s.axis {
+            Axis::LeftRight => {
+                s.a.share_equally(a_cells, rows);
+                s.b.share_equally(b_cells, rows);
+            }
+            Axis::TopBottom => {
+                s.a.share_equally(cols, a_cells);
+                s.b.share_equally(cols, b_cells);
+            }
+        }
+    }
+
     /// Put `a` where `b` is and `b` where `a` is.
     fn swap_leaves(&mut self, a: PaneId, b: PaneId) {
         match self {
@@ -448,6 +531,44 @@ impl Layout {
         }
         self.root.swap_leaves(a, b);
         Ok(())
+    }
+
+    /// Lay the panes out again in this arrangement, in the order they have now. Refused (and
+    /// the layout left as it was) when a pane would end up below the minimum size.
+    pub fn arrange(&mut self, kind: Arrangement) -> Result<(), LayoutError> {
+        let panes: Vec<PaneId> = self.rects().into_iter().map(|(p, _)| p).collect();
+        let before = self.root.clone();
+        self.root = match kind {
+            Arrangement::EvenHorizontal => chain(&panes, Axis::LeftRight),
+            Arrangement::EvenVertical => chain(&panes, Axis::TopBottom),
+            Arrangement::MainPane => match panes.split_first() {
+                Some((main, rest)) if !rest.is_empty() => Node::Split(Box::new(Split {
+                    axis: Axis::LeftRight,
+                    ratio: MAIN_PANE_SHARE,
+                    a: Node::Leaf(*main),
+                    b: chain(rest, Axis::TopBottom),
+                })),
+                _ => before.clone(),
+            },
+        };
+        self.keep_if_big_enough(before)
+    }
+
+    /// Keep the tree and give the panes along each axis the same room.
+    pub fn even(&mut self) -> Result<(), LayoutError> {
+        let before = self.root.clone();
+        let (cols, rows) = (self.cols, self.rows);
+        self.root.share_equally(cols, rows);
+        self.keep_if_big_enough(before)
+    }
+
+    fn keep_if_big_enough(&mut self, before: Node) -> Result<(), LayoutError> {
+        if self.all_big_enough() {
+            Ok(())
+        } else {
+            self.root = before;
+            Err(LayoutError::TooSmall)
+        }
     }
 
     /// Remove a pane and give its room to its neighbour. Returns the pane that took the room.
@@ -855,5 +976,135 @@ mod tests {
             assert_eq!(*pb, expected);
         }
         assert_eq!(l.swap(1, 9), Err(LayoutError::NoSuchPane));
+    }
+
+    fn four_panes(cols: u16, rows: u16) -> Layout {
+        let mut l = Layout::new(1, cols, rows);
+        l.split(1, Axis::LeftRight, 2).unwrap();
+        l.split(2, Axis::TopBottom, 3).unwrap();
+        l.split(1, Axis::TopBottom, 4).unwrap();
+        l
+    }
+
+    /// The panes and dividers fill the area exactly and every pane has some room.
+    fn assert_fills(l: &Layout) {
+        let cells: usize = l
+            .rects()
+            .iter()
+            .map(|(_, r)| usize::from(r.w) * usize::from(r.h))
+            .sum();
+        let dividers: usize = l.dividers().iter().map(|d| usize::from(d.len)).sum();
+        assert!(l.rects().iter().all(|(_, r)| r.w > 0 && r.h > 0));
+        assert_eq!(
+            cells + dividers,
+            usize::from(l.area().w) * usize::from(l.area().h)
+        );
+    }
+
+    #[test]
+    fn the_arrangements_go_round_in_order_and_each_fills_the_area() {
+        for (cols, rows) in [(101, 30), (80, 24), (47, 13)] {
+            let mut l = four_panes(cols, rows);
+            let order: Vec<PaneId> = l.rects().into_iter().map(|(p, _)| p).collect();
+            let mut last = None;
+            let mut seen = Vec::new();
+            for _ in 0..6 {
+                let next = Arrangement::after(last);
+                l.arrange(next).unwrap();
+                assert_fills(&l);
+                // The order of the panes is kept.
+                let now: Vec<PaneId> = l.rects().into_iter().map(|(p, _)| p).collect();
+                assert_eq!(now, order);
+                seen.push(next);
+                last = Some(next);
+            }
+            use Arrangement::*;
+            assert_eq!(
+                seen,
+                [
+                    EvenHorizontal,
+                    EvenVertical,
+                    MainPane,
+                    EvenHorizontal,
+                    EvenVertical,
+                    MainPane
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn even_arrangements_give_equal_rooms_and_the_main_pane_the_larger_share() {
+        let mut l = four_panes(101, 30);
+        l.arrange(Arrangement::EvenHorizontal).unwrap();
+        let widths: Vec<u16> = l.rects().iter().map(|(_, r)| r.w).collect();
+        assert!(
+            widths.iter().max().unwrap() - widths.iter().min().unwrap() <= 1,
+            "{widths:?}"
+        );
+        assert!(l.rects().iter().all(|(_, r)| r.h == 30));
+        l.arrange(Arrangement::EvenVertical).unwrap();
+        let heights: Vec<u16> = l.rects().iter().map(|(_, r)| r.h).collect();
+        assert!(
+            heights.iter().max().unwrap() - heights.iter().min().unwrap() <= 1,
+            "{heights:?}"
+        );
+        l.arrange(Arrangement::MainPane).unwrap();
+        let rects = l.rects();
+        assert_eq!(rects[0].1.h, 30);
+        assert!(rects[0].1.w > rects[1].1.w);
+        assert!(rects[1..].iter().all(|(_, r)| r.x == rects[1].1.x));
+    }
+
+    #[test]
+    fn an_arrangement_that_leaves_a_pane_too_small_is_refused_and_changes_nothing() {
+        let mut l = four_panes(22, 30);
+        let before = l.rects();
+        // Four panes side by side need 4 * 5 + 3 = 23 columns.
+        assert_eq!(
+            l.arrange(Arrangement::EvenHorizontal),
+            Err(LayoutError::TooSmall)
+        );
+        assert_eq!(l.rects(), before);
+    }
+
+    #[test]
+    fn evening_out_leaves_the_panes_of_one_direction_within_one_cell_of_each_other() {
+        for cols in [60u16, 79, 101, 130] {
+            let mut l = Layout::new(1, cols, 30);
+            l.split(1, Axis::LeftRight, 2).unwrap();
+            l.split(2, Axis::LeftRight, 3).unwrap();
+            l.split(3, Axis::LeftRight, 4).unwrap();
+            // Skew it: the divider next to pane 4 goes left.
+            for _ in 0..3 {
+                let _ = l.resize(4, Direction::Left, 5);
+            }
+            l.even().unwrap();
+            assert_fills(&l);
+            let widths: Vec<u16> = l.rects().iter().map(|(_, r)| r.w).collect();
+            assert!(
+                widths.iter().max().unwrap() - widths.iter().min().unwrap() <= 1,
+                "{cols}: {widths:?}"
+            );
+        }
+        // A grid of two columns of two: the columns are equal too.
+        let mut l = four_panes(101, 30);
+        l.resize(2, Direction::Left, 5).unwrap();
+        l.even().unwrap();
+        assert_fills(&l);
+        let rects = l.rects();
+        let left = rects
+            .iter()
+            .filter(|(_, r)| r.x == 0)
+            .map(|(_, r)| r.w)
+            .max()
+            .unwrap();
+        let right = rects
+            .iter()
+            .filter(|(_, r)| r.x != 0)
+            .map(|(_, r)| r.w)
+            .max()
+            .unwrap();
+        assert!(left.abs_diff(right) <= 1, "{left} {right}");
     }
 }

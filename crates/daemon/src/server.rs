@@ -188,6 +188,8 @@ struct Window {
     last_focus: Option<PaneId>,
     /// The focused pane fills the whole window; the layout underneath is kept.
     zoomed: bool,
+    /// The arrangement `window.layout-next` applied last, which it goes on from.
+    arrangement: Option<crate::layout::Arrangement>,
 }
 
 impl Window {
@@ -1226,6 +1228,7 @@ impl Server {
                     focus: pane_id,
                     last_focus: None,
                     zoomed: false,
+                    arrangement: None,
                 }],
                 current: window_id,
                 last_window: None,

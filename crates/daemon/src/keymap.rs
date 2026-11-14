@@ -462,6 +462,8 @@ impl Keymap {
         bind(t, ch('z'), "pane.zoom", &[], false);
         bind(t, ch('x'), "pane.close", &[], false);
         bind(t, ch('!'), "pane.break", &[], false);
+        bind(t, ch(' '), "window.layout-next", &[], true);
+        bind(t, ch('='), "window.layout-even", &[], false);
         bind(t, ch('c'), "window.new", &[], false);
         for n in 1..=9u32 {
             let digit = char::from_digit(n, 10).unwrap_or('1');

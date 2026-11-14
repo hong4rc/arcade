@@ -245,6 +245,8 @@ impl Server {
             Command::PaneResize(direction) => self.resize_pane(ctx, direction),
             Command::PaneSwap(direction) => self.swap_pane(ctx, direction),
             Command::PaneBreak => self.break_pane(ctx),
+            Command::WindowLayoutNext => self.layout_next(ctx),
+            Command::WindowLayoutEven => self.layout_even(ctx),
             Command::PaneSplit(axis) => self.split_pane(ctx, axis),
             Command::PaneZoom => self.zoom_pane(ctx),
             Command::PaneClose => {
@@ -1169,6 +1171,7 @@ impl Server {
                 focus: ctx.pane,
                 last_focus: None,
                 zoomed: false,
+                arrangement: None,
             },
         );
         if renumber {
@@ -1190,6 +1193,40 @@ impl Server {
             session.chrome_dirty = true;
             session.relayout = true;
         }
+        Ok(String::new())
+    }
+
+    /// Lay the panes out in the arrangement after the one applied last.
+    fn layout_next(&mut self, ctx: Ctx) -> Result<String, String> {
+        self.unzoom(ctx);
+        let window = self
+            .sessions
+            .get_mut(&ctx.session)
+            .and_then(|s| s.window_mut(ctx.window))
+            .ok_or_else(|| "no such window".to_string())?;
+        let next = crate::layout::Arrangement::after(window.arrangement);
+        window
+            .layout
+            .arrange(next)
+            .map_err(|_| "cannot arrange: a pane would be too small".to_string())?;
+        window.arrangement = Some(next);
+        self.window_changed(ctx);
+        Ok(String::new())
+    }
+
+    /// Give the panes of the window the same room along each axis.
+    fn layout_even(&mut self, ctx: Ctx) -> Result<String, String> {
+        self.unzoom(ctx);
+        let window = self
+            .sessions
+            .get_mut(&ctx.session)
+            .and_then(|s| s.window_mut(ctx.window))
+            .ok_or_else(|| "no such window".to_string())?;
+        window
+            .layout
+            .even()
+            .map_err(|_| "cannot even out: a pane would be too small".to_string())?;
+        self.window_changed(ctx);
         Ok(String::new())
     }
 
@@ -1249,6 +1286,7 @@ impl Server {
                 focus: pane_id,
                 last_focus: None,
                 zoomed: false,
+                arrangement: None,
             },
             base_index,
             renumber,
