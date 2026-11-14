@@ -402,6 +402,16 @@ impl Layout {
         if !self.contains(target) {
             return Err(LayoutError::NoSuchPane);
         }
+        // The pane must have room for two of its own: a split never moves the dividers of the
+        // other panes to find the room.
+        let rect = self.rect_of(target).ok_or(LayoutError::NoSuchPane)?;
+        let fits = match axis {
+            Axis::LeftRight => rect.w > 2 * MIN_COLS,
+            Axis::TopBottom => rect.h > 2 * MIN_ROWS,
+        };
+        if !fits {
+            return Err(LayoutError::TooSmall);
+        }
         let before = self.root.clone();
         let node = Node::Split(Box::new(Split {
             axis,
