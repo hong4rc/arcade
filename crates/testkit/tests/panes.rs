@@ -362,3 +362,96 @@ fn ctrl_and_a_direction_after_the_prefix_swaps_and_repeats() {
     wait_in(&mut client, (0, 0, 50, 30), "A-is-here");
     wait_in(&mut client, (51, 0, 50, 30), "B-is-here");
 }
+
+fn window_lines(daemon: &TestDaemon) -> Vec<String> {
+    let (_, output) = daemon.command("window.list", &[]).unwrap();
+    output.lines().map(str::to_string).collect()
+}
+
+#[test]
+fn breaking_a_pane_out_makes_a_window_after_this_one_with_the_pane_as_it_was() {
+    let daemon = TestDaemon::start();
+    let mut client = client_with_shell(&daemon);
+    run(&daemon, "pane.split-right");
+    run(&daemon, "pane.split-down");
+    // Three panes; the one with the focus (bottom right) prints a marker and many lines.
+    client.type_line("echo scroll-marker; seq 1 80; echo last-line");
+    let printed = client.wait_until(WAIT, |c| {
+        c.region(51, 0, 50, 30)
+            .iter()
+            .any(|r| r.trim() == "last-line")
+    });
+    assert!(printed, "{}", client.screen_text());
+    assert_eq!(pane_count(&daemon), 3);
+    let focused = client.focused_pane_id();
+    // The prefix, then `!` as the new protocol reports it: Shift and `1`.
+    client.send(b"\x1b[109;5u");
+    client.send(b"\x1b[49;2u");
+    let ok = client.wait_until(WAIT, |_| window_lines(&daemon).len() == 2);
+    assert!(ok, "{:?}", window_lines(&daemon));
+    let lines = window_lines(&daemon);
+    // The new window is the second one and is shown.
+    assert!(
+        lines[1].starts_with("2\t") && lines[1].ends_with("\t1"),
+        "{lines:?}"
+    );
+    assert!(lines[0].ends_with("\t0"), "{lines:?}");
+    // It holds exactly the pane that was broken out, filling the window, with its text.
+    assert_eq!(client.focused_pane_id(), focused);
+    wait_in(&mut client, (0, 0, 101, 30), "last-line");
+    let divider_free = client
+        .region(0, 0, 101, 30)
+        .iter()
+        .all(|r| !r.contains('│'));
+    assert!(divider_free);
+    // Its scrollback came along.
+    run(&daemon, "copy.enter");
+    run(&daemon, "copy.top");
+    wait_in(&mut client, (0, 0, 101, 30), "scroll-marker");
+    run(&daemon, "copy.exit");
+    // The old window has the other two panes.
+    run_with(&daemon, "window.select", &["1"]);
+    let (_, sessions) = daemon.command("session.list", &[]).unwrap();
+    assert_eq!(sessions.trim().split('\t').nth(4), Some("3"), "{sessions}");
+    let two = client.wait_until(WAIT, |c| {
+        let rows = c.region(0, 0, 101, 30);
+        rows.iter().any(|r| r.contains('│')) && !rows.iter().any(|r| r.contains("last-line"))
+    });
+    assert!(two, "{}", client.screen_text());
+}
+
+fn run_with(daemon: &TestDaemon, name: &str, args: &[&str]) {
+    let (ok, output) = daemon.command(name, args).unwrap();
+    assert!(ok, "{name}: {output}");
+}
+
+#[test]
+fn breaking_out_the_only_pane_of_a_window_says_so_and_changes_nothing() {
+    let daemon = TestDaemon::start();
+    let _client = client_with_shell(&daemon);
+    let before = window_lines(&daemon);
+    let (ok, output) = daemon.command("pane.break", &[]).unwrap();
+    assert!(!ok && output.contains("only one pane"), "{output}");
+    assert_eq!(window_lines(&daemon), before);
+    assert_eq!(pane_count(&daemon), 1);
+}
+
+#[test]
+fn a_broken_out_pane_gets_the_place_right_after_its_window() {
+    let daemon = TestDaemon::start();
+    let _client = client_with_shell(&daemon);
+    run(&daemon, "window.new");
+    run(&daemon, "window.new");
+    run_with(&daemon, "window.select", &["1"]);
+    run(&daemon, "pane.split-right");
+    run(&daemon, "pane.break");
+    let lines = window_lines(&daemon);
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    let numbers: Vec<&str> = lines
+        .iter()
+        .map(|l| l.split('\t').next().unwrap())
+        .collect();
+    assert_eq!(numbers, ["1", "2", "3", "4"]);
+    // The shown window is the second: the one just made.
+    assert!(lines[1].ends_with("\t1"), "{lines:?}");
+}

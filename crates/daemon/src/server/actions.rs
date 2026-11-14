@@ -244,6 +244,7 @@ impl Server {
             Command::PaneFocusLast => self.focus_last(ctx),
             Command::PaneResize(direction) => self.resize_pane(ctx, direction),
             Command::PaneSwap(direction) => self.swap_pane(ctx, direction),
+            Command::PaneBreak => self.break_pane(ctx),
             Command::PaneSplit(axis) => self.split_pane(ctx, axis),
             Command::PaneZoom => self.zoom_pane(ctx),
             Command::PaneClose => {
@@ -1121,6 +1122,74 @@ impl Server {
         }
         self.set_focus(ctx, new_id);
         self.window_changed(ctx);
+        Ok(String::new())
+    }
+
+    /// The pane leaves its window for a window of its own, which comes right after this one and
+    /// is shown. The process and what is on its screen are untouched.
+    fn break_pane(&mut self, ctx: Ctx) -> Result<String, String> {
+        let session = self
+            .sessions
+            .get(&ctx.session)
+            .ok_or_else(|| "no such session".to_string())?;
+        let window = session
+            .window(ctx.window)
+            .ok_or_else(|| "no such window".to_string())?;
+        if window.layout.len() < 2 {
+            return Err("only one pane in this window".to_string());
+        }
+        let (cols, rows) = window_area(session.cols, session.rows, self.config.status_position);
+        let cwd = self
+            .panes
+            .get(&ctx.pane)
+            .and_then(|p| pty::process_cwd(p.pid))
+            .unwrap_or_else(|| session.cwd.clone());
+        self.unzoom(ctx);
+        self.remove_leaf(ctx);
+        let window_id = self.next_window;
+        self.next_window += 1;
+        let (base_index, renumber) = (self.config.base_index, self.config.renumber);
+        let Some(session) = self.sessions.get_mut(&ctx.session) else {
+            return Ok(String::new());
+        };
+        let after = session
+            .windows
+            .iter()
+            .position(|w| w.id == ctx.window)
+            .map_or(session.windows.len(), |i| i + 1);
+        let current_number = session.windows.get(after.wrapping_sub(1)).map(|w| w.number);
+        session.windows.insert(
+            after,
+            Window {
+                id: window_id,
+                number: 0,
+                name: directory_name(&cwd),
+                name_manual: false,
+                layout: Layout::new(ctx.pane, cols, rows),
+                focus: ctx.pane,
+                last_focus: None,
+                zoomed: false,
+            },
+        );
+        if renumber {
+            for (i, w) in session.windows.iter_mut().enumerate() {
+                w.number = base_index + i;
+            }
+        } else {
+            // Numbers stay: the new window takes the first free number after this window's.
+            let taken: Vec<usize> = session.windows.iter().map(|w| w.number).collect();
+            let free = (current_number.unwrap_or(base_index) + 1..)
+                .find(|n| !taken.contains(n))
+                .unwrap_or(base_index);
+            session.windows[after].number = free;
+            session.windows.sort_by_key(|w| w.number);
+        }
+        self.select_window(ctx.session, window_id);
+        self.apply_window_sizes(ctx.session, window_id);
+        if let Some(session) = self.sessions.get_mut(&ctx.session) {
+            session.chrome_dirty = true;
+            session.relayout = true;
+        }
         Ok(String::new())
     }
 
