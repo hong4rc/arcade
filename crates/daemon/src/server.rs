@@ -247,6 +247,8 @@ struct Session {
     names_checked: Option<Instant>,
     /// The title last sent to the attached client's terminal; `None` until one is sent.
     sent_title: Option<String>,
+    /// When the windows' names are to be looked at again because the last look was skipped.
+    names_due: Option<Instant>,
     /// The attached client's keyboard bytes that are not complete yet.
     keys: KeyReader,
     /// The prefix, the lock, the prompt and the message line.
@@ -567,6 +569,7 @@ impl Server {
             // (3) Processes that ended.
             self.finish_exited_panes();
             // (4) Screen updates.
+            self.wake_name_checks();
             self.send_frames();
             self.send_titles();
             // (5) Panes that have been quiet shrink their old scrollback, a little at a time.
@@ -640,8 +643,27 @@ impl Server {
             if let Some(t) = s.key_state.deadline() {
                 consider(t);
             }
+            if s.client.is_some()
+                && let Some(t) = s.names_due
+            {
+                consider(t);
+            }
         }
         deadline.map(|t| t.saturating_duration_since(now))
+    }
+
+    /// A session whose names were due to be looked at gets an update, which looks at them.
+    fn wake_name_checks(&mut self) {
+        let now = Instant::now();
+        for s in self.sessions.values_mut() {
+            if s.client.is_some()
+                && let Some(t) = s.names_due
+                && t <= now
+            {
+                s.names_due = None;
+                s.chrome_dirty = true;
+            }
+        }
     }
 
     fn should_exit(&mut self) -> bool {
@@ -1181,6 +1203,7 @@ impl Server {
                 last_frame: None,
                 names_checked: None,
                 sent_title: None,
+                names_due: None,
                 keys: KeyReader::new(),
                 key_state: KeyState::new(),
                 picker: None,

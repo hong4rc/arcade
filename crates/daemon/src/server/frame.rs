@@ -153,24 +153,30 @@ impl Server {
             return;
         }
         // The names of the windows come from the panes' directories. They are looked at only
-        // now, when an update is going out anyway, and at most once a second.
+        // now, when an update is going out anyway, and at most once a second. A look that is
+        // skipped for being too soon leaves one deadline for the loop, at the moment a second
+        // is full, so a directory changed in the meantime is seen then; no deadline is left
+        // once the names have been looked at.
         let now = Instant::now();
-        if session
-            .names_checked
-            .is_none_or(|t| now.duration_since(t) >= NAME_CHECK_INTERVAL)
-        {
-            session.names_checked = Some(now);
-            for window in session.windows.iter_mut().filter(|w| !w.name_manual) {
-                let name = self
-                    .panes
-                    .get(&window.focus)
-                    .and_then(|p| pty::process_cwd(p.pid))
-                    .map(|cwd| directory_name(&cwd));
-                if let Some(name) = name
-                    && name != window.name
-                {
-                    window.name = name;
-                    session.chrome_dirty = true;
+        match session.names_checked {
+            Some(t) if now.duration_since(t) < NAME_CHECK_INTERVAL => {
+                session.names_due = Some(t + NAME_CHECK_INTERVAL);
+            }
+            _ => {
+                session.names_checked = Some(now);
+                session.names_due = None;
+                for window in session.windows.iter_mut().filter(|w| !w.name_manual) {
+                    let name = self
+                        .panes
+                        .get(&window.focus)
+                        .and_then(|p| pty::process_cwd(p.pid))
+                        .map(|cwd| directory_name(&cwd));
+                    if let Some(name) = name
+                        && name != window.name
+                    {
+                        window.name = name;
+                        session.chrome_dirty = true;
+                    }
                 }
             }
         }

@@ -272,3 +272,15 @@ fn nothing_reaches_the_client_while_every_pane_is_still() {
         "the status bar or a pane drew while everything was still"
     );
 }
+
+/// The tab is named after the directory of its pane. A `cd` right after the screen was last
+/// drawn is seen within a moment, though nothing more is printed afterwards.
+#[test]
+fn a_tab_takes_the_name_of_the_directory_after_a_cd_with_nothing_printed_later() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    client.type_line("cd /usr/local");
+    let ok = client.wait_until(Duration::from_secs(2), |c| bar_of(c).contains(" local "));
+    assert!(ok, "the bar says {:?}", bar_of(&client));
+}
