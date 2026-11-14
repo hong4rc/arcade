@@ -190,6 +190,27 @@ pub fn hint_lines(table: &Table) -> Vec<String> {
             None => by_action.push((action, vec![typed_name(*key)])),
         }
     }
+    // The keys that select a window by number, when they are one run of digits, are one line.
+    let numbered: Vec<(String, Vec<String>)> = by_action
+        .iter()
+        .filter(|(a, _)| a.starts_with("window.select "))
+        .cloned()
+        .collect();
+    let digits: Vec<u32> = numbered
+        .iter()
+        .filter_map(|(_, keys)| match keys.as_slice() {
+            [k] => k.parse().ok(),
+            _ => None,
+        })
+        .collect();
+    if numbered.len() > 1
+        && digits.len() == numbered.len()
+        && let (Some(&first), Some(&last)) = (digits.iter().min(), digits.iter().max())
+        && (last - first) as usize + 1 == digits.len()
+    {
+        by_action.retain(|(a, _)| !a.starts_with("window.select "));
+        by_action.push(("window.select".to_string(), vec![format!("{first}-{last}")]));
+    }
     by_action.sort();
     let keys: Vec<(String, String)> = by_action
         .into_iter()
@@ -595,6 +616,24 @@ impl Keymap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hint_joins_the_keys_that_select_a_window_by_number_into_one_line() {
+        let map = Keymap::defaults(&KeysConfig::default());
+        let lines = hint_lines(&map.prefix);
+        let numbered: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("window.select"))
+            .collect();
+        assert_eq!(numbered.len(), 1, "{numbered:?}");
+        assert!(numbered[0].starts_with("1-9 "), "{numbered:?}");
+        // The other lines keep every key of their action.
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("h/left") && l.contains("pane.focus-left"))
+        );
+    }
 
     fn k(text: &str) -> Key {
         parse_key(text).unwrap()

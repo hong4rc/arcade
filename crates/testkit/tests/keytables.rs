@@ -635,6 +635,10 @@ fn the_prefix_with_no_key_after_it_shows_the_hint_and_a_key_closes_it_and_runs()
     };
     assert!(row_of("pane.split-right").contains("| "), "{text}");
     assert!(row_of("window.new").contains("c "), "{text}");
+    // The nine numbered window keys are one line, and the whole box is on the screen.
+    assert!(row_of("window.select").contains("1-9"), "{text}");
+    assert_eq!(text.matches("window.select").count(), 1, "{text}");
+    assert!(text.contains('└'), "{text}");
     // A key closes it and its action runs as it always does.
     client.send(b"c");
     assert!(
