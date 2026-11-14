@@ -104,7 +104,7 @@ fn paste_payload(len: usize) -> Vec<u8> {
 
 /// Paste `payload` into a pane that reads exactly the bytes it should get into a file, and
 /// compare the file.
-fn paste_and_compare(bracketed: bool) {
+fn paste_and_compare(bracketed: bool, reader_starts_after: &str) {
     let daemon = daemon_with_a_free_prefix();
     let payload = paste_payload(1024 * 1024);
     let file = daemon.dir().join("pasted.out");
@@ -119,7 +119,7 @@ fn paste_and_compare(bracketed: bool) {
     let mut client = raw_pane(
         &daemon,
         &format!(
-            "{on}head -c {total} > {}; stty sane; echo finished",
+            "{on}{reader_starts_after}head -c {total} > {}; stty sane; echo finished",
             file.display()
         ),
     );
@@ -155,12 +155,12 @@ fn paste_and_compare(bracketed: bool) {
 
 #[test]
 fn a_megabyte_paste_arrives_whole_without_markers_when_the_pane_did_not_ask_for_them() {
-    paste_and_compare(false);
+    paste_and_compare(false, "");
 }
 
 #[test]
 fn a_megabyte_paste_arrives_whole_between_markers_when_the_pane_asked_for_them() {
-    paste_and_compare(true);
+    paste_and_compare(true, "");
 }
 
 #[test]
@@ -184,4 +184,11 @@ fn a_pane_that_asked_for_the_kitty_protocol_gets_keys_in_that_form() {
         "{}",
         client.screen_text()
     );
+}
+
+/// The pane reads nothing for a while after the paste starts: the megabyte waits in the daemon,
+/// the terminal's buffer fills, and everything still arrives complete and in order.
+#[test]
+fn a_one_megabyte_paste_into_a_pane_that_starts_reading_late_arrives_whole_and_in_order() {
+    paste_and_compare(false, "sleep 1; ");
 }
