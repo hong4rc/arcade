@@ -28,6 +28,13 @@ fn two_sessions(daemon: &TestDaemon) -> TestClient {
     alpha.wait_for_prompt().unwrap();
     alpha.type_line("echo only-in-alpha");
     alpha.wait_for_row("only-in-alpha").unwrap();
+    // The shell draws its next prompt a moment after the output; the screen is steady only then.
+    let prompt_back = alpha.wait_until(WAIT, |c| c.screen_text().contains("only-in-alpha\n$"));
+    assert!(
+        prompt_back,
+        "no prompt after the echo:\n{}",
+        alpha.screen_text()
+    );
     alpha
 }
 
@@ -97,7 +104,14 @@ fn escape_closes_the_list_and_the_screen_is_as_it_was() {
     assert_ne!(cells(&mut client), before);
     client.send(b"\x1b[27u");
     screen_lacks(&mut client, "Sessions");
-    assert!(client.wait_until(WAIT, |c| cells(c) == before));
+    let same = client.wait_until(WAIT, |c| cells(c) == before);
+    let after = cells(&mut client);
+    assert!(
+        same,
+        "the screen is not as it was.\nmessages: {:?}\nnow:\n{}\nbefore: {before}\nafter: {after}",
+        client.messages,
+        client.screen_text(),
+    );
     // The keys went to the list while it was open, not to the shell.
     assert!(!client.screen_text().contains("Sessions"));
 }
