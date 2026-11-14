@@ -148,6 +148,7 @@ impl Server {
                 Input::Key { key, raw } => self.handle_key(session_id, key, &raw),
                 Input::Paste(text) => self.handle_paste(session_id, &text),
                 Input::Mouse(mouse) => self.handle_mouse(session_id, mouse),
+                Input::Focus(focused) => self.host_focus(session_id, focused),
                 Input::Raw(raw) => {
                     if self.in_prompt(session_id)
                         || self.picker_open(session_id)

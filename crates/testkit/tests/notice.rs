@@ -356,3 +356,167 @@ fn the_tree_marks_panes_windows_and_sessions_and_the_marks_follow_clearing() {
         client.screen_text()
     );
 }
+
+// ---- Out to the host terminal: the bell, the notification of its own, and the focus ----
+
+const FOCUS_IN: &[u8] = b"\x1b[I";
+const FOCUS_OUT: &[u8] = b"\x1b[O";
+
+/// Let the daemon's output reach the client's virtual terminal.
+fn settle(client: &mut TestClient, wait: Duration) {
+    std::thread::sleep(wait);
+    client.read_more(Instant::now() + Duration::from_millis(100));
+}
+
+use std::time::Instant;
+
+#[test]
+fn a_class_that_waits_for_you_rings_and_asks_for_a_notification_when_the_pane_is_not_looked_at() {
+    let daemon = TestDaemon::start();
+    let (mut client, [first, _, _]) = three_panes(&daemon);
+    notify(&daemon, first, "approval", "claude", "may I");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(200));
+    assert_eq!(client.bells, 1);
+    // A notification of the host terminal's own, from a command: OSC 777, the source for the
+    // title.
+    assert_eq!(
+        client.host_notifications,
+        vec![("claude".to_string(), "may I".to_string())]
+    );
+    let (_, log) = daemon.command("notify.log", &[]).unwrap();
+    assert!(log.contains("sent out"), "{log}");
+}
+
+#[test]
+fn nothing_goes_out_for_the_pane_that_is_looked_at() {
+    let daemon = TestDaemon::start();
+    let (mut client, [_, _, third]) = three_panes(&daemon);
+    // The third pane has the focus and the terminal is looked at.
+    notify(&daemon, third, "approval", "claude", "here");
+    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(300));
+    assert_eq!(client.bells, 0);
+    assert!(client.host_notifications.is_empty());
+    let (_, log) = daemon.command("notify.log", &[]).unwrap();
+    assert!(log.contains("looked at"), "{log}");
+}
+
+#[test]
+fn an_info_notification_asks_for_a_notification_but_does_not_ring() {
+    let daemon = TestDaemon::start();
+    let (mut client, [first, _, _]) = three_panes(&daemon);
+    notify(&daemon, first, "info", "build", "done");
+    assert!(mark_shown(&mut client, "[i]1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(200));
+    assert_eq!(client.bells, 0);
+    assert_eq!(client.host_notifications.len(), 1);
+}
+
+#[test]
+fn an_escape_sequence_notification_goes_out_as_one_new_sequence_with_the_cleaned_texts() {
+    let daemon = TestDaemon::start();
+    let mut client = start(&daemon);
+    signal_from_a_pane_left_behind(&mut client, "\\033]777;notify;Title;Body\\007");
+    assert!(mark_shown(&mut client, "[i]1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(200));
+    assert_eq!(
+        client.host_notifications,
+        vec![("Title".to_string(), "Body".to_string())]
+    );
+    assert_eq!(client.bells, 0);
+}
+
+#[test]
+fn a_notification_typed_in_the_pane_that_is_looked_at_sends_nothing_out() {
+    let daemon = TestDaemon::start();
+    let mut client = start(&daemon);
+    client.type_line("printf '\\033]777;notify;T;B\\007'; echo sent");
+    client.wait_for_row("sent").unwrap();
+    settle(&mut client, Duration::from_millis(300));
+    assert!(client.host_notifications.is_empty());
+    assert_eq!(client.bells, 0);
+}
+
+#[test]
+fn when_the_terminal_is_not_looked_at_the_pane_in_focus_is_told_about_and_looking_again_clears_info()
+ {
+    let daemon = TestDaemon::start();
+    let (mut client, [_, _, third]) = three_panes(&daemon);
+    client.send(FOCUS_OUT);
+    notify(&daemon, third, "info", "build", "done");
+    assert!(mark_shown(&mut client, "[i]1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(200));
+    assert_eq!(client.host_notifications.len(), 1);
+    // The terminal gets the focus back: the pane is looked at, and info goes.
+    client.send(FOCUS_IN);
+    assert!(gone(&mut client, "[i]"), "{}", bar(&client));
+}
+
+#[test]
+fn a_pane_sends_out_at_most_once_in_five_seconds() {
+    let daemon = TestDaemon::start();
+    let (mut client, [first, _, _]) = three_panes(&daemon);
+    notify(&daemon, first, "input", "a", "one");
+    notify(&daemon, first, "input", "a", "two");
+    assert!(mark_shown(&mut client, "[?]1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(300));
+    assert_eq!(client.host_notifications.len(), 1);
+    let (_, log) = daemon.command("notify.log", &[]).unwrap();
+    assert!(log.contains("a moment ago"), "{log}");
+}
+
+#[test]
+fn ten_panes_in_a_second_make_ten_marks_one_bell_at_once_and_one_more_together_later() {
+    let daemon = TestDaemon::start();
+    let mut client = start(&daemon);
+    let mut panes = vec![client.focused_pane_id()];
+    for _ in 0..9 {
+        client.send(PREFIX);
+        client.send(b"c");
+        client.wait_for_prompt().unwrap();
+        panes.push(client.focused_pane_id());
+    }
+    // The terminal is somewhere else, so even the pane in focus is told about.
+    client.send(FOCUS_OUT);
+    for pane in &panes {
+        notify(&daemon, *pane, "approval", "agent", "go");
+    }
+    assert!(mark_shown(&mut client, "[!]10"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(300));
+    assert_eq!(client.bells, 1, "one bell at once");
+    assert_eq!(client.host_notifications.len(), 10);
+    // The bells that waited ring once together when the interval ends.
+    let end = Instant::now() + Duration::from_millis(2500);
+    while Instant::now() < end {
+        client.read_more(end);
+    }
+    assert_eq!(client.bells, 2, "and one more for all that waited");
+}
+
+#[test]
+fn the_focus_reports_of_the_host_terminal_do_not_reach_the_program_in_the_pane() {
+    let daemon = TestDaemon::start();
+    let mut client = start(&daemon);
+    client.type_line("cat -v");
+    client.send(FOCUS_OUT);
+    client.send(FOCUS_IN);
+    client.type_line("typed");
+    assert!(client.wait_until(WAIT, |c| {
+        c.screen_rows()
+            .iter()
+            .filter(|r| r.contains("typed"))
+            .count()
+            >= 2
+    }));
+    assert!(
+        !client.screen_text().contains("^[[I"),
+        "{}",
+        client.screen_text()
+    );
+    assert!(
+        !client.screen_text().contains("^[[O"),
+        "{}",
+        client.screen_text()
+    );
+}

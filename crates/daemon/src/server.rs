@@ -264,6 +264,11 @@ struct Session {
     drag: Option<mouse::Drag>,
     /// The tree of sessions, windows and panes, while it is open.
     tree: Option<crate::tree::Tree>,
+    /// The host terminal has the focus, as its focus reports say (it has, when a client attaches).
+    host_focused: bool,
+    /// When the last BEL went to the attached client, and when the one that waited is due.
+    last_bell: Option<Instant>,
+    bell_due: Option<Instant>,
 }
 
 /// The shortest time between two looks at the panes' directories for the windows' names.
@@ -679,6 +684,9 @@ impl Server {
             if let Some(t) = s.key_state.deadline() {
                 consider(t);
             }
+            if let Some(t) = s.bell_due {
+                consider(t);
+            }
             if s.client.is_some()
                 && let Some(t) = s.names_due
             {
@@ -1066,6 +1074,8 @@ impl Server {
             session.key_state.prompt = None;
             session.picker = None;
             session.tree = None;
+            // A person who attaches is looking at the terminal.
+            session.host_focused = true;
             if let Some(message) = self.startup_message.take() {
                 session.key_state.show_message(message, Instant::now());
             }
@@ -1275,6 +1285,9 @@ impl Server {
                 picker: None,
                 drag: None,
                 tree: None,
+                host_focused: true,
+                last_bell: None,
+                bell_due: None,
             },
         );
         Ok(session_id)
@@ -1565,6 +1578,7 @@ impl Server {
             }
         }
         self.expire_key_states(now);
+        self.release_bells(now);
         // A lone Esc that waited long enough is the Esc key.
         let waiting: Vec<u64> = self
             .sessions

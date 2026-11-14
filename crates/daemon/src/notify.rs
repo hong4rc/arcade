@@ -40,6 +40,28 @@ impl Class {
     }
 }
 
+/// What a pane may send out to the host terminal: once in this long.
+pub const PUSH_INTERVAL: Duration = Duration::from_secs(5);
+/// What a client may be rung with: one bell in this long; more wait and ring once together.
+pub const BELL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// The escape sequence that asks the host terminal for a notification of its own, made new from
+/// the cleaned texts and never copied from what the pane wrote. A notification that came from
+/// an escape sequence in the pane goes back as the kind it came as: without a title it was one
+/// message (OSC 9), with one it was a title and a body (OSC 777). One from a command goes as
+/// OSC 777, with the source standing in for a missing title. Nothing to say: no sequence.
+pub fn host_sequence(from_terminal: bool, source: &str, title: &str, message: &str) -> Vec<u8> {
+    if title.is_empty() && message.is_empty() {
+        return Vec::new();
+    }
+    let text = |t: &str| t.replace(';', ",");
+    if from_terminal && title.is_empty() {
+        return format!("\x1b]9;{message}\x07").into_bytes();
+    }
+    let title = if title.is_empty() { source } else { title };
+    format!("\x1b]777;notify;{};{message}\x07", text(title)).into_bytes()
+}
+
 /// The longest title, message and source, in characters.
 pub const TITLE_LIMIT: usize = 64;
 pub const MESSAGE_LIMIT: usize = 256;
@@ -133,6 +155,8 @@ pub struct Store {
     rates: HashMap<u64, (Instant, u32)>,
     /// The last signal that was over the limit, for each pane.
     held: HashMap<u64, Signal>,
+    /// When each pane last sent a signal out to the host terminal.
+    pushed: HashMap<u64, Instant>,
 }
 
 impl Store {
@@ -221,6 +245,21 @@ impl Store {
     pub fn forget(&mut self, pane: u64) {
         self.clear(pane);
         self.rates.remove(&pane);
+        self.pushed.remove(&pane);
+    }
+
+    /// A pane may send a signal out to the host terminal once in `every`; this says whether it
+    /// may now, and when it may, it counts as sent.
+    pub fn may_push(&mut self, pane: u64, now: Instant, every: Duration) -> bool {
+        if self
+            .pushed
+            .get(&pane)
+            .is_some_and(|t| now.duration_since(*t) < every)
+        {
+            return false;
+        }
+        self.pushed.insert(pane, now);
+        true
     }
 
     /// How many of these panes have a notification, for each class in the order of
@@ -266,6 +305,35 @@ mod tests {
 
     fn at(secs: u64, base: Instant) -> Instant {
         base + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn the_sequence_for_the_host_terminal_is_made_new_and_of_the_kind_it_came_as() {
+        assert_eq!(
+            host_sequence(true, "terminal", "", "done"),
+            b"\x1b]9;done\x07"
+        );
+        assert_eq!(
+            host_sequence(true, "terminal", "T;x", "B;y"),
+            b"\x1b]777;notify;T,x;B;y\x07"
+        );
+        assert_eq!(
+            host_sequence(false, "claude", "", "need you"),
+            b"\x1b]777;notify;claude;need you\x07"
+        );
+        assert!(host_sequence(true, "terminal", "", "").is_empty());
+    }
+
+    #[test]
+    fn a_pane_may_push_once_in_the_interval() {
+        let mut s = Store::default();
+        let t = Instant::now();
+        assert!(s.may_push(1, t, PUSH_INTERVAL));
+        assert!(!s.may_push(1, at(4, t), PUSH_INTERVAL));
+        assert!(s.may_push(2, at(4, t), PUSH_INTERVAL));
+        assert!(s.may_push(1, at(5, t), PUSH_INTERVAL));
+        s.forget(1);
+        assert!(s.may_push(1, at(6, t), PUSH_INTERVAL));
     }
 
     fn sig(class: Class, source: &str) -> Signal {

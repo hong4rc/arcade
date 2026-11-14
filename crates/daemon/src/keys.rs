@@ -29,7 +29,9 @@ pub enum Input {
     Paste(Vec<u8>),
     /// A mouse report in the SGR form.
     Mouse(Mouse),
-    /// Bytes that are not a key Arcade knows (focus reports, odd sequences).
+    /// The host terminal got (true) or lost (false) the focus, as its focus reporting says.
+    Focus(bool),
+    /// Bytes that are not a key Arcade knows (odd sequences).
     Raw(Vec<u8>),
 }
 
@@ -275,6 +277,7 @@ fn csi(buf: &[u8]) -> Step {
         b'M' | b'm' if params.first() == Some(&b'<') => Some(
             Mouse::from_sgr(params, last).map_or_else(|| Input::Raw(raw.to_vec()), Input::Mouse),
         ),
+        b'I' | b'O' if params.is_empty() => Some(Input::Focus(last == b'I')),
         b'Z' if params.is_empty() => Some(key(
             Code::Named(Named::Tab),
             Mods {
@@ -670,7 +673,6 @@ mod tests {
         for bytes in [
             &b"\x1b[<0;10M"[..],
             b"\x1b[<0;0;5M",
-            b"\x1b[I",
             b"\x1b[?1;2c",
             b"\x1b[57399;5u",
         ] {
@@ -783,6 +785,9 @@ mod tests {
                 match i {
                     Input::Key { raw, .. } | Input::Raw(raw) => back.extend(raw),
                     Input::Mouse(_) => saw_mouse = true,
+                    Input::Focus(f) => {
+                        back.extend_from_slice(if f { b"\x1b[I" } else { b"\x1b[O" })
+                    }
                     Input::Paste(p) => {
                         back.extend_from_slice(PASTE_START);
                         back.extend(p);

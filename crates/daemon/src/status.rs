@@ -123,7 +123,8 @@ pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
             .iter()
             .flat_map(|w| text_cells(&format!(" {w} "), theme::style(Role::Indicator))),
     );
-    if cells.len() + right.len() < width {
+    // The counters and the indicators keep their place at the right; the tabs give way.
+    if right.len() < width {
         cells = fit(cells, width - right.len(), bar);
         cells.extend(right);
     } else {
@@ -231,6 +232,23 @@ mod tests {
         let (cells, cursor) = build(40, &i);
         assert!(text(&cells).starts_with("rename: abc"));
         assert_eq!(cursor, Some(11));
+    }
+
+    #[test]
+    fn when_the_tabs_do_not_fit_they_give_way_to_the_counters() {
+        let mut i = info();
+        for n in 3..30 {
+            i.tabs.push(Tab {
+                number: n,
+                name: "window".into(),
+                current: false,
+                zoomed: false,
+                notice: None,
+            });
+        }
+        i.notices = [10, 0, 0, 0];
+        let line = text(&build(60, &i).0);
+        assert!(line.trim_end().ends_with("[!]10"), "{line:?}");
     }
 
     #[test]

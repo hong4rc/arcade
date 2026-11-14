@@ -53,7 +53,106 @@ fn fields(args: &[String]) -> HashMap<&str, &str> {
 impl Server {
     /// The pane the client of the session is looking at, when it has a client.
     fn seen_pane(session: &Session) -> Option<u64> {
+        session
+            .client
+            .filter(|_| session.host_focused)
+            .map(|_| session.current_window().focus)
+    }
+
+    /// The pane that has the focus in the window the client shows, whether or not the host
+    /// terminal is looked at.
+    fn focused_pane(session: &Session) -> Option<u64> {
         session.client.map(|_| session.current_window().focus)
+    }
+
+    /// The host terminal got or lost the focus.
+    pub(super) fn host_focus(&mut self, session_id: u64, focused: bool) {
+        if let Some(s) = self.sessions.get_mut(&session_id)
+            && s.host_focused != focused
+        {
+            s.host_focused = focused;
+            // Looking at a pane again lets go of what it had; the screen is built to do it.
+            s.relayout = true;
+            s.chrome_dirty = true;
+        }
+    }
+
+    /// Ring the client of a session: one bell in `BELL_INTERVAL`; a bell that comes sooner waits
+    /// for the interval to end, and all that waited ring once.
+    fn ring(&mut self, session_id: u64, now: Instant) {
+        let Some(s) = self.sessions.get_mut(&session_id) else {
+            return;
+        };
+        let Some(client) = s.client else {
+            return;
+        };
+        match s.last_bell {
+            Some(t) if now.duration_since(t) < crate::notify::BELL_INTERVAL => {
+                s.bell_due = Some(t + crate::notify::BELL_INTERVAL);
+            }
+            _ => {
+                s.last_bell = Some(now);
+                s.bell_due = None;
+                self.send_output(client, b"\x07");
+            }
+        }
+    }
+
+    /// The bells that waited ring now, once for each client.
+    pub(super) fn release_bells(&mut self, now: Instant) {
+        let due: Vec<u64> = self
+            .sessions
+            .values()
+            .filter(|s| s.bell_due.is_some_and(|t| now >= t))
+            .map(|s| s.id)
+            .collect();
+        for id in due {
+            self.ring(id, now);
+        }
+    }
+
+    /// Ask the host terminal of the client to get the person's attention for the pane's
+    /// notification: its own notification and, for the classes that ask for one, a bell. Not for
+    /// the pane that is looked at, and not more than once in `PUSH_INTERVAL` for a pane. What
+    /// became of it, in words, for the log.
+    fn push_out(&mut self, pane: u64) -> &'static str {
+        let Some(n) = self.notices.get(pane) else {
+            return "nothing standing";
+        };
+        let (class, source, title, message) = (
+            n.class,
+            n.source.clone(),
+            n.title.clone(),
+            n.message.clone(),
+        );
+        let Some((session_id, _)) = self.locate_pane(pane) else {
+            return "no client";
+        };
+        let Some(session) = self.sessions.get(&session_id) else {
+            return "no client";
+        };
+        let Some(client) = session.client else {
+            return "no client to tell";
+        };
+        if Self::seen_pane(session) == Some(pane) {
+            return "not sent out: the pane is looked at";
+        }
+        let now = Instant::now();
+        if !self
+            .notices
+            .may_push(pane, now, crate::notify::PUSH_INTERVAL)
+        {
+            return "not sent out: this pane sent one a moment ago";
+        }
+        let sequence =
+            crate::notify::host_sequence(source == TERMINAL_SOURCE, &source, &title, &message);
+        if !sequence.is_empty() {
+            self.send_output(client, &sequence);
+        }
+        if class != Class::Info {
+            self.ring(session_id, now);
+        }
+        "sent out"
     }
 
     /// What is drawn about notifications changed: the status bar and the marks on the panes are
@@ -94,13 +193,12 @@ impl Server {
     pub(super) fn signal_pane(&mut self, pane: u64, signal: Signal, channel: Channel) -> Outcome {
         let (class, source) = (signal.class, signal.source.clone());
         let outcome = self.take_signal(pane, signal);
-        self.log_signal(
-            channel.name(),
-            Some(class),
-            &source,
-            Some(pane),
-            outcome.describe(),
-        );
+        let result = if outcome.took_effect() {
+            format!("{}; {}", outcome.describe(), self.push_out(pane))
+        } else {
+            outcome.describe().to_string()
+        };
+        self.log_signal(channel.name(), Some(class), &source, Some(pane), &result);
         outcome
     }
 
@@ -130,8 +228,11 @@ impl Server {
         if self.notices.is_empty() {
             return;
         }
-        for (pane, _) in self.notices.release_held(Instant::now()) {
+        for (pane, outcome) in self.notices.release_held(Instant::now()) {
             self.notices_changed(pane);
+            if outcome.took_effect() {
+                self.push_out(pane);
+            }
         }
         let seen = self.sessions.get(&session_id).and_then(Self::seen_pane);
         if let Some(pane) = seen
@@ -173,7 +274,7 @@ impl Server {
     /// within a class. The pane that is looked at is skipped, so that pressing the key again goes
     /// on to the next.
     pub(super) fn notification_next(&mut self, session_id: u64) -> Result<String, String> {
-        let seen = self.sessions.get(&session_id).and_then(Self::seen_pane);
+        let seen = self.sessions.get(&session_id).and_then(Self::focused_pane);
         let next = self
             .notices
             .by_priority()

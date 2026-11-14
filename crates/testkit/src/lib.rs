@@ -439,6 +439,10 @@ pub struct TestClient {
     pub output_bytes: usize,
     /// What the host terminal was asked to put on its clipboard (OSC 52), decoded, in order.
     pub clipboard_writes: Vec<Vec<u8>>,
+    /// How many bells the daemon rang the host terminal with, and the notifications it asked for
+    /// (title and body) in the order they came.
+    pub bells: usize,
+    pub host_notifications: Vec<(String, String)>,
     /// The titles the host terminal's window was given (OSC 0 or 2), in order.
     pub titles: Vec<String>,
 }
@@ -456,6 +460,8 @@ impl TestClient {
             output_messages: 0,
             output_bytes: 0,
             clipboard_writes: Vec::new(),
+            bells: 0,
+            host_notifications: Vec::new(),
             titles: Vec::new(),
         };
         client.send_message(&ClientMessage::Hello {
@@ -601,6 +607,10 @@ impl TestClient {
                                 match event {
                                     Event::ClipboardWrite(data) => self.clipboard_writes.push(data),
                                     Event::Title(title) => self.titles.push(title),
+                                    Event::Bell => self.bells += 1,
+                                    Event::Notification { title, body } => {
+                                        self.host_notifications.push((title, body));
+                                    }
                                     _ => {}
                                 }
                             }
