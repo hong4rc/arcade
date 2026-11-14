@@ -444,6 +444,29 @@ fn the_question_mark_after_the_prefix_lists_the_keys_with_their_commands() {
 }
 
 #[test]
+fn the_command_names_in_the_keys_list_start_in_one_column_whatever_the_key_name_length() {
+    let daemon = TestDaemon::start();
+    let mut client = raw_pane(&daemon);
+    client.send(PREFIX);
+    client.send(b"\x1b[47;2u");
+    assert!(client.wait_until(WAIT, |c| the_keys_list_is_open(c)));
+    let mut column_of = |client: &mut TestClient, command: &str, key: &str| -> usize {
+        step_down_until(client, key);
+        let row = client
+            .content_rows()
+            .into_iter()
+            .find(|r| r.contains(key))
+            .unwrap();
+        assert!(row.contains(command), "{row:?} lacks {command:?}");
+        row.find(command).unwrap()
+    };
+    // A short key name and a long one.
+    let short = column_of(&mut client, "window.new", "ctrl+m c");
+    let long = column_of(&mut client, "pane.focus-left", "ctrl+alt+left");
+    assert_eq!(short, long, "the command names do not line up");
+}
+
+#[test]
 fn enter_in_the_keys_list_runs_the_chosen_command() {
     let daemon = TestDaemon::start();
     let mut client = daemon.attach_shell();

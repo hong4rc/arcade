@@ -399,11 +399,17 @@ impl Server {
     /// Open the list of sessions, to go to one or to move the current window to one.
     pub(super) fn open_picker(&mut self, session_id: u64, kind: PickerKind) -> Result<(), String> {
         if kind == PickerKind::Keys {
-            let items: Vec<Item> = self
-                .key_bindings()
+            let bindings = self.key_bindings();
+            // Every key name takes the room of the longest, so the command names line up.
+            let width = bindings
+                .iter()
+                .map(|(label, _)| label.chars().count())
+                .max()
+                .unwrap_or(0);
+            let items: Vec<Item> = bindings
                 .into_iter()
                 .map(|(label, binding)| Item {
-                    name: label,
+                    name: format!("{label:<width$}"),
                     detail: binding_line(&binding),
                     current: false,
                 })
