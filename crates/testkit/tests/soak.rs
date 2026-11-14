@@ -300,7 +300,7 @@ impl Soak {
             14..=20 => self.command("pane.close", &[]),
             21..=25 => self.command("window.new", &[]),
             26..=32 => {
-                let which = self.rng.below(7);
+                let which = self.rng.below(12);
                 match which {
                     0 => {
                         let number = (self.rng.below(5) + 1).to_string();
@@ -311,6 +311,13 @@ impl Soak {
                     3 => self.command("window.last", &[]),
                     4 => self.command("window.move-left", &[]),
                     5 => self.command("window.move-right", &[]),
+                    6 => {
+                        let d = *self.rng.pick(DIRECTIONS);
+                        self.command(&format!("pane.swap-{d}"), &[]);
+                    }
+                    7 => self.command("pane.break", &[]),
+                    8 | 9 => self.command("window.layout-next", &[]),
+                    10 => self.command("window.layout-even", &[]),
                     _ => self.command("pane.focus-last", &[]),
                 }
             }
