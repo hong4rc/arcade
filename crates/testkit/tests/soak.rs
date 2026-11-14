@@ -515,7 +515,7 @@ impl Soak {
         while self.done < operations {
             self.one_operation();
             self.done += 1;
-            if self.done % CHECK_EVERY == 0 {
+            if self.done.is_multiple_of(CHECK_EVERY) {
                 self.check();
             }
         }
