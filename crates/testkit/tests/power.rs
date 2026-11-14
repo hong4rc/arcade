@@ -9,8 +9,10 @@
 use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
+#[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 use std::time::{Duration, Instant};
 
+#[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 use arcade_testkit::{AttachOptions, Screened, TestDaemon, WAIT};
 
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
@@ -35,6 +37,7 @@ fn guard_pid(daemon: &TestDaemon) -> Option<u32> {
         .and_then(|n| n.trim().parse().ok())
 }
 
+#[cfg(target_os = "macos")]
 fn wait_for_guard(daemon: &TestDaemon) -> u32 {
     let start = Instant::now();
     loop {
@@ -50,6 +53,7 @@ fn wait_for_guard(daemon: &TestDaemon) -> u32 {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn alive(pid: u32) -> bool {
     Command::new("kill")
         .args(["-0", &pid.to_string()])
@@ -57,6 +61,7 @@ fn alive(pid: u32) -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+#[cfg(target_os = "macos")]
 fn wait_gone(pid: u32, within: Duration) -> bool {
     let start = Instant::now();
     while alive(pid) {
