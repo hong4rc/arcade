@@ -283,8 +283,9 @@ struct Session {
 
 /// The shortest time between two looks at the panes' directories for the windows' names.
 const NAME_CHECK_INTERVAL: Duration = Duration::from_secs(1);
-/// How long, at most, to wait for the last output of a pane whose process has ended.
-const EXIT_OUTPUT_WAIT_MS: i32 = 50;
+/// How long, at most, to wait for the last output of a pane whose process has ended, when
+/// something it started still holds the terminal open.
+const EXIT_OUTPUT_DEADLINE: Duration = Duration::from_millis(300);
 
 /// The size of the area the windows have, inside a client terminal of this size: the status bar
 /// takes one row when it shows (and there is more than one row).
@@ -1436,10 +1437,14 @@ impl Server {
     }
 
     /// Read up to `limit` bytes of output from a pane and give them to its terminal.
-    fn read_pane(&mut self, pane_id: u64, limit: usize) {
+    /// Read what a pane's program wrote. True when its output has ended for good: the master
+    /// reports the end (a read of nothing, or the error Linux gives), which is when no process
+    /// holds the other end any more.
+    fn read_pane(&mut self, pane_id: u64, limit: usize) -> bool {
         let Some(pane) = self.panes.get_mut(&pane_id) else {
-            return;
+            return true;
         };
+        let mut ended = false;
         pane.read_pending = false;
         let mut buf = [0u8; 16 * 1024];
         let mut total = 0;
@@ -1447,7 +1452,10 @@ impl Server {
             stage_count!(Read);
             match pane.master.read(&mut buf) {
                 // End of output: the process side closed. The exit notice does the closing.
-                Ok(0) => break,
+                Ok(0) => {
+                    ended = true;
+                    break;
+                }
                 Ok(n) => {
                     stage_mark!(DaemonPtyRead);
                     pane.term.feed(&buf[..n]);
@@ -1466,7 +1474,10 @@ impl Server {
                 Err(e) if would_block(&e) => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 // Linux reports EIO once the other side is gone.
-                Err(_) => break,
+                Err(_) => {
+                    ended = true;
+                    break;
+                }
             }
         }
         // Answers the terminal wants to give to the program go back to it at once.
@@ -1510,6 +1521,7 @@ impl Server {
         for signal in signals {
             self.signal_pane(pane_id, signal, notices::Channel::Terminal);
         }
+        ended
     }
 
     /// Start or stop the process that keeps the machine awake, to match the settings. A failure
@@ -1613,17 +1625,22 @@ impl Server {
         }
         let exited = std::mem::take(&mut self.exited);
         for pane_id in exited {
-            // What the process wrote just before it ended is still in the terminal's buffer.
-            // Bounded, so a background job that keeps the terminal open cannot hold us here: the
-            // wait is short, and so is the number of reads. The output can reach the master a
-            // moment after the exit notice does, so a first look waits for it.
-            if let Some(pane) = self.panes.get(&pane_id) {
-                pty::wait_readable(pane.master.as_raw_fd(), EXIT_OUTPUT_WAIT_MS);
-            }
-            for _ in 0..16 {
-                self.read_pane(pane_id, PANE_READ_LIMIT);
-                let more = self.panes.get(&pane_id).is_some_and(|p| p.read_pending);
-                if !more {
+            // What the process wrote just before it ended is still in the terminal's buffer, or
+            // on its way to it. Read until the master says the output is over, which it does
+            // as soon as the process and everything it started have let go of the other end, so
+            // the usual exit does not wait at all. A process left behind that holds the
+            // terminal open silently ends the wait at the deadline.
+            let deadline = Instant::now() + EXIT_OUTPUT_DEADLINE;
+            while let Some(pane) = self.panes.get(&pane_id) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                if !pane.read_pending {
+                    let millis = i32::try_from(left.as_millis()).unwrap_or(i32::MAX).max(1);
+                    pty::wait_readable(pane.master.as_raw_fd(), millis);
+                }
+                if self.read_pane(pane_id, PANE_READ_LIMIT) {
                     break;
                 }
             }

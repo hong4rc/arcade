@@ -200,6 +200,57 @@ fn a_command_runs_directly_without_a_shell() {
     daemon.wait_stopped(WAIT).unwrap();
 }
 
+/// A program that prints a lot and ends at once: all of it, the last line included, is on the
+/// final screen the client is shown before the session ends, every time.
+#[test]
+fn the_last_output_of_a_program_that_ends_at_once_is_shown() {
+    let daemon = TestDaemon::start();
+    // The daemon stops with its last session.
+    let _keeper = daemon.attach_shell();
+    for round in 0..200 {
+        let mut client = daemon
+            .attach(AttachOptions::new().command(&[
+                "/bin/sh",
+                "-c",
+                "seq 1 36000; echo FINAL-LINE",
+            ]))
+            .unwrap();
+        if let Err(e) = client.wait_for_text_within("FINAL-LINE", Duration::from_secs(5)) {
+            panic!("round {round}: {e}");
+        }
+    }
+}
+
+/// A program that ends and leaves something running that still has the terminal open and says
+/// nothing: the pane closes at once, not when that ends. (When the first process of a pane ends
+/// the terminal is hung up for what it left behind, so the master reports the end of output
+/// right away; the daemon's deadline is only a safety net.)
+#[test]
+fn a_silent_process_left_holding_the_terminal_does_not_keep_the_pane_open() {
+    let daemon = TestDaemon::start();
+    let _keeper = daemon.attach_shell();
+    let started = std::time::Instant::now();
+    let mut client = daemon
+        .attach(AttachOptions::new().command(&["/bin/sh", "-c", "sleep 8 & echo parent-out"]))
+        .unwrap();
+    client
+        .wait_message(
+            |m| matches!(m, ServerMessage::SessionEnded { .. }),
+            Duration::from_secs(4),
+        )
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(
+        screen_has(&client, "parent-out"),
+        "{}",
+        client.screen_text()
+    );
+}
+
 /// Resizing the client resizes the terminal the program runs in.
 #[test]
 fn resizing_the_client_gives_the_program_the_new_size() {
