@@ -191,7 +191,9 @@ fn a_command_runs_directly_without_a_shell() {
     let mut client = daemon
         .attach(AttachOptions::new().command(&["/bin/echo", "straight", "to", "echo"]))
         .unwrap();
-    client.wait_for_text("straight to echo").unwrap();
+    if let Err(e) = client.wait_for_text("straight to echo") {
+        panic!("{e}\nmessages: {:?}", client.messages);
+    }
     client
         .wait_message(|m| matches!(m, ServerMessage::SessionEnded { .. }), WAIT)
         .unwrap();

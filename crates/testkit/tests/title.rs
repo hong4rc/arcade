@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use arcade_testkit::{AttachOptions, Screened, TestClient, TestDaemon, WAIT};
+use arcade_testkit::{AttachOptions, Screened, TestClient, TestDaemon, WAIT, wait_for_file};
 
 fn run(daemon: &TestDaemon, name: &str, args: &[&str]) {
     let (ok, output) = daemon.command(name, args).unwrap();
@@ -66,13 +66,23 @@ fn moving_the_focus_to_another_pane_brings_that_pane_s_title() {
 fn a_pane_without_the_focus_setting_a_title_sends_nothing() {
     let daemon = TestDaemon::start();
     let mut client = attach(&daemon);
-    // This shell sets a title a second from now, after the focus has moved to a new pane.
-    client.type_line("(sleep 1; printf '\\033]2;from-behind\\007') &");
+    // This shell sets a title a second from now, after the focus has moved to a new pane, and
+    // then writes a file so the test knows it has.
+    let marker = std::env::temp_dir().join(format!("arc-title-{}-behind", std::process::id()));
+    let _ = std::fs::remove_file(&marker);
+    client.type_line(&format!(
+        "(sleep 1; printf '\\033]2;from-behind\\007'; touch '{}') &",
+        marker.display()
+    ));
     client.wait_for_text("$").unwrap();
     run(&daemon, "pane.split-right", &[]);
     assert!(client.wait_until(WAIT, |c| c.focused_pane_id() > 0));
-    std::thread::sleep(Duration::from_millis(1800));
+    assert!(
+        wait_for_file(&marker, WAIT),
+        "the late title was never printed"
+    );
     client.read_more(std::time::Instant::now() + Duration::from_millis(200));
+    let _ = std::fs::remove_file(&marker);
     assert!(
         client.titles.iter().all(|t| !t.contains("from-behind")),
         "{:?}",

@@ -53,6 +53,19 @@ pub fn footprint_kib(pid: u32) -> u64 {
 /// How long the tests wait for something that should happen right away.
 pub const WAIT: Duration = Duration::from_secs(10);
 
+/// Wait until a file exists, for at most `timeout`. A program in a pane writes one when it has
+/// done what a test waits for, so the test needs no fixed sleep.
+pub fn wait_for_file(path: &std::path::Path, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while !path.exists() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    true
+}
+
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 pub struct TestDaemon {
