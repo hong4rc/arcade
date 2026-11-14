@@ -165,12 +165,16 @@ fn rows_of(client: &mut TestClient) -> Vec<String> {
         .collect()
 }
 
+fn start_daemon() -> TestDaemon {
+    TestDaemon::start_with(|c| {
+        c.log_path = Some(c.socket_path.with_extension("log"));
+        c.scrollback_lines = 500;
+    })
+}
+
 impl Soak {
     fn new(seed: u64) -> Soak {
-        let daemon = TestDaemon::start_with(|c| {
-            c.log_path = Some(c.socket_path.with_extension("log"));
-            c.scrollback_lines = 500;
-        });
+        let daemon = start_daemon();
         let size = (100, 30);
         let client = daemon
             .attach(AttachOptions::new().size(size.0, size.1).named("soak-0"))
@@ -217,7 +221,9 @@ impl Soak {
     fn command(&mut self, name: &str, args: &[&str]) {
         self.note(format!("command {name} {args:?}"));
         if self.daemon.is_stopped() {
-            self.fail("the daemon stopped");
+            // Stopped because the last session ended, which `reattach` checks, or crashed,
+            // which it reports.
+            return;
         }
         // A refusal (nothing to close, no room) is an ordinary answer; no answer is not.
         if let Err(e) = self.daemon.command(name, args) {
@@ -252,6 +258,15 @@ impl Soak {
     /// The session ended or the client was detached: attach to what is left, or to a new one.
     fn reattach(&mut self) {
         let (c, r) = self.size;
+        if self.daemon.is_stopped() {
+            // The last session ended and the daemon, which has nothing left to keep, stopped by
+            // itself; it must have done that cleanly. A new one takes its place.
+            if let Err(e) = self.daemon.wait_stopped(Duration::from_secs(5)) {
+                self.fail(&format!("the daemon did not stop cleanly: {e}"));
+            }
+            self.note("the last session ended; a new daemon starts".to_string());
+            self.daemon = start_daemon();
+        }
         let names = self.session_names();
         let options = if let Some(name) = names.first() {
             AttachOptions::new().size(c, r).existing(Some(name))
