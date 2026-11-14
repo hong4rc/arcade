@@ -194,11 +194,10 @@ fn next_goes_to_the_most_urgent_pane_then_the_next_and_skips_the_pane_it_is_in()
     notify(&daemon, p1, "error", "a", "old");
     notify(&daemon, p2, "approval", "b", "newer");
     assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
-    // The key after the prefix goes to the approval; every key press after it leaves the pane it
+    // The direct key (Ctrl+Alt+a) goes to the approval; every key press after it leaves the pane it
     // is in for the other one, so four presses end in the error pane. (Looking at the pane with
     // a typed command would clear what waits there, so the focus is asked for only at the end.)
-    client.send(PREFIX);
-    client.send(b"a");
+    client.send(b"\x1b[97;7u");
     std::thread::sleep(Duration::from_millis(300));
     for _ in 0..3 {
         let (ok, _) = daemon.command("notification.next", &[]).unwrap();
@@ -238,7 +237,7 @@ fn the_list_shows_what_waits_and_enter_goes_to_the_chosen_pane() {
     notify(&daemon, p2, "approval", "claude", "may I");
     assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
     client.send(PREFIX);
-    client.send(b"A");
+    client.send(b"a");
     assert!(
         client.wait_until(WAIT, |c| c.screen_text().contains("Notifications")),
         "{}",
@@ -263,7 +262,7 @@ fn delete_in_the_list_clears_the_chosen_line_and_the_list_closes_when_empty() {
     notify(&daemon, p2, "approval", "claude", "may I");
     assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
     client.send(PREFIX);
-    client.send(b"A");
+    client.send(b"a");
     assert!(client.wait_until(WAIT, |c| c.screen_text().contains("Notifications")));
     client.send(DELETE);
     assert!(
@@ -300,7 +299,7 @@ fn the_keys_clear_the_pane_in_focus_or_every_pane() {
     notify(&daemon, p2, "input", "a", "x");
     assert!(mark_shown(&mut client, "[?]1"), "{}", bar(&client));
     client.send(PREFIX);
-    client.send(b"Q");
+    client.send(b"A");
     assert!(
         client.wait_until(WAIT, |c| !bar(c).contains("[?]") && !bar(c).contains("[x]")),
         "{}",

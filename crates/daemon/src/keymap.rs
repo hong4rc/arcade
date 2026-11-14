@@ -482,10 +482,9 @@ impl Keymap {
         bind(t, ch('t'), "tree.open", &[], false);
         bind(t, ch('m'), "pane.move", &[], false);
         bind(t, ch('M'), "window.move", &[], false);
-        bind(t, ch('a'), "notification.next", &[], false);
-        bind(t, ch('A'), "notification.list", &[], false);
+        bind(t, ch('a'), "notification.list", &[], false);
+        bind(t, ch('A'), "notification.clear-all", &[], false);
         bind(t, ch('q'), "notification.clear", &[], false);
-        bind(t, ch('Q'), "notification.clear-all", &[], false);
         bind(t, ch('['), "copy.enter", &[], false);
         bind(t, ch(']'), "pane.paste", &[], false);
         bind(t, ch(':'), "command.list", &[], false);
