@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -143,6 +143,9 @@ struct Pane {
     id: u64,
     token: Token,
     master: File,
+    /// The program's end of the terminal, kept until the output it left behind has been read
+    /// (see `pty::Spawned::slave`).
+    slave: Option<OwnedFd>,
     term: Term,
     pid: i32,
     /// Bytes waiting to be written to the pane's terminal.
@@ -1218,6 +1221,7 @@ impl Server {
             id: pane_id,
             token,
             master: spawned.master,
+            slave: Some(spawned.slave),
             term,
             pid: spawned.pid,
             input: Vec::new(),
@@ -1638,6 +1642,19 @@ impl Server {
             // as soon as the process and everything it started have let go of the other end, so
             // the usual exit does not wait at all. A process left behind that holds the
             // terminal open silently ends the wait at the deadline.
+            //
+            // First everything that is there to read now, with the program's end of the terminal
+            // still open: that is what keeps the last output from being thrown away on macOS.
+            // Then that end is closed, so that the master reports the end.
+            while self.panes.contains_key(&pane_id) {
+                self.read_pane(pane_id, PANE_READ_LIMIT);
+                if self.panes.get(&pane_id).is_none_or(|p| !p.read_pending) {
+                    break;
+                }
+            }
+            if let Some(pane) = self.panes.get_mut(&pane_id) {
+                pane.slave = None;
+            }
             let deadline = Instant::now() + EXIT_OUTPUT_DEADLINE;
             while let Some(pane) = self.panes.get(&pane_id) {
                 let left = deadline.saturating_duration_since(Instant::now());

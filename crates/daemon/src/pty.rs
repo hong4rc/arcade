@@ -19,6 +19,12 @@ pub struct SpawnSpec {
 pub struct Spawned {
     /// Our end of the pseudo terminal, non-blocking.
     pub master: File,
+    /// A copy of the program's end, kept open so that the output the program wrote just before
+    /// it ended is still there to read: macOS throws away what the master has not read yet when
+    /// the last descriptor of the program's end closes, Linux keeps it. Closing this copy is what
+    /// lets the master report the end of output. (On macOS the exit of the program also waits
+    /// until the master has read what it wrote, which the daemon's loop does at once.)
+    pub slave: OwnedFd,
     pub pid: i32,
     pub child: std::process::Child,
 }
@@ -114,7 +120,7 @@ pub fn spawn(spec: &SpawnSpec) -> io::Result<Spawned> {
     command
         .stdin(Stdio::from(slave.try_clone()?))
         .stdout(Stdio::from(slave.try_clone()?))
-        .stderr(Stdio::from(slave));
+        .stderr(Stdio::from(slave.try_clone()?));
     // SAFETY: the closure runs in the child between fork and exec and only calls setsid and
     // ioctl, which are async-signal-safe.
     unsafe {
@@ -136,6 +142,7 @@ pub fn spawn(spec: &SpawnSpec) -> io::Result<Spawned> {
     let pid = child.id() as i32;
     Ok(Spawned {
         master: File::from(master),
+        slave,
         pid,
         child,
     })
@@ -241,5 +248,70 @@ pub fn wait_readable(fd: std::os::fd::RawFd, millis: i32) {
     // SAFETY: poll on one live pollfd.
     unsafe {
         libc::poll(&mut pfd, 1, millis);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    fn spec(argv: &[&str]) -> SpawnSpec {
+        SpawnSpec {
+            argv: argv.iter().map(|a| a.to_string()).collect(),
+            cwd: String::new(),
+            env: vec!["PATH=/usr/bin:/bin".to_string()],
+            cols: 80,
+            rows: 24,
+        }
+    }
+
+    /// Everything that can be read from the master right now.
+    fn read_now(master: &mut File) -> String {
+        let mut text = Vec::new();
+        let mut buf = [0u8; 256];
+        loop {
+            match master.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => text.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+        String::from_utf8_lossy(&text).to_string()
+    }
+
+    /// The program writes and ends at once, and nothing reads the master for a while (longer than
+    /// macOS waits for it before it throws the output away: about 0.6 s): the output is still
+    /// there afterwards. Without the program's end of the terminal kept open in the daemon, a
+    /// command that printed and ended at once could show nothing when the daemon was slow to
+    /// read. (With the end kept open macOS holds the program's exit until the master is read, so
+    /// the program is waited for only after the read.)
+    #[test]
+    fn what_a_program_wrote_just_before_it_ended_can_still_be_read() {
+        let mut spawned = spawn(&spec(&["/bin/echo", "last-words"])).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let text = read_now(&mut spawned.master);
+        assert!(text.contains("last-words"), "{text:?}");
+        spawned.child.wait().unwrap();
+    }
+
+    /// Letting go of the kept end is what lets the master report the end of output.
+    #[test]
+    fn the_master_reports_the_end_once_the_kept_end_is_closed() {
+        let mut spawned = spawn(&spec(&["/bin/echo", "x"])).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(read_now(&mut spawned.master).contains('x'));
+        spawned.child.wait().unwrap();
+        let Spawned {
+            mut master, slave, ..
+        } = spawned;
+        drop(slave);
+        let mut buf = [0u8; 16];
+        // End of output: zero bytes, or an error (Linux reports EIO); never "would block".
+        match master.read(&mut buf) {
+            Ok(0) => {}
+            Ok(n) => panic!("{n} more bytes"),
+            Err(e) => assert_ne!(e.kind(), io::ErrorKind::WouldBlock, "{e}"),
+        }
     }
 }
