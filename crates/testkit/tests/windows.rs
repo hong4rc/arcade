@@ -315,3 +315,37 @@ fn a_tab_takes_the_name_of_a_program_that_starts_with_nothing_printed_later() {
     let ok = client.wait_until(Duration::from_secs(2), |c| bar_of(c).contains(" sleep "));
     assert!(ok, "the bar says {:?}", bar_of(&client));
 }
+
+/// Through the real keys of the prompt: an empty answer to the window name gives the window back
+/// to automatic naming, and Esc leaves the name as it is.
+#[test]
+fn an_empty_window_name_typed_at_the_prompt_gives_the_window_back_to_the_program() {
+    const PREFIX: &[u8] = b"\x1b[109;5u";
+    const CLEAR_LINE: &[u8] = b"\x1b[117;5u";
+    let daemon = TestDaemon::start();
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    let ask = |client: &mut TestClient| {
+        client.send(PREFIX);
+        client.send(b",");
+        assert!(client.wait_until(WAIT, |c| bar_of(c).contains("Window name:")));
+        client.send(CLEAR_LINE);
+    };
+    ask(&mut client);
+    client.send(b"edit");
+    client.send(b"\r");
+    assert!(client.wait_until(WAIT, |c| bar_of(c).contains(" 1 edit ")));
+    // Esc leaves the name alone, even with the line cleared.
+    ask(&mut client);
+    client.send(b"\x1b[27u");
+    client.wait_until(Duration::from_millis(1500), |_| false);
+    assert!(
+        bar_of(&client).contains(" 1 edit "),
+        "{:?}",
+        bar_of(&client)
+    );
+    // Enter on an empty line is the answer "no name": the program's name comes back.
+    ask(&mut client);
+    client.send(b"\r");
+    tab_stops_being(&mut client, "edit");
+}

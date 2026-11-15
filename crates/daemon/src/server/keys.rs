@@ -659,8 +659,8 @@ impl Server {
         };
         let (name, args): (&str, Vec<String>) = match prompt.kind {
             PromptKind::ClosePane => ("pane.close", Vec::new()),
-            PromptKind::RenameWindow
-            | PromptKind::RenameSession
+            // An empty window name is an answer: the window goes back to automatic naming.
+            PromptKind::RenameSession
             | PromptKind::Argument(_)
             | PromptKind::SearchForward
             | PromptKind::SearchBackward
