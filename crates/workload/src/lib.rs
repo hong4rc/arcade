@@ -23,16 +23,20 @@ pub enum Workload {
     Wide,
     /// Many long escape sequences: hyperlinks, titles, clipboard writes, long color sequences.
     LongEscapes,
+    /// Plain text with shell prompt marks (OSC 133 `A`, `B`, `C`, `D`) every few lines, as a
+    /// shell with integration writes them.
+    Marks,
 }
 
 impl Workload {
-    pub const ALL: [Workload; 6] = [
+    pub const ALL: [Workload; 7] = [
         Workload::Plain,
         Workload::Colored,
         Workload::Scroll,
         Workload::FullScreen,
         Workload::Wide,
         Workload::LongEscapes,
+        Workload::Marks,
     ];
 
     pub fn name(self) -> &'static str {
@@ -43,6 +47,7 @@ impl Workload {
             Workload::FullScreen => "fullscreen",
             Workload::Wide => "wide",
             Workload::LongEscapes => "long-escapes",
+            Workload::Marks => "marks",
         }
     }
 
@@ -185,6 +190,7 @@ pub fn generate(workload: Workload, min_bytes: usize, seed: u64) -> Vec<u8> {
             }
             Workload::Wide => wide_line(&mut rng, &mut out),
             Workload::LongEscapes => long_escape_line(&mut rng, &mut out),
+            Workload::Marks => marks_unit(&mut rng, &mut out),
         }
     }
     out
@@ -199,6 +205,17 @@ fn plain_line(rng: &mut Rng, out: &mut Vec<u8>) {
     }
     out.truncate(start + width);
     out.extend_from_slice(b"\r\n");
+}
+
+/// The end of the last command, a prompt with a command, and two or three lines of its output,
+/// with the OSC 133 marks. A unit ends with a line end, like the other workloads.
+fn marks_unit(rng: &mut Rng, out: &mut Vec<u8>) {
+    out.extend_from_slice(b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    out.extend_from_slice(WORDS[rng.below(WORDS.len())].as_bytes());
+    out.extend_from_slice(b"\r\n\x1b]133;C\x07");
+    for _ in 0..rng.range(2, 3) {
+        plain_line(rng, out);
+    }
 }
 
 fn push_sgr(rng: &mut Rng, out: &mut Vec<u8>) {
