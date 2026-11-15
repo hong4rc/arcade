@@ -34,6 +34,11 @@ pub enum CopyCommand {
     OpenLink,
     /// Open a jump: type what to go to, then the label of a match.
     Jump,
+    /// Move the cursor to the previous / next shell prompt (OSC 133 marks).
+    PromptPrevious,
+    PromptNext,
+    /// Select the output of the command the cursor is in; again, the one before it.
+    SelectOutput,
     Cancel,
     Exit,
 }
@@ -93,6 +98,8 @@ pub enum Command {
     KeysList,
     Palette,
     CopyEnter,
+    /// Copy the output of the last finished command of the pane, without copy mode.
+    CopyLastOutput,
     Copy(CopyCommand),
     List(ListCommand),
     /// Go to the pane whose notification is the most urgent (and has waited longest), skipping
@@ -146,6 +153,7 @@ const NAMES: &[(&str, Command)] = &[
     ("session.detach", Command::SessionDetach),
     ("session.close", Command::SessionClose(None)),
     ("copy.enter", Command::CopyEnter),
+    ("copy.last-output", Command::CopyLastOutput),
     ("copy.left", Command::Copy(CopyCommand::Left)),
     ("copy.down", Command::Copy(CopyCommand::Down)),
     ("copy.up", Command::Copy(CopyCommand::Up)),
@@ -187,6 +195,15 @@ const NAMES: &[(&str, Command)] = &[
     ("copy.yank-stay", Command::Copy(CopyCommand::YankStay)),
     ("copy.open-link", Command::Copy(CopyCommand::OpenLink)),
     ("copy.jump", Command::Copy(CopyCommand::Jump)),
+    (
+        "copy.prompt-previous",
+        Command::Copy(CopyCommand::PromptPrevious),
+    ),
+    ("copy.prompt-next", Command::Copy(CopyCommand::PromptNext)),
+    (
+        "copy.select-output",
+        Command::Copy(CopyCommand::SelectOutput),
+    ),
     ("copy.cancel", Command::Copy(CopyCommand::Cancel)),
     ("copy.exit", Command::Copy(CopyCommand::Exit)),
     ("list.up", Command::List(ListCommand::Up)),

@@ -427,6 +427,7 @@ impl Server {
             // `execute` handles the form with a name before it gets here.
             Command::SessionClose(Some(_)) => Err("no such session".to_string()),
             Command::CopyEnter => self.enter_copy(ctx),
+            Command::CopyLastOutput => self.copy_last_output(ctx),
             Command::Copy(command) => self.copy_command(ctx, command),
             Command::PanePaste => self.paste_buffer(ctx.pane),
         }
@@ -543,12 +544,30 @@ impl Server {
     /// Keep `text` in the buffer and send it out the way the settings say, to the client of
     /// this session only.
     pub(super) fn copy_text(&mut self, session_id: u64, text: &str) {
+        self.copy_text_noted(session_id, text, "");
+    }
+
+    /// Like `copy_text`, with `note` added to the message on the status bar.
+    fn copy_text_noted(&mut self, session_id: u64, text: &str, note: &str) {
         let sent = self.clipboard.copy(text, &self.config.clipboard);
         let client = self.sessions.get(&session_id).and_then(|s| s.client);
         if let (Some(bytes), Some(client)) = (sent.osc52, client) {
             self.send_output(client, &bytes);
         }
-        self.set_message(session_id, &sent.message);
+        self.set_message(session_id, &format!("{}{note}", sent.message));
+    }
+
+    /// Copy the output of the last command that finished in the pane (see `copy::last_output`).
+    fn copy_last_output(&mut self, ctx: Ctx) -> Result<String, String> {
+        let pane = self
+            .panes
+            .get(&ctx.pane)
+            .ok_or_else(|| "no such pane".to_string())?;
+        let (text, rows) =
+            crate::copy::last_output(&pane.term, pane.term.cols(), pane.term.rows())?;
+        let note = format!(" ({rows} line{})", if rows == 1 { "" } else { "s" });
+        self.copy_text_noted(ctx.session, &text, &note);
+        Ok(String::new())
     }
 
     /// A program in a pane asked for the clipboard to be set.

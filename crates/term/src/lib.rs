@@ -21,7 +21,7 @@ use libghostty_vt::grid_ref::TrackedGridRef;
 use libghostty_vt::mode::Mode as GMode;
 use libghostty_vt::point::{Coordinate, Point, Space};
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
-use libghostty_vt::screen::{CellContentTag, CellWide};
+use libghostty_vt::screen::{CellContentTag, CellSemanticContent, CellWide, RowSemanticPrompt};
 use libghostty_vt::style::{Style as GStyle, StyleColor, Underline as GUnderline};
 use libghostty_vt::terminal::CompressionMode;
 use libghostty_vt::{Terminal, key::KittyKeyFlags};
@@ -737,6 +737,46 @@ impl Term {
             x: col,
             y: u32::from(row),
         }))
+    }
+
+    /// Whether a row of the whole screen (row 0 is the oldest line of the scrollback) is where a
+    /// shell prompt began (an OSC 133 `A` mark). Read from the library's own record, only when
+    /// asked; nothing is kept by Arcade while output goes by.
+    pub fn row_is_prompt(&self, row: usize) -> bool {
+        let Ok(y) = u32::try_from(row) else {
+            return false;
+        };
+        self.term
+            .grid_ref(Point::Screen(Coordinate { x: 0, y }))
+            .ok()
+            .and_then(|g| g.row().ok())
+            .and_then(|r| r.semantic_prompt().ok())
+            .is_some_and(|p| p == RowSemanticPrompt::Prompt)
+    }
+
+    /// Whether a row holds text of a shell prompt or of what was typed at it (OSC 133 `A`, `B`
+    /// and `C` marks tell the library which cell is which).
+    pub fn row_is_prompt_or_input(&self, row: usize) -> bool {
+        let Ok(y) = u32::try_from(row) else {
+            return false;
+        };
+        for x in 0..self.cols {
+            let Ok(g) = self.term.grid_ref(Point::Screen(Coordinate { x, y })) else {
+                return false;
+            };
+            let Ok(cell) = g.cell() else {
+                return false;
+            };
+            if cell.has_text().unwrap_or(false)
+                && matches!(
+                    cell.semantic_content(),
+                    Ok(CellSemanticContent::Prompt | CellSemanticContent::Input)
+                )
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// The link of a cell of the whole screen (row 0 is the oldest line of the scrollback), as

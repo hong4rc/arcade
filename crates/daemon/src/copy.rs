@@ -24,11 +24,35 @@ pub trait Source {
     fn link_at(&self, _row: usize, _col: u16) -> Option<String> {
         None
     }
+    /// A shell prompt began on this row (an OSC 133 `A` mark).
+    fn prompt_row(&self, _row: usize) -> bool {
+        false
+    }
+    /// The row holds text of a prompt or of what was typed at it.
+    fn prompt_or_input_row(&self, _row: usize) -> bool {
+        false
+    }
+    /// A full-screen program is showing (the alternate screen).
+    fn alt_screen(&self) -> bool {
+        false
+    }
 }
 
 impl Source for arcade_term::Term {
     fn link_at(&self, row: usize, col: u16) -> Option<String> {
         self.link_at_screen(row, col)
+    }
+
+    fn prompt_row(&self, row: usize) -> bool {
+        self.row_is_prompt(row)
+    }
+
+    fn prompt_or_input_row(&self, row: usize) -> bool {
+        self.row_is_prompt_or_input(row)
+    }
+
+    fn alt_screen(&self) -> bool {
+        self.mode(arcade_term::Mode::AltScreen).unwrap_or(false)
     }
 
     fn total(&self) -> usize {
@@ -145,6 +169,71 @@ struct Marks {
     first: String,
     cursor: String,
     selection: Option<String>,
+}
+
+const NO_MARKS: &str = "no shell prompt marks in this pane; see the user guide";
+const ALT_SCREEN: &str = "a full-screen program is showing; there is no command output to use";
+
+/// Whether any row has a prompt mark.
+fn has_prompt_marks<S: Source>(src: &S) -> bool {
+    (0..src.total()).any(|r| src.prompt_row(r))
+}
+
+/// The last row at or above `row` where a prompt began.
+fn prompt_at_or_before<S: Source>(src: &S, row: usize) -> Option<usize> {
+    (0..=row.min(src.total().saturating_sub(1)))
+        .rev()
+        .find(|r| src.prompt_row(*r))
+}
+
+/// The rows of the output of the command typed at the prompt that began on row `prompt`: from
+/// the first row after the prompt and what was typed, to the row before the next prompt, without
+/// the empty rows at the end. `None` when it printed nothing.
+fn output_span<S: Source>(src: &S, prompt: usize) -> Option<(usize, usize)> {
+    let total = src.total();
+    let mut first = prompt + 1;
+    while first < total && !src.prompt_row(first) && src.prompt_or_input_row(first) {
+        first += 1;
+    }
+    let mut end = (first..total).find(|r| src.prompt_row(*r)).unwrap_or(total);
+    let empty = |r: usize| {
+        src.line(r)
+            .is_none_or(|l| l.cells.iter().all(|c| c.text.trim().is_empty()))
+    };
+    while end > first && empty(end - 1) {
+        end -= 1;
+    }
+    (end > first).then(|| (first, end - 1))
+}
+
+/// The text of the output of the last command that finished, and how many rows it has: the one
+/// before the last prompt. Nothing is selected or moved; this is for copying without copy mode.
+pub fn last_output<S: Source>(src: &S, cols: u16, rows: u16) -> Result<(String, usize), String> {
+    if src.alt_screen() {
+        return Err(ALT_SCREEN.to_string());
+    }
+    let Some(last) = prompt_at_or_before(src, src.total().saturating_sub(1)) else {
+        return Err(NO_MARKS.to_string());
+    };
+    let Some(before) = last
+        .checked_sub(1)
+        .and_then(|r| prompt_at_or_before(src, r))
+    else {
+        return Err("no command has finished yet".to_string());
+    };
+    let Some((first, end)) = output_span(src, before) else {
+        return Err("the last command printed nothing".to_string());
+    };
+    let mut copy = Copy::enter(src, (0, 0), cols, rows);
+    copy.selection = Some(Selection {
+        kind: SelectionKind::Line,
+        row: first,
+        col: 0,
+    });
+    copy.row = end;
+    copy.col = 0;
+    let text = copy.selected_text(src).unwrap_or_default();
+    Ok((text, end - first + 1))
 }
 
 /// How far down the scrollback a line is looked for after old lines were cut off.
@@ -596,6 +685,90 @@ impl Copy {
                     Some(text) => Outcome::Yank { text, stay },
                     None => Outcome::Message("nothing is selected".to_string()),
                 };
+            }
+            CopyCommand::PromptPrevious | CopyCommand::PromptNext => {
+                let forward = command == CopyCommand::PromptNext;
+                if src.alt_screen() {
+                    return Outcome::Message(ALT_SCREEN.to_string());
+                }
+                let found = if forward {
+                    (self.row + 1..src.total()).find(|r| src.prompt_row(*r))
+                } else {
+                    (0..self.row).rev().find(|r| src.prompt_row(*r))
+                };
+                match found {
+                    Some(row) => self.go(src, row, 0),
+                    None if !has_prompt_marks(src) => {
+                        return Outcome::Message(NO_MARKS.to_string());
+                    }
+                    None => {
+                        return Outcome::Message(
+                            if forward {
+                                "no later prompt"
+                            } else {
+                                "no earlier prompt"
+                            }
+                            .to_string(),
+                        );
+                    }
+                }
+            }
+            CopyCommand::SelectOutput => {
+                if src.alt_screen() {
+                    return Outcome::Message(ALT_SCREEN.to_string());
+                }
+                let Some(here) = prompt_at_or_before(src, self.row) else {
+                    return Outcome::Message(if has_prompt_marks(src) {
+                        "no command above the cursor".to_string()
+                    } else {
+                        NO_MARKS.to_string()
+                    });
+                };
+                // On the rows of a prompt and what was typed at it, the output wanted is that of
+                // the command before; in an output, that output.
+                let own = output_span(src, here);
+                let (mut block, mut span) = match own {
+                    Some(s) if self.row >= s.0 => (here, Some(s)),
+                    _ => {
+                        let before = here
+                            .checked_sub(1)
+                            .and_then(|r| prompt_at_or_before(src, r));
+                        match before {
+                            Some(b) => (b, output_span(src, b)),
+                            None => (here, None),
+                        }
+                    }
+                };
+                // Again, on the output that is selected: the one before it.
+                if let (Some(sel), Some(s)) = (self.selection, span)
+                    && sel.kind == SelectionKind::Line
+                    && (sel.row.min(self.row), sel.row.max(self.row)) == s
+                {
+                    let before = block
+                        .checked_sub(1)
+                        .and_then(|r| prompt_at_or_before(src, r));
+                    match before {
+                        Some(b) => {
+                            block = b;
+                            span = output_span(src, b);
+                        }
+                        None => {
+                            return Outcome::Message("no earlier command".to_string());
+                        }
+                    }
+                }
+                let _ = block;
+                match span {
+                    Some((first, last)) => {
+                        self.selection = Some(Selection {
+                            kind: SelectionKind::Line,
+                            row: first,
+                            col: 0,
+                        });
+                        self.go(src, last, 0);
+                    }
+                    None => return Outcome::Message("that command printed nothing".to_string()),
+                }
             }
             CopyCommand::Jump => {
                 self.jump = Some(Jump {
@@ -1413,6 +1586,249 @@ mod tests {
         println!("drawing the view with labels: {:?}", start.elapsed());
         assert_eq!(view.len(), 60);
         assert!(times.iter().all(|t| t.as_millis() < 500), "{times:?}");
+    }
+
+    /// A terminal of `rows` rows after a shell session: each command is a prompt (OSC 133 `A`,
+    /// `B`), the command typed, `C`, its output lines, `D`; the last prompt is waiting.
+    fn shell(rows: u16, commands: &[(&str, &[&str])]) -> arcade_term::Term {
+        let mut config = arcade_term::TermConfig::new(30, rows);
+        config.scrollback_lines = 1000;
+        let mut term = arcade_term::Term::new(config).unwrap();
+        for (typed, output) in commands {
+            term.feed(
+                format!("\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\{typed}\r\n\x1b]133;C\x1b\\").as_bytes(),
+            );
+            for line in *output {
+                term.feed(format!("{line}\r\n").as_bytes());
+            }
+            term.feed(b"\x1b]133;D;0\x1b\\");
+        }
+        term.feed(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\");
+        term
+    }
+
+    fn enter_at(term: &arcade_term::Term, row: usize) -> Copy {
+        let mut c = Copy::enter(term, term.cursor_position(), 30, 4);
+        c.go(term, row, 0);
+        c
+    }
+
+    /// The rows: 0 `$ ls`, 1 one, 2 two, 3 `$ pwd`, 4 /home, 5 and 6 empty rows of the output,
+    /// 7 `$ echo`, 8 `x`, 9 `$ ` (waiting).
+    fn three_commands() -> arcade_term::Term {
+        shell(
+            4,
+            &[
+                ("ls", &["one", "two"]),
+                ("pwd", &["/home", "", ""]),
+                ("echo x", &["x"]),
+            ],
+        )
+    }
+
+    #[test]
+    fn the_prompt_keys_jump_from_prompt_to_prompt() {
+        let term = three_commands();
+        let mut c = enter_at(&term, 9);
+        assert!(c.apply(&term, CopyCommand::PromptPrevious) == Outcome::Moved);
+        assert_eq!(at(&c), (7, 0));
+        c.apply(&term, CopyCommand::PromptPrevious);
+        assert_eq!(at(&c), (3, 0));
+        c.apply(&term, CopyCommand::PromptPrevious);
+        assert_eq!(at(&c), (0, 0));
+        assert!(matches!(
+            c.apply(&term, CopyCommand::PromptPrevious),
+            Outcome::Message(m) if m.contains("earlier")
+        ));
+        assert_eq!(at(&c), (0, 0));
+        c.apply(&term, CopyCommand::PromptNext);
+        assert_eq!(at(&c), (3, 0));
+        let mut c = enter_at(&term, 9);
+        assert!(matches!(
+            c.apply(&term, CopyCommand::PromptNext),
+            Outcome::Message(m) if m.contains("later")
+        ));
+    }
+
+    #[test]
+    fn selecting_output_takes_the_rows_of_the_command_the_cursor_is_in_without_trailing_blanks() {
+        let term = three_commands();
+        // In the output of `pwd`, which ends in two empty rows.
+        let mut c = enter_at(&term, 4);
+        assert_eq!(c.apply(&term, CopyCommand::SelectOutput), Outcome::Moved);
+        assert_eq!(c.selected_text(&term).unwrap(), "/home");
+        assert_eq!(c.state(), crate::status::CopyState::VisualLine);
+        // In the output of `ls`.
+        let mut c = enter_at(&term, 2);
+        c.apply(&term, CopyCommand::SelectOutput);
+        assert_eq!(c.selected_text(&term).unwrap(), "one\ntwo");
+    }
+
+    #[test]
+    fn on_a_prompt_row_the_output_of_the_command_before_is_taken_and_again_goes_further_back() {
+        let term = three_commands();
+        // On the waiting prompt: the output of `echo x`.
+        let mut c = enter_at(&term, 9);
+        c.apply(&term, CopyCommand::SelectOutput);
+        assert_eq!(c.selected_text(&term).unwrap(), "x");
+        c.apply(&term, CopyCommand::SelectOutput);
+        assert_eq!(c.selected_text(&term).unwrap(), "/home");
+        c.apply(&term, CopyCommand::SelectOutput);
+        assert_eq!(c.selected_text(&term).unwrap(), "one\ntwo");
+        assert!(matches!(
+            c.apply(&term, CopyCommand::SelectOutput),
+            Outcome::Message(m) if m.contains("no earlier")
+        ));
+        // The first prompt has no command before it.
+        let mut c = enter_at(&term, 0);
+        assert!(matches!(
+            c.apply(&term, CopyCommand::SelectOutput),
+            Outcome::Message(_)
+        ));
+    }
+
+    #[test]
+    fn an_output_that_runs_into_the_scrollback_is_taken_whole() {
+        let lines: Vec<String> = (1..=30).map(|i| format!("line {i}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let term = shell(4, &[("seq", &refs), ("next", &["done"])]);
+        let mut c = enter_at(&term, term.total_rows() - 1);
+        c.apply(&term, CopyCommand::SelectOutput);
+        c.apply(&term, CopyCommand::SelectOutput);
+        let text = c.selected_text(&term).unwrap();
+        assert_eq!(text.lines().count(), 30);
+        assert!(text.starts_with("line 1\nline 2\n") && text.ends_with("line 30"));
+    }
+
+    #[test]
+    fn a_pane_without_marks_says_so_for_each_command() {
+        let mut term = arcade_term::Term::new(arcade_term::TermConfig::new(30, 4)).unwrap();
+        term.feed(b"$ ls\r\none\r\n$ ");
+        let mut c = enter_at(&term, 1);
+        for command in [
+            CopyCommand::PromptPrevious,
+            CopyCommand::PromptNext,
+            CopyCommand::SelectOutput,
+        ] {
+            assert!(
+                matches!(c.apply(&term, command), Outcome::Message(m) if m.contains("no shell prompt marks")),
+                "{command:?}"
+            );
+        }
+        assert_eq!(at(&c), (1, 0));
+        assert!(c.selection.is_none());
+        assert!(
+            last_output(&term, 30, 4)
+                .unwrap_err()
+                .contains("no shell prompt marks")
+        );
+    }
+
+    #[test]
+    fn a_full_screen_program_gets_a_message_and_nothing_else() {
+        let mut term = three_commands();
+        term.feed(b"\x1b[?1049h");
+        let mut c = enter_at(&term, 0);
+        assert!(matches!(
+            c.apply(&term, CopyCommand::SelectOutput),
+            Outcome::Message(m) if m.contains("full-screen")
+        ));
+        assert!(
+            last_output(&term, 30, 4)
+                .unwrap_err()
+                .contains("full-screen")
+        );
+    }
+
+    #[test]
+    fn the_last_output_is_the_one_before_the_waiting_prompt() {
+        let term = three_commands();
+        assert_eq!(last_output(&term, 30, 4).unwrap(), ("x".to_string(), 1));
+        let term = shell(4, &[("ls", &["one", "two"])]);
+        assert_eq!(
+            last_output(&term, 30, 4).unwrap(),
+            ("one\ntwo".to_string(), 2)
+        );
+        let term = shell(4, &[]);
+        assert!(
+            last_output(&term, 30, 4)
+                .unwrap_err()
+                .contains("no command")
+        );
+        let term = shell(4, &[("true", &[])]);
+        assert!(last_output(&term, 30, 4).unwrap_err().contains("nothing"));
+    }
+
+    /// How long the prompt keys take on a full scrollback (run with `--release --nocapture`).
+    #[test]
+    fn the_prompt_keys_on_a_full_scrollback_take_a_fraction_of_a_frame() {
+        let mut config = arcade_term::TermConfig::new(200, 60);
+        config.scrollback_lines = 50_000;
+        let mut marked = arcade_term::Term::new(config.clone()).unwrap();
+        let mut plain = arcade_term::Term::new(config).unwrap();
+        for i in 0..52_000 {
+            if i % 20 == 0 {
+                marked.feed(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\cmd\r\n\x1b]133;C\x1b\\");
+            }
+            let line = format!("output line {i} with some text to fill the row\r\n");
+            marked.feed(line.as_bytes());
+            plain.feed(line.as_bytes());
+        }
+        println!(
+            "scrollback of {} rows, a prompt every 21 rows",
+            marked.total_rows()
+        );
+        let time = |what: &str, term: &arcade_term::Term, command: CopyCommand, from: usize| {
+            let mut c = Copy::enter(term, term.cursor_position(), 200, 60);
+            c.go(term, from, 0);
+            let start = std::time::Instant::now();
+            let outcome = c.apply(term, command);
+            println!(
+                "{what}: {:?} ({:?})",
+                start.elapsed(),
+                matches!(outcome, Outcome::Message(_))
+            );
+        };
+        let bottom = marked.total_rows() - 1;
+        time(
+            "previous prompt from the bottom",
+            &marked,
+            CopyCommand::PromptPrevious,
+            bottom,
+        );
+        time(
+            "next prompt from the middle",
+            &marked,
+            CopyCommand::PromptNext,
+            bottom / 2,
+        );
+        time(
+            "select output at the bottom",
+            &marked,
+            CopyCommand::SelectOutput,
+            bottom,
+        );
+        time(
+            "select output in the middle",
+            &marked,
+            CopyCommand::SelectOutput,
+            bottom / 2,
+        );
+        time(
+            "worst case, no marks at all: previous prompt",
+            &plain,
+            CopyCommand::PromptPrevious,
+            bottom,
+        );
+        time(
+            "worst case, no marks at all: select output",
+            &plain,
+            CopyCommand::SelectOutput,
+            bottom,
+        );
+        let start = std::time::Instant::now();
+        let _ = last_output(&marked, 200, 60);
+        println!("last output (no copy mode): {:?}", start.elapsed());
     }
 
     fn open(c: &mut Copy, src: &Rows) -> Outcome {

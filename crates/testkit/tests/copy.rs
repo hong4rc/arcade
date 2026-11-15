@@ -651,3 +651,91 @@ fn a_jump_label_moves_the_cursor_and_a_selection_follows_it_to_the_copy() {
         b"first mark\nsecond line\nthird mark here".to_vec()
     );
 }
+
+/// A program that prints a shell session with prompt marks (OSC 133), then waits.
+fn marked_session() -> String {
+    let a = "\\033]133;A\\033\\\\";
+    let b = "\\033]133;B\\033\\\\";
+    let c = "\\033]133;C\\033\\\\";
+    format!(
+        "printf '{a}$ {b}ls\\n{c}alpha\\nbeta\\n{a}$ {b}pwd\\n{c}/home/me\\n\\n{a}$ {b}'; sleep 60"
+    )
+}
+
+#[test]
+fn the_last_output_is_copied_without_entering_copy_mode() {
+    let dir = scratch();
+    let file = dir.join("clipboard.txt");
+    let target = file.clone();
+    let daemon = TestDaemon::start_with(move |c| {
+        c.config.clipboard.mode = ClipboardMode::Command;
+        c.config.clipboard.command = Some(format!("cat > '{}'", target.display()));
+    });
+    let script = marked_session();
+    let mut client = daemon
+        .attach(
+            AttachOptions::new()
+                .size(80, 20)
+                .named("out")
+                .command(&["sh", "-c", &script]),
+        )
+        .unwrap();
+    client.wait_for_text("/home/me").unwrap();
+    client.send(PREFIX);
+    client.send(b"Y");
+    message_has(&mut client, "copied");
+    assert!(
+        copy_word(&bar(&client)).is_none() || bar(&client).contains("lines"),
+        "{}",
+        bar(&client)
+    );
+    let start = std::time::Instant::now();
+    while std::fs::read_to_string(&file).map_or(true, |t| t != "/home/me") {
+        assert!(
+            start.elapsed() < WAIT,
+            "{:?}",
+            std::fs::read_to_string(&file)
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_pane_without_prompt_marks_says_so_when_asked_for_its_last_output() {
+    let daemon = TestDaemon::start();
+    let mut client = client(&daemon);
+    client.send(PREFIX);
+    client.send(b"Y");
+    message_has(&mut client, "no shell prompt marks");
+    assert!(client.clipboard_writes.is_empty());
+}
+
+#[test]
+fn the_prompt_and_output_keys_work_in_copy_mode_of_a_real_pane() {
+    let daemon = TestDaemon::start();
+    let script = marked_session();
+    let mut client = daemon
+        .attach(
+            AttachOptions::new()
+                .size(80, 20)
+                .named("out")
+                .command(&["sh", "-c", &script]),
+        )
+        .unwrap();
+    client.wait_for_text("/home/me").unwrap();
+    enter(&mut client);
+    // On the waiting prompt: the output of `pwd` is the empty line and `/home/me`, trimmed.
+    client.send(b"O");
+    assert!(client.wait_until(WAIT, |c| copy_word(&bar(c)) == Some("V-LINE")));
+    client.send(b"y");
+    wait_clipboard(&mut client, 1);
+    assert_eq!(client.clipboard_writes[0], b"/home/me".to_vec());
+    // Back in copy mode: the prompt keys move between prompts.
+    enter(&mut client);
+    client.send(b"[");
+    client.send(b"[");
+    client.send(b"Vjjy");
+    wait_clipboard(&mut client, 2);
+    assert_eq!(client.clipboard_writes[1], b"$ ls\nalpha\nbeta".to_vec());
+}

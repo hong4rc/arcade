@@ -126,12 +126,16 @@ These keys do not repeat: hold the modifier and press again.
 | `Y` | Copy the selection and stay in copy mode |
 | `o` | Open the link under the cursor (see "Links" below); copy mode goes on |
 | `s` | Jump: type what to go to, then the label of the match (see "Jump" below) |
+| `[` / `]` | Move the cursor to the previous / next shell prompt (see "Commands and their output" below) |
+| `O` | Select the output of the command the cursor is in; again, the output of the one before (see below) |
 | `q` | Leave |
 | `Esc` | Cancel (drop the selection, or leave if nothing is selected) |
 
 **Which state copy mode is in.** The word at the right end of the status bar says it: `COPY` while you only move, `VISUAL` while a selection by character is active, `V-LINE` while a selection by line is active, and `JUMP` followed by what you typed while a jump is open.
 
 **Jump.** `s` opens a jump (as the flash plugin does in Neovim). Type the characters to go to: every match on the rows you see is highlighted, and each match gets a one-letter label drawn on the character right after it. Type a label to move the cursor to the start of that match; the jump ends. More typing narrows the matches. A label letter is never a character that could continue a match, so a key is either a label or more text to look for, never both. A lower case search matches both cases; an upper case letter makes it exact. With more matches than labels (26 letters), the matches nearest to the cursor get them and the others stay highlighted until you type more. `Enter` goes to the first match after the cursor (wrapping to the first), `Backspace` takes the last character back, `Esc` cancels and puts the cursor and the view back. If a selection is active (`v` or `V`), the jump moves the cursor and the selection stretches to it, with its starting point where it was; with no selection, the jump only moves. Example: to copy from here to the word `deploy` farther down, press `v`, `s`, type `deploy`, type the label shown after it, then `y`.
+
+**Commands and their output.** If the shell tells Arcade where its prompts and the output of each command are (the shell prompt marks, OSC 133, section 5.12), copy mode knows the commands. `[` and `]` move the cursor to the previous and the next prompt. `O` selects, by line, the output of the command the cursor is in: from the first row after the prompt to the row before the next prompt, without the empty rows at the end; with the cursor on a prompt (for example on the last one, where copy mode starts), it selects the output of the command before it, and `O` again goes one command further back. Then `y` copies it. Outside copy mode, the prefix then `Y` copies the output of the last finished command of the pane straight to the clipboard and says how many lines were copied. In a pane with no prompt marks, or showing a full-screen program, these keys only show a message on the status bar. Arcade reads the marks only when you press one of these keys, so nothing is slowed down while output goes by.
 
 **Links.** A program can mark text as a link (the hidden kind, OSC 8, for example what `ls --hyperlink` or many tools print): Arcade passes those links on to the terminal window, so Ghostty can open them (Cmd+click, or Ctrl+Shift+click while Arcade has the mouse). A link whose address holds a control character, a non-ASCII character or a space, or is longer than 2048 bytes, is not passed on and is drawn as plain text. In copy mode the pane shows its text without the links.
 
@@ -335,6 +339,29 @@ To see what really arrives, run `arcade keys test` in the terminal you use. A ke
 **5.12 Ending the session you are in.** Closing its last pane, `session.close` and `arcade kill-session` on it all follow `[session] on-end` (section 4). Sessions that already have a client of their own are not taken over; the move goes to a session nobody is looking at. Notifications of the ended session are dropped from the counter.
 
 ## 6. Not built yet
+
+**5.12 Shell prompt marks (for copy mode's `[`, `]`, `O` and the prefix `Y`).** The keys that work on the output of a command need the shell to say where a prompt starts, where what you type starts, and where the output starts. Shells do it with the OSC 133 marks: `A` at the start of the prompt, `B` at the end of the prompt (where your typing starts), `C` when the command starts running (where its output starts) and, optionally, `D;<exit code>` when it ends. Arcade needs at least `A`, `B` and `C`: without `B` and `C` the text you type and the output cannot be told from the prompt. `D` is sent by the snippets below because other tools expect it, but Arcade does not use it. Arcade writes none of this itself and does not touch your dotfiles; put one of these in the startup file of your shell. They work with a prompt made by starship too (the `B` mark is added after the prompt is built, so keep the line that adds it last).
+
+For zsh (`~/.zshrc`, after `eval "$(starship init zsh)"` if you use starship):
+
+```zsh
+_arcade_precmd() { print -n "\e]133;D;$?\a\e]133;A\a"; }
+_arcade_preexec() { print -n "\e]133;C\a"; }
+_arcade_prompt_end() { [[ $PS1 == *$'\e]133;B'* ]] || PS1+=$'%{\e]133;B\a%}'; }
+precmd_functions=(_arcade_precmd $precmd_functions _arcade_prompt_end)
+preexec_functions+=(_arcade_preexec)
+```
+
+For bash 4.4 or newer (`~/.bashrc`; the bash 3.2 that comes with macOS has no `PS0`, so install a newer one or use zsh):
+
+```bash
+_arcade_precmd() { printf '\e]133;D;%s\a\e]133;A\a' "$?"; }
+PROMPT_COMMAND="_arcade_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+PS1="${PS1}\[\e]133;B\a\]"
+PS0='\e]133;C\a'
+```
+
+Check it with `printf` or just try it: run a command, enter copy mode (prefix, then `[`) and press `O`: the output of the command is selected. Both snippets are run by Arcade's own tests (zsh and bash) against a pane, so they are known to give the marks Arcade reads.
 
 Things that belong to Phase 1 or to the design but are not in the current build:
 

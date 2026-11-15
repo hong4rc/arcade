@@ -589,6 +589,7 @@ impl Keymap {
         bind(t, ch('M'), "window.move", &[], false);
         bind(t, ch('a'), "notification.list", &[], false);
         bind(t, ch('A'), "notification.clear-all", &[], false);
+        bind(t, ch('Y'), "copy.last-output", &[], false);
         bind(t, ch('q'), "notification.clear", &[], false);
         bind(t, ch('['), "copy.enter", &[], false);
         bind(t, ch(']'), "pane.paste", &[], false);
@@ -709,6 +710,9 @@ impl Keymap {
         place(t, 'Y', None, "copy.yank-stay");
         place(t, 'o', None, "copy.open-link");
         place(t, 's', None, "copy.jump");
+        place(t, '[', None, "copy.prompt-previous");
+        place(t, ']', None, "copy.prompt-next");
+        place(t, 'O', None, "copy.select-output");
         place(t, 'q', None, "copy.exit");
         let ctrl = |c: char| Key {
             code: Code::Char(c),
@@ -987,6 +991,9 @@ mod tests {
             ("Y", "copy.yank-stay"),
             ("o", "copy.open-link"),
             ("s", "copy.jump"),
+            ("[", "copy.prompt-previous"),
+            ("]", "copy.prompt-next"),
+            ("O", "copy.select-output"),
             ("escape", "copy.cancel"),
             ("q", "copy.exit"),
         ] {
