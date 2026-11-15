@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use arcade_term::{Cell, Code, Key, Mods};
 
-use super::{BoxSpec, Drawn, Item, Picker, assemble, cells_of, cut, geometry};
+use super::{BoxSpec, Drawn, Item, Picker, assemble, cells_of, cut, fit_hint_line, geometry};
 use crate::commands;
 use crate::compose::{blank, text_cells};
 use crate::config::TableName;
@@ -426,15 +426,18 @@ fn pad(text: &str, width: usize) -> String {
 }
 
 /// The footer: the keys of the list, and what a mark on a key means when some key has one.
-fn footer(picker: &Picker, keys: &ListKeys, filtered: bool, flagged: bool) -> String {
-    let mut line = picker.key_line(keys, filtered);
+fn footer(picker: &Picker, keys: &ListKeys, filtered: bool, flagged: bool, width: usize) -> String {
+    let mut items = picker.key_items(keys, filtered);
     if flagged {
-        line.push_str(&format!(
-            "  {} not on this terminal",
-            theme::symbol(Symbol::KeyUnavailable)
+        items.push((
+            Some(format!(
+                "{} not on this terminal",
+                theme::symbol(Symbol::KeyUnavailable)
+            )),
+            8,
         ));
     }
-    line
+    fit_hint_line(items, width)
 }
 
 fn probe_spec<'a>(
@@ -504,7 +507,7 @@ pub(super) fn draw(picker: &Picker, cols: u16, rows: u16, keys: &ListKeys) -> Dr
     }
     let one_column = column_height(&per_group);
 
-    let footers_for = |filtered: bool| [footer(picker, keys, filtered, flagged)];
+    let footers_for = |filtered: bool| [footer(picker, keys, filtered, flagged, usize::MAX)];
     let room = geometry(&probe_spec(
         picker,
         10_000,
@@ -594,6 +597,15 @@ pub(super) fn draw(picker: &Picker, cols: u16, rows: u16, keys: &ListKeys) -> Dr
         cols,
         rows,
     ));
+    // When the box is narrower than the key line, the hints that matter least are left out, so
+    // that closing and what the mark means stay.
+    let footers = [footer(
+        picker,
+        keys,
+        filtered,
+        flagged,
+        geo.inner.saturating_sub(1),
+    )];
     let shown_lines = geo.shown.saturating_sub(1);
 
     // Which line of which column is chosen, and the first line that shows: the chosen one stays
@@ -614,14 +626,26 @@ pub(super) fn draw(picker: &Picker, cols: u16, rows: u16, keys: &ListKeys) -> Dr
     let plain = theme::style(Role::Picker);
     let heading = theme::style(Role::PickerHeading);
     let chosen = theme::style(Role::PickerSelected);
-    let render = |line: Option<Line>| -> Vec<Cell> {
+    let render = |c: usize, line: Option<Line>| -> Vec<Cell> {
         let cells = match line {
             None | Some(Line::Blank(_)) => text_cells("", plain),
             Some(Line::NoMatch) => text_cells(
                 &format!("  {}", theme::symbol(Symbol::PickerNoMatch)),
                 plain,
             ),
-            Some(Line::Heading(g)) => text_cells(GROUPS[g], heading),
+            Some(Line::Heading(g)) => {
+                // A group that goes on from the first column says so.
+                let goes_on = c == 1
+                    && lines[0]
+                        .iter()
+                        .any(|l| matches!(l, Line::Heading(h) if *h == g));
+                let text = if goes_on {
+                    format!("{} (continued)", GROUPS[g])
+                } else {
+                    GROUPS[g].to_string()
+                };
+                text_cells(&text, heading)
+            }
             Some(Line::Row(pos, _)) => {
                 let item = &picker.items[picker.visible[pos]];
                 let k = cells_of_item(item);
@@ -679,8 +703,8 @@ pub(super) fn draw(picker: &Picker, cols: u16, rows: u16, keys: &ListKeys) -> Dr
     };
     body.push(join(header_cells(), two.then(header_cells)));
     for i in 0..shown_lines {
-        let left = render(line_at(0, i));
-        let right = two.then(|| render(line_at(1, i)));
+        let left = render(0, line_at(0, i));
+        let right = two.then(|| render(1, line_at(1, i)));
         body.push(join(left, right));
     }
     assemble(&geo, &picker.title, &picker.filter, body, &footers)

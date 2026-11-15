@@ -481,3 +481,45 @@ fn the_columns_of_the_rows_line_up_whatever_the_length_of_the_names_and_the_keys
     assert_eq!(short.0, long.0, "the action column");
     assert_eq!(short.1, long.1, "the prefix column");
 }
+
+#[test]
+fn a_group_that_goes_on_in_the_second_column_says_so_in_its_second_heading() {
+    let daemon = TestDaemon::start();
+    let client = open_at(&daemon, 120, 36);
+    let text = box_rows(&client).join("\n");
+    assert_eq!(text.matches("Windows").count(), 2, "{text}");
+    assert_eq!(text.matches("Windows (continued)").count(), 1, "{text}");
+    // The other groups are whole in one column and have one heading.
+    for heading in ["Panes", "Sessions", "Arcade"] {
+        assert_eq!(text.matches(heading).count(), 1, "{heading}\n{text}");
+    }
+}
+
+#[test]
+fn a_narrow_key_line_drops_the_hints_that_matter_least_and_keeps_close_and_the_mark() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon
+        .attach(AttachOptions::new().size(70, 24).named("narrow70"))
+        .unwrap();
+    client.wait_for_prompt().unwrap();
+    client.send(LEGACY_ANSWER);
+    assert!(client.wait_until(WAIT, |c| c.status_row().contains("cannot work here")));
+    open_list(&mut client);
+    let rows = box_rows(&client);
+    let line = inner(&rows[rows.len() - 2]);
+    assert!(line.contains("esc close"), "{line}");
+    assert!(line.contains("! not on this terminal"), "{line}");
+    assert!(!line.contains('…'), "{line}");
+    // In a roomy box all of them are there.
+    let wide = open_at(&daemon, 160, 40);
+    let rows = box_rows(&wide);
+    let line = inner(&rows[rows.len() - 2]);
+    assert!(
+        line.contains("up down move") && line.contains("enter run"),
+        "{line}"
+    );
+    assert!(
+        line.contains("type to filter") && line.contains("esc close"),
+        "{line}"
+    );
+}

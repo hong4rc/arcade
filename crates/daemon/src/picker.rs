@@ -194,6 +194,18 @@ impl Picker {
 
     /// The line of keys at the bottom of the box.
     fn key_line(&self, keys: &ListKeys, filtered: bool) -> String {
+        hint_line(
+            &self
+                .key_items(keys, filtered)
+                .into_iter()
+                .map(|(item, _)| item)
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// The items of the key line, each with how much it matters when there is no room for all
+    /// of them (the higher, the longer it stays).
+    fn key_items(&self, keys: &ListKeys, filtered: bool) -> Vec<(Option<String>, u8)> {
         let go = match self.kind {
             PickerKind::MoveWindow => "move here",
             PickerKind::Keys | PickerKind::Commands => "run",
@@ -207,13 +219,13 @@ impl Picker {
         let clear = (self.kind == PickerKind::Notifications)
             .then(|| keys_item(&[&keys.clear], "clear"))
             .flatten();
-        hint_line(&[
-            keys_item(&[&keys.up, &keys.down], "move"),
-            keys_item(&[&keys.select], go),
-            clear,
-            typing,
-            keys_item(&[&keys.cancel], "close"),
-        ])
+        vec![
+            (keys_item(&[&keys.up, &keys.down], "move"), 2),
+            (keys_item(&[&keys.select], go), 3),
+            (clear, 2),
+            (typing, 1),
+            (keys_item(&[&keys.cancel], "close"), 9),
+        ]
     }
 
     /// The box for a screen of this size. Its size comes from every line it could show and from
@@ -270,6 +282,29 @@ pub fn cells_of(text: &str) -> usize {
 pub fn keys_item(keys: &[&Option<String>], what: &str) -> Option<String> {
     let names: Vec<&str> = keys.iter().filter_map(|k| k.as_deref()).collect();
     (!names.is_empty()).then(|| format!("{} {what}", names.join(" ")))
+}
+
+/// The items that exist, side by side, as many as fit in `width` cells: when they do not all
+/// fit, the one that matters least goes first, and the one that matters most always stays.
+pub fn fit_hint_line(mut items: Vec<(Option<String>, u8)>, width: usize) -> String {
+    loop {
+        let line = hint_line(&items.iter().map(|(i, _)| i.clone()).collect::<Vec<_>>());
+        if cells_of(&line) <= width {
+            return line;
+        }
+        let least = items
+            .iter()
+            .enumerate()
+            .filter(|(_, (item, _))| item.is_some())
+            .min_by_key(|(_, (_, rank))| *rank)
+            .map(|(at, _)| at);
+        match least {
+            Some(at) if items.iter().filter(|(i, _)| i.is_some()).count() > 1 => {
+                items.remove(at);
+            }
+            _ => return line,
+        }
+    }
 }
 
 /// The items that exist, side by side.
@@ -650,5 +685,27 @@ mod tests {
         let line = text(&narrow.rows[narrow.rows.len() - 2]);
         assert!(line.contains('\u{2026}'), "{line}");
         assert!(narrow.rows.iter().all(|r| r.len() == narrow.rows[0].len()));
+    }
+
+    #[test]
+    fn a_hint_line_that_does_not_fit_loses_the_least_important_hints_first() {
+        let items = || {
+            vec![
+                (Some("up down move".to_string()), 2),
+                (Some("enter run".to_string()), 3),
+                (None, 2),
+                (Some("type to filter".to_string()), 1),
+                (Some("esc close".to_string()), 9),
+            ]
+        };
+        let all = fit_hint_line(items(), 200);
+        assert_eq!(all, "up down move  enter run  type to filter  esc close");
+        assert_eq!(
+            fit_hint_line(items(), 36),
+            "up down move  enter run  esc close"
+        );
+        assert_eq!(fit_hint_line(items(), 20), "enter run  esc close");
+        // The one that matters most stays even when it does not fit either.
+        assert_eq!(fit_hint_line(items(), 3), "esc close");
     }
 }
