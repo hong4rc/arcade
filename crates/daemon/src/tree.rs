@@ -2,7 +2,8 @@
 //! and what pressing Enter would do. Nothing here touches a session or a process: the daemon
 //! makes the [`Entry`] lines from its own books, and does what a [`Plan`] says.
 
-use crate::picker::{Drawn, draw_box};
+use crate::keymap::ListKeys;
+use crate::picker::{BoxSpec, Drawn, cells_of, draw_box, hint_line, keys_item};
 use crate::theme::{self, Symbol};
 
 /// What an item of the tree is, by the daemon's own number for it (unique over the daemon).
@@ -308,15 +309,26 @@ impl Tree {
 
     // ---- What Enter does ----
 
-    fn describe(&self, index: usize) -> String {
-        let e = &self.entries[index];
-        match e.key {
-            Key::Session(_) => format!("session {}", e.label),
-            Key::Window(_) => match e.parent {
-                Some(s) => format!("window {} of {}", e.label, self.entries[s].label),
-                None => format!("window {}", e.label),
-            },
-            Key::Pane(_) => format!("pane {}", e.label),
+    /// What an item is called in a sentence: its tier, then its label.
+    fn name_of(&self, index: usize) -> String {
+        format!(
+            "{} {}",
+            tier_name(self.entries[index].key),
+            self.entries[index].label
+        )
+    }
+
+    /// Where an item is, as ` (work › 2 server)`; nothing for a session.
+    fn place(&self, index: usize) -> String {
+        let mut names = self.path(index);
+        names.pop();
+        if names.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " ({})",
+                names.join(theme::symbol(Symbol::TreePathSeparator))
+            )
         }
     }
 
@@ -338,29 +350,35 @@ impl Tree {
 
     /// What Enter would do with the chosen item, in words, or why it would do nothing.
     pub fn plan(&self) -> Result<(Action, String), String> {
+        let rows = self.rows();
         let at = self
             .index_of(self.selected)
-            .ok_or_else(|| "nothing is chosen".to_string())?;
+            .filter(|_| self.filter.is_empty() || self.selected_row(&rows).is_some())
+            .ok_or_else(|| {
+                if self.filter.is_empty() {
+                    "nothing is chosen".to_string()
+                } else {
+                    "nothing matches".to_string()
+                }
+            })?;
         let target = &self.entries[at];
         let Some(lifted) = self.lifted.and_then(|k| self.index_of(k)) else {
-            let what = format!("go to {}", self.describe(at));
+            let what = format!("go to {}", self.name_of(at));
             return Ok((Action::Jump(target.key), what));
         };
         let from = &self.entries[lifted];
+        let thing = tier_name(from.key);
         if lifted == at {
-            return Err(format!(
-                "this is the {} that is lifted",
-                tier_name(from.key)
-            ));
+            return Err(format!("this is the lifted {thing}"));
         }
-        let here = self.describe(lifted);
+        let place = self.place(at);
         match (from.key, target.key) {
             (Key::Pane(pane), Key::Pane(t)) => {
                 let same_window = self.window_of(lifted) == self.window_of(at);
                 if !same_window && !target.room {
                     return Err("no room in that window to split".to_string());
                 }
-                let what = format!("move {here} next to {}", self.describe_in_window(at));
+                let what = format!("put {thing} beside {}{place}", target.label);
                 Ok((Action::PaneBeside { pane, target: t }, what))
             }
             (Key::Pane(pane), Key::Window(_)) => {
@@ -374,7 +392,7 @@ impl Tree {
                 if !focus.is_some_and(|f| self.entries[f].room) {
                     return Err("no room in that window to split".to_string());
                 }
-                let what = format!("move {here} to {}", self.describe(at));
+                let what = format!("put {thing} in {}{place}", self.name_of(at));
                 Ok((Action::PaneBeside { pane, target: t }, what))
             }
             (Key::Pane(pane), Key::Session(session)) => {
@@ -383,11 +401,11 @@ impl Tree {
                 if self.session_of(lifted) == at && alone {
                     return Err("the pane is alone in its window".to_string());
                 }
-                let what = format!("move {here} to a new window of {}", self.describe(at));
+                let what = format!("put {thing} in a new window of {}", target.label);
                 Ok((Action::PaneToSession { pane, session }, what))
             }
             (Key::Window(window), Key::Window(t)) => {
-                let what = format!("move {here} after {}", self.describe(at));
+                let what = format!("put {thing} after {}{place}", target.label);
                 Ok((Action::WindowAfter { window, target: t }, what))
             }
             (Key::Window(_), Key::Pane(_)) => {
@@ -401,22 +419,15 @@ impl Tree {
                 if last {
                     return Err("the window is the last of its session already".to_string());
                 }
-                let what = format!("move {here} to the end of {}", self.describe(at));
+                let what = format!("put {thing} at the end of {}", target.label);
                 Ok((Action::WindowToSession { window, session }, what))
             }
             (Key::Session(_), _) => Err("a session cannot be moved".to_string()),
         }
     }
 
-    fn describe_in_window(&self, index: usize) -> String {
-        match self.entries[index].parent {
-            Some(w) => format!("{} in {}", self.describe(index), self.describe(w)),
-            None => self.describe(index),
-        }
-    }
-
-    /// The line at the bottom of the box.
-    fn footer(&self) -> String {
+    /// The line under the list that says what Enter does.
+    fn enter_line(&self) -> String {
         if let Some(notice) = &self.notice {
             return notice.clone();
         }
@@ -424,6 +435,84 @@ impl Tree {
             Ok((_, what)) => format!("Enter: {what}"),
             Err(why) => format!("Enter does nothing: {why}"),
         }
+    }
+
+    /// The line of keys under that, for what the tree is doing: looking, moving something, or
+    /// filtering.
+    fn key_line_for(keys: &ListKeys, lifted: bool, filtered: bool) -> String {
+        let clear = filtered
+            .then(|| keys_item(&[&keys.filter_clear], "clear filter"))
+            .flatten();
+        let mv = keys_item(
+            &[&keys.up, &keys.down],
+            if lifted { "choose where" } else { "move" },
+        );
+        if lifted {
+            return hint_line(&[
+                mv,
+                keys_item(&[&keys.select], "put down"),
+                clear,
+                keys_item(&[&keys.cancel], "cancel the lift"),
+            ]);
+        }
+        let folding = (!filtered)
+            .then(|| keys_item(&[&keys.left, &keys.right], "close/open"))
+            .flatten();
+        let lift = (!filtered)
+            .then(|| keys_item(&[&keys.lift], "lift"))
+            .flatten();
+        let typing = (!filtered).then(|| "type to filter".to_string());
+        hint_line(&[
+            mv,
+            folding,
+            keys_item(&[&keys.select], "go"),
+            lift,
+            typing,
+            clear,
+            keys_item(&[&keys.cancel], "close"),
+        ])
+    }
+
+    fn key_line(&self, keys: &ListKeys) -> String {
+        Self::key_line_for(keys, self.lifted.is_some(), !self.filter.is_empty())
+    }
+
+    /// The title of the box: what is being moved, while something is.
+    fn title_for(&self, lifted: Option<usize>) -> String {
+        match lifted {
+            None => self.title.clone(),
+            Some(i) => format!(
+                "{}{}moving {}",
+                self.title,
+                theme::symbol(Symbol::HintSeparator),
+                self.name_of(i)
+            ),
+        }
+    }
+
+    /// The widest text the box could show: every line as if every branch were open and as it
+    /// is when filtered (with its path), what a lift adds to a line and to the title, and each
+    /// key line.
+    fn widest(&self, keys: &ListKeys) -> usize {
+        let lifted_mark = cells_of(theme::symbol(Symbol::TreeLifted));
+        let mut widest = cells_of(&self.title) + 2;
+        for i in 0..self.entries.len() {
+            let nested = cells_of(&self.line(i, true, false));
+            let flat = cells_of(&self.line(i, true, true));
+            widest = widest.max(nested + lifted_mark).max(flat + lifted_mark);
+            if !matches!(self.entries[i].key, Key::Session(_)) {
+                widest = widest.max(cells_of(&self.title_for(Some(i))) + 2);
+            }
+        }
+        for lifted in [false, true] {
+            for filtered in [false, true] {
+                widest = widest.max(cells_of(&Self::key_line_for(keys, lifted, filtered)));
+            }
+        }
+        widest.max(cells_of(&format!(
+            "  {}",
+            theme::symbol(Symbol::PickerNoMatch)
+        )))
     }
 
     // ---- Drawing ----
@@ -473,7 +562,9 @@ impl Tree {
         format!("{mark}{indent}{opener}{name}{notice}{here}{lifted}")
     }
 
-    pub fn draw(&self, cols: u16, rows: u16) -> Drawn {
+    /// The box for a screen of this size. Its size comes from the whole tree with every branch
+    /// open, so closing a branch, lifting or filtering never moves the frame.
+    pub fn draw(&self, cols: u16, rows: u16, keys: &ListKeys) -> Drawn {
         let shown = self.rows();
         let flat = !self.filter.is_empty();
         let selected = self.selected_row(&shown);
@@ -485,15 +576,18 @@ impl Tree {
         if shown.is_empty() {
             lines.push(format!("  {}", theme::symbol(Symbol::PickerNoMatch)));
         }
-        draw_box(
-            &self.title,
-            &self.filter,
-            &lines,
+        let lifted = self.lifted.and_then(|k| self.index_of(k));
+        draw_box(&BoxSpec {
+            title: &self.title_for(lifted),
+            filter: &self.filter,
+            lines: &lines,
             selected,
-            Some(&self.footer()),
+            footers: &[self.enter_line(), self.key_line(keys)],
+            widest: self.widest(keys),
+            list_rows: self.entries.len().max(1),
             cols,
             rows,
-        )
+        })
     }
 }
 
@@ -809,7 +903,7 @@ mod tests {
         let mut list = entries();
         list[0].notice = Some(crate::notify::Class::Error);
         let tree = Tree::new(list, Key::Pane(101), None);
-        let drawn = tree.draw(100, 30);
+        let drawn = tree.draw(100, 30, &ListKeys::default());
         let mut found = false;
         for row in &drawn.rows {
             let text: String = row
@@ -831,5 +925,39 @@ mod tests {
             }
         }
         assert!(found, "no mark was drawn");
+    }
+
+    #[test]
+    fn the_frame_is_the_same_in_every_state_of_the_tree() {
+        let keys = {
+            let keymap = crate::keymap::Keymap::defaults(&Default::default());
+            ListKeys::new(&keymap.list)
+        };
+        let shape = |t: &Tree| {
+            let d = t.draw(100, 30, &keys);
+            (d.x, d.y, d.rows.len(), d.rows[0].len())
+        };
+        let mut t = tree();
+        let base = shape(&t);
+        t.left();
+        t.left();
+        assert_eq!(shape(&t), base, "a branch closed");
+        t.selected = Key::Pane(102);
+        t.toggle_lift();
+        assert_eq!(shape(&t), base, "something lifted");
+        t.put_down();
+        for typed in ["o", "nvim", "zzz"] {
+            t.type_text(typed);
+            assert_eq!(shape(&t), base, "filter {typed}");
+            t.clear_filter();
+        }
+    }
+
+    #[test]
+    fn nothing_matching_makes_enter_do_nothing() {
+        let mut t = tree();
+        t.type_text("zzz");
+        assert_eq!(t.plan().unwrap_err(), "nothing matches");
+        assert_eq!(t.enter_line(), "Enter does nothing: nothing matches");
     }
 }

@@ -7,7 +7,8 @@
 
 use arcade_term::Cell;
 
-use crate::compose::{blank, fit, text_cells};
+use crate::compose::{blank, text_cells};
+use crate::keymap::ListKeys;
 use crate::theme::{self, Role, Symbol};
 
 /// What choosing a line does.
@@ -163,28 +164,90 @@ impl Picker {
         }
     }
 
-    /// The box for a screen of this size.
-    pub fn draw(&self, cols: u16, rows: u16) -> Drawn {
+    /// The line of keys at the bottom of the box.
+    fn key_line(&self, keys: &ListKeys, filtered: bool) -> String {
+        let go = match self.kind {
+            PickerKind::MoveWindow => "move here",
+            PickerKind::Keys | PickerKind::Commands => "run",
+            PickerKind::Sessions | PickerKind::Windows | PickerKind::Notifications => "go",
+        };
+        let typing = if filtered {
+            keys_item(&[&keys.filter_clear], "clear filter")
+        } else {
+            Some("type to filter".to_string())
+        };
+        let clear = (self.kind == PickerKind::Notifications)
+            .then(|| keys_item(&[&keys.clear], "clear"))
+            .flatten();
+        hint_line(&[
+            keys_item(&[&keys.up, &keys.down], "move"),
+            keys_item(&[&keys.select], go),
+            clear,
+            typing,
+            keys_item(&[&keys.cancel], "close"),
+        ])
+    }
+
+    /// The box for a screen of this size. Its size comes from every line it could show and from
+    /// the key line in either state, not from what is shown now, so typing a filter or moving
+    /// about never moves the frame.
+    pub fn draw(&self, cols: u16, rows: u16, keys: &ListKeys) -> Drawn {
         let mut lines: Vec<String> = self
             .shown()
             .enumerate()
             .map(|(i, item)| self.line(item, i == self.selected))
             .collect();
         let nothing = self.visible.is_empty();
+        let no_match = format!("  {}", theme::symbol(Symbol::PickerNoMatch));
         if nothing {
-            lines.push(format!("  {}", theme::symbol(Symbol::PickerNoMatch)));
+            lines.push(no_match.clone());
         }
         let selected = (!nothing).then_some(self.selected);
-        draw_box(
-            &self.title,
-            &self.filter,
-            &lines,
+        let filtered = !self.filter.is_empty();
+        let widest = self
+            .items
+            .iter()
+            .flat_map(|item| [self.line(item, true), self.line(item, false)])
+            .chain([no_match])
+            .map(|l| cells_of(&l))
+            .chain([cells_of(&self.title) + 2])
+            .chain([false, true].map(|f| cells_of(&self.key_line(keys, f))))
+            .max()
+            .unwrap_or(0);
+        draw_box(&BoxSpec {
+            title: &self.title,
+            filter: &self.filter,
+            lines: &lines,
             selected,
-            None,
+            footers: &[self.key_line(keys, filtered)],
+            widest,
+            list_rows: self.items.len().max(1),
             cols,
             rows,
-        )
+        })
     }
+}
+
+/// How many cells a text takes.
+pub fn cells_of(text: &str) -> usize {
+    text_cells(text, Default::default()).len()
+}
+
+/// One item of a key line: the keys, then what they do (`Up Down move`); keys that have no
+/// binding are left out, and when none has one there is no item.
+pub fn keys_item(keys: &[&Option<String>], what: &str) -> Option<String> {
+    let names: Vec<&str> = keys.iter().filter_map(|k| k.as_deref()).collect();
+    (!names.is_empty()).then(|| format!("{} {what}", names.join(" ")))
+}
+
+/// The items that exist, side by side.
+pub fn hint_line(items: &[Option<String>]) -> String {
+    items
+        .iter()
+        .flatten()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
 /// Give the notification marks in a line the colour of their class, as the status bar does, and
@@ -212,41 +275,61 @@ fn color_notice_marks(cells: &mut [Cell]) {
     }
 }
 
+/// What a framed box is made of.
+pub struct BoxSpec<'a> {
+    pub title: &'a str,
+    pub filter: &'a str,
+    /// The lines that show now.
+    pub lines: &'a [String],
+    pub selected: Option<usize>,
+    /// Lines of their own under the list; they never widen the box, and what does not fit is cut.
+    pub footers: &'a [String],
+    /// The widest text the box could ever show, in cells, from everything it holds and not
+    /// from what is chosen or typed now.
+    pub widest: usize,
+    /// The rows the list may take: its length with nothing filtered away. Rows that hold no
+    /// line are drawn empty, so the frame does not change size.
+    pub list_rows: usize,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// The cells cut to `width`; when they were longer, the last of them is the theme's ellipsis.
+fn cut(mut cells: Vec<Cell>, width: usize, pad: arcade_term::Style) -> Vec<Cell> {
+    if cells.len() > width {
+        cells.truncate(width.saturating_sub(1));
+        if cells
+            .last()
+            .is_some_and(|c| c.width == arcade_term::CellWidth::Wide)
+        {
+            cells.pop();
+        }
+        cells.extend(text_cells(theme::symbol(Symbol::Ellipsis), pad));
+        cells.truncate(width);
+    }
+    while cells.len() < width {
+        cells.push(blank(pad));
+    }
+    cells
+}
+
 /// A framed box for a screen of this size: the title in the top edge, the filter line, the lines
-/// (the ones that fit, ending with the chosen one when it would be out of sight), and, when
-/// there is one, a line of its own at the bottom.
-pub fn draw_box(
-    title: &str,
-    filter: &str,
-    lines: &[String],
-    selected: Option<usize>,
-    footer: Option<&str>,
-    cols: u16,
-    rows: u16,
-) -> Drawn {
-    let filter_line = format!("{}{}", theme::symbol(Symbol::PickerFilterMark), filter);
-    let widest = lines
-        .iter()
-        .map(|l| text_cells(l, Default::default()).len())
-        .chain(std::iter::once(
-            text_cells(&filter_line, Default::default()).len(),
-        ))
-        .chain(std::iter::once(
-            text_cells(title, Default::default()).len() + 2,
-        ))
-        .chain(footer.map(|f| text_cells(f, Default::default()).len() + 1))
-        .max()
-        .unwrap_or(0);
+/// (the ones that fit, ending with the chosen one when it would be out of sight, and empty rows
+/// down to the size the whole list would take), and a line of its own for each footer.
+pub fn draw_box(spec: &BoxSpec) -> Drawn {
+    let (cols, rows) = (spec.cols, spec.rows);
+    let filter_line = format!("{}{}", theme::symbol(Symbol::PickerFilterMark), spec.filter);
     // One column of room inside each side, and the frame.
     let most = usize::from(cols).saturating_sub(2).max(1);
-    let inner = (widest + 2).clamp(20.min(most), most);
+    let inner = (spec.widest + 2).clamp(20.min(most), most);
     let width = inner + 2;
-    // The frame and the filter line take three rows, and the footer one more.
-    let extra = 3 + usize::from(footer.is_some());
+    // The frame and the filter line take three rows; each footer one more, when there is room.
+    let footers = spec.footers.len().min(usize::from(rows).saturating_sub(3));
+    let extra = 3 + footers;
     let room = usize::from(rows).saturating_sub(extra);
-    let shown = lines.len().min(room);
+    let shown = spec.list_rows.min(room);
     // The lines that show: the first ones, or those that end with the chosen one.
-    let first = (selected.unwrap_or(0) + 1).saturating_sub(shown);
+    let first = (spec.selected.unwrap_or(0) + 1).saturating_sub(shown);
     let height = shown + extra;
     let x = (usize::from(cols).saturating_sub(width) / 2) as u16;
     let y = (usize::from(rows).saturating_sub(height) / 2) as u16;
@@ -257,47 +340,54 @@ pub fn draw_box(
     let mut out: Vec<Vec<Cell>> = Vec::with_capacity(height);
 
     let mut top = side(Symbol::PickerTopLeft);
-    let title_text = format!(" {title} ");
-    let mut title_cells = fit(text_cells(&title_text, plain), inner, plain);
+    let title_cells = text_cells(&format!(" {} ", spec.title), plain);
     let rule = text_cells(theme::symbol(Symbol::PickerHorizontal), plain);
-    for (i, cell) in title_cells.iter_mut().enumerate() {
-        if i >= text_cells(&title_text, plain).len() {
-            *cell = rule[0].clone();
-        }
+    let mut title_cells = if title_cells.len() > inner {
+        cut(title_cells, inner, plain)
+    } else {
+        title_cells
+    };
+    while title_cells.len() < inner {
+        title_cells.extend(rule.clone());
     }
+    title_cells.truncate(inner);
     top.extend(title_cells);
     top.extend(side(Symbol::PickerTopRight));
     out.push(top);
 
-    let mut filter_row = side(Symbol::PickerVertical);
+    let framed = |body: Vec<Cell>, style: arcade_term::Style| {
+        let mut row = side(Symbol::PickerVertical);
+        row.extend(cut(body, inner, style));
+        row.extend(side(Symbol::PickerVertical));
+        row
+    };
     let mut body = vec![blank(plain)];
     body.extend(text_cells(&filter_line, plain));
-    filter_row.extend(fit(body, inner, plain));
-    filter_row.extend(side(Symbol::PickerVertical));
-    out.push(filter_row);
+    out.push(framed(body, plain));
 
-    for (index, line) in lines.iter().enumerate().skip(first).take(shown) {
-        let style = if Some(index) == selected {
-            chosen
-        } else {
-            plain
-        };
-        let mut row = side(Symbol::PickerVertical);
-        let mut body = vec![blank(style)];
-        body.extend(text_cells(line, style));
-        color_notice_marks(&mut body);
-        row.extend(fit(body, inner, style));
-        row.extend(side(Symbol::PickerVertical));
-        out.push(row);
+    let skip = first;
+    for slot in 0..shown {
+        let index = skip + slot;
+        match spec.lines.get(index) {
+            Some(line) => {
+                let style = if Some(index) == spec.selected {
+                    chosen
+                } else {
+                    plain
+                };
+                let mut body = vec![blank(style)];
+                body.extend(text_cells(line, style));
+                color_notice_marks(&mut body);
+                out.push(framed(body, style));
+            }
+            None => out.push(framed(Vec::new(), plain)),
+        }
     }
 
-    if let Some(footer) = footer {
-        let mut row = side(Symbol::PickerVertical);
+    for footer in spec.footers.iter().take(footers) {
         let mut body = vec![blank(plain)];
         body.extend(text_cells(footer, plain));
-        row.extend(fit(body, inner, plain));
-        row.extend(side(Symbol::PickerVertical));
-        out.push(row);
+        out.push(framed(body, plain));
     }
 
     let mut bottom = side(Symbol::PickerBottomLeft);
@@ -319,6 +409,11 @@ mod tests {
             .enumerate()
             .map(|(i, n)| Item::new(i, (*n).to_string(), format!("{} windows", i + 1), i == 0))
             .collect()
+    }
+
+    fn keys() -> ListKeys {
+        let keymap = crate::keymap::Keymap::defaults(&Default::default());
+        ListKeys::new(&keymap.list)
     }
 
     fn text(row: &[Cell]) -> String {
@@ -353,12 +448,13 @@ mod tests {
             items(&["alpha", "beta"]),
             1,
         );
-        let d = p.draw(80, 24);
-        assert_eq!(d.rows.len(), 5);
+        let d = p.draw(80, 24, &keys());
+        // The frame, the filter line, a line for each item and the key line.
+        assert_eq!(d.rows.len(), 6);
         let width = d.rows[0].len();
         assert!(d.rows.iter().all(|r| r.len() == width));
         assert_eq!(usize::from(d.x), (80 - width) / 2);
-        assert_eq!(usize::from(d.y), (24 - 5) / 2);
+        assert_eq!(usize::from(d.y), (24 - 6) / 2);
         assert!(text(&d.rows[0]).contains("Sessions"));
         assert!(text(&d.rows[1]).contains("/ "));
         assert!(text(&d.rows[2]).contains("  alpha"));
@@ -373,7 +469,7 @@ mod tests {
         let names: Vec<String> = (0..30).map(|i| format!("s{i}")).collect();
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
         let p = Picker::new(PickerKind::Sessions, "Sessions", items(&refs), 25);
-        let d = p.draw(80, 10);
+        let d = p.draw(80, 10, &keys());
         assert_eq!(d.rows.len(), 10);
         assert!(d.rows.iter().any(|r| text(r).contains("> s25")));
     }
@@ -386,7 +482,7 @@ mod tests {
             items(&["a-rather-long-name-indeed"]),
             0,
         );
-        let d = p.draw(12, 3);
+        let d = p.draw(12, 3, &keys());
         assert!(d.rows[0].len() <= 12);
         assert!(d.rows.len() <= 3);
     }
@@ -415,7 +511,7 @@ mod tests {
         assert_eq!(p.shown().count(), 3);
         p.type_text("zzz");
         assert!(p.chosen().is_none());
-        assert!(text(&p.draw(80, 24).rows[2]).contains("no match"));
+        assert!(text(&p.draw(80, 24, &keys()).rows[2]).contains("no match"));
         p.clear_filter();
         assert_eq!(p.shown().count(), 3);
     }
@@ -434,5 +530,40 @@ mod tests {
         p.type_text("zoom");
         assert_eq!(p.shown().count(), 1);
         assert_eq!(p.chosen().unwrap().id, 0);
+    }
+
+    #[test]
+    fn the_box_has_the_same_place_and_size_whatever_the_filter_leaves() {
+        let names: Vec<String> = (0..9).map(|i| format!("session-{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut p = Picker::new(PickerKind::Sessions, "Sessions", items(&refs), 0);
+        let shape = |p: &Picker| {
+            let d = p.draw(100, 30, &keys());
+            (d.x, d.y, d.rows.len(), d.rows[0].len())
+        };
+        let base = shape(&p);
+        for typed in ["session-1", "x", "zzz"] {
+            p.type_text(typed);
+            assert_eq!(shape(&p), base, "after typing {typed}");
+            p.clear_filter();
+            assert_eq!(shape(&p), base);
+        }
+    }
+
+    #[test]
+    fn the_key_line_is_built_from_the_keys_and_never_widens_the_box() {
+        let p = Picker::new(PickerKind::Notifications, "Notifications", items(&["a"]), 0);
+        let wide = p.draw(100, 30, &keys());
+        let line = text(&wide.rows[wide.rows.len() - 2]);
+        assert!(
+            line.contains("up down move") && line.contains("delete clear"),
+            "{line}"
+        );
+        // On a narrow screen the line is cut with the ellipsis and the box stays inside.
+        let narrow = p.draw(30, 30, &keys());
+        assert!(narrow.rows[0].len() <= 30);
+        let line = text(&narrow.rows[narrow.rows.len() - 2]);
+        assert!(line.contains('\u{2026}'), "{line}");
+        assert!(narrow.rows.iter().all(|r| r.len() == narrow.rows[0].len()));
     }
 }

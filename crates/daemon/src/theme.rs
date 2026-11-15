@@ -179,6 +179,8 @@ pub enum Symbol {
     /// In front of the text typed to filter the lines, and what the box says when none is left.
     PickerFilterMark,
     PickerNoMatch,
+    /// Ends a line that was cut because it did not fit.
+    Ellipsis,
     /// Between a mode word on the status bar and what it tells the user to do.
     HintSeparator,
     /// In front of a session or window of the tree that shows what is inside it, and of one that
@@ -215,6 +217,7 @@ pub fn symbol(symbol: Symbol) -> &'static str {
         Symbol::PickerCurrentMark => " *",
         Symbol::PickerFilterMark => "/ ",
         Symbol::PickerNoMatch => "no match",
+        Symbol::Ellipsis => "…",
         Symbol::HintSeparator => " · ",
         Symbol::TreeOpen => "▾ ",
         Symbol::TreeClosed => "▸ ",

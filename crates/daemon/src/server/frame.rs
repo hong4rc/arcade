@@ -322,12 +322,13 @@ impl Server {
         }
         // The floating list is drawn over everything on every update.
         let picker_open = session.picker.is_some() || session.tree.is_some();
+        let list_keys = crate::keymap::ListKeys::new(&self.keymap.list);
         if let Some(picker) = &session.picker {
-            let drawn = picker.draw(cols, rows);
+            let drawn = picker.draw(cols, rows, &list_keys);
             session.screen.overlay(drawn.x, drawn.y, &drawn.rows);
         }
         if let Some(tree) = &session.tree {
-            let drawn = tree.draw(cols, rows);
+            let drawn = tree.draw(cols, rows, &list_keys);
             session.screen.overlay(drawn.x, drawn.y, &drawn.rows);
         }
         let cursor_override = if picker_open {

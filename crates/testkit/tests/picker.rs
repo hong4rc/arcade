@@ -187,7 +187,8 @@ fn a_ab_b(daemon: &TestDaemon) -> TestClient {
 }
 
 /// The names on the lines of the open list, in order: what is inside the box, from the row
-/// under its top edge to the row above its bottom edge, without the filter line.
+/// under its top edge to the row above its bottom edge, without the filter line, the empty rows
+/// and the line of keys.
 fn lines_of_the_list(client: &mut TestClient) -> Vec<String> {
     let rows = client.content_rows();
     let Some(top) = rows.iter().position(|r| r.contains('┌')) else {
@@ -210,6 +211,8 @@ fn lines_of_the_list(client: &mut TestClient) -> Vec<String> {
             lines.push(inside);
         }
     }
+    // The last row of the box says which keys there are; it is not a line of the list.
+    lines.pop();
     lines
 }
 

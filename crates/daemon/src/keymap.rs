@@ -251,6 +251,38 @@ fn hint_keys(table: &Table, commands: &[&str]) -> Option<String> {
     Some(keys.join(sep))
 }
 
+/// The keys of the floating list as its box tells them, taken from the `list` table so that a
+/// rebound key shows as it is bound now. A key that has no binding is `None` and left out.
+#[derive(Clone, Debug, Default)]
+pub struct ListKeys {
+    pub up: Option<String>,
+    pub down: Option<String>,
+    pub left: Option<String>,
+    pub right: Option<String>,
+    pub lift: Option<String>,
+    pub select: Option<String>,
+    pub cancel: Option<String>,
+    pub filter_clear: Option<String>,
+    pub clear: Option<String>,
+}
+
+impl ListKeys {
+    pub fn new(table: &Table) -> ListKeys {
+        let key = |command: &str| hint_key(table, command, None);
+        ListKeys {
+            up: key("list.up"),
+            down: key("list.down"),
+            left: key("list.left"),
+            right: key("list.right"),
+            lift: key("list.lift"),
+            select: key("list.select"),
+            cancel: key("list.cancel"),
+            filter_clear: key("list.filter-clear"),
+            clear: key("list.clear"),
+        }
+    }
+}
+
 /// The line shown while a swap waits for its direction: which keys say it.
 pub fn swap_hint_line(table: &Table, width: usize) -> String {
     let keys = hint_keys(

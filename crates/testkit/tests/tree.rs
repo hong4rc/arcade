@@ -349,7 +349,7 @@ fn footer(client: &TestClient) -> String {
     box_rows(client)
         .iter()
         .rev()
-        .nth(1)
+        .nth(2)
         .map(|r| r.trim_matches(['│', ' ']).to_string())
         .unwrap_or_default()
 }
@@ -390,7 +390,7 @@ fn a_pane_put_on_another_pane_goes_beside_it_with_the_same_process() {
     client.send(DOWN);
     client.send(RIGHT);
     wait_chosen(&mut client, "htop");
-    wait_footer(&mut client, "move");
+    wait_footer(&mut client, "put pane beside");
     client.send(ENTER);
     closed(&mut client);
     let ok = client.wait_until(WAIT, |c| {
@@ -436,7 +436,7 @@ fn a_pane_put_on_a_session_becomes_its_last_window_and_the_client_follows() {
     client.send(LEFT);
     client.send(DOWN);
     wait_chosen(&mut client, "▸ beta");
-    wait_footer(&mut client, "new window of session beta");
+    wait_footer(&mut client, "in a new window of beta");
     client.send(ENTER);
     closed(&mut client);
     let ok = client.wait_until(WAIT, |c| {
@@ -626,10 +626,7 @@ fn a_window_put_on_a_window_of_its_session_stands_right_after_it() {
     client.send(RIGHT);
     client.send(DOWN);
     wait_chosen(&mut client, "▸ 2 server");
-    wait_footer(
-        &mut client,
-        "move window 1 editor of alpha after window 2 server of alpha",
-    );
+    wait_footer(&mut client, "put window after 2 server (alpha)");
     client.send(ENTER);
     closed(&mut client);
     let ok = client.wait_until(WAIT, |c| {
@@ -652,7 +649,7 @@ fn a_window_put_on_a_window_of_another_session_moves_there_with_its_processes() 
     lift_window(&mut client);
     client.send(DOWN);
     client.send(RIGHT);
-    wait_footer(&mut client, "after window 1");
+    wait_footer(&mut client, "put window after 1 ");
     client.send(ENTER);
     closed(&mut client);
     let ok = client.wait_until(WAIT, |c| {
@@ -679,7 +676,7 @@ fn a_window_put_on_a_session_becomes_its_last_window_and_the_client_follows() {
     lift_window(&mut client);
     client.send(DOWN);
     wait_chosen(&mut client, "▸ beta");
-    wait_footer(&mut client, "to the end of session beta");
+    wait_footer(&mut client, "at the end of beta");
     client.send(ENTER);
     closed(&mut client);
     let ok = client.wait_until(WAIT, |c| {
@@ -697,7 +694,7 @@ fn a_window_put_on_its_own_session_goes_to_the_end_unless_it_is_there() {
     let daemon = TestDaemon::start();
     let mut client = world(&daemon);
     lift_window(&mut client);
-    wait_footer(&mut client, "to the end of session alpha");
+    wait_footer(&mut client, "at the end of alpha");
     client.send(ENTER);
     closed(&mut client);
     let ok = client.wait_until(WAIT, |c| {
@@ -833,4 +830,300 @@ fn a_pane_line_names_the_directory_and_the_program_in_the_foreground_and_the_fil
     client.send(ESC);
     closed(&mut client);
     client.send(b"\x03");
+}
+
+// ---- The box keeps its place and size, and says how to use it ----
+
+use std::time::Duration;
+
+/// Where the box is on the screen, in characters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Frame {
+    left: usize,
+    top: usize,
+    width: usize,
+    height: usize,
+}
+
+fn frame(client: &TestClient) -> Option<Frame> {
+    let rows = client.screen_rows();
+    let top = rows.iter().position(|r| r.contains('┌'))?;
+    let left = rows[top].chars().position(|c| c == '┌')?;
+    let right = rows[top].chars().position(|c| c == '┐')?;
+    let bottom = rows
+        .iter()
+        .skip(top)
+        .position(|r| r.contains('└'))
+        .map(|b| b + top)?;
+    Some(Frame {
+        left,
+        top,
+        width: right - left + 1,
+        height: bottom - top + 1,
+    })
+}
+
+/// Let the daemon answer the last key and the screen show it.
+fn settle(client: &mut TestClient) {
+    client.wait_until(Duration::from_millis(150), |_| false);
+}
+
+/// Send each key and check that the frame has not moved or changed size.
+fn keep_the_frame(client: &mut TestClient, steps: &[(&str, &[u8])], base: Frame) {
+    for (what, key) in steps {
+        client.send(key);
+        settle(client);
+        assert_eq!(
+            frame(client),
+            Some(base),
+            "the frame changed after {what}:\n{}",
+            client.screen_text()
+        );
+    }
+}
+
+const SPACE: &[u8] = b" ";
+const CTRL_U: &[u8] = b"\x1b[117;5u";
+
+#[test]
+fn the_tree_never_moves_or_changes_size_whatever_is_done_in_it() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    open_tree(&mut client);
+    let base = frame(&client).expect("a frame");
+    assert!(base.left + base.width <= 100 && base.top + base.height <= 30);
+    keep_the_frame(
+        &mut client,
+        &[
+            ("down", DOWN),
+            ("down", DOWN),
+            ("down", DOWN),
+            ("up", UP),
+            ("left (close the window)", LEFT),
+            ("left (to the session)", LEFT),
+            ("left (close it)", LEFT),
+            ("right (open it)", RIGHT),
+            ("right", RIGHT),
+            ("right", RIGHT),
+            ("down to the second session", DOWN),
+            ("lift", SPACE),
+            ("up", UP),
+            ("up", UP),
+            ("down", DOWN),
+            ("down", DOWN),
+            ("down", DOWN),
+            ("put it down", ESC),
+            ("a filter that matches many: e", b"e"),
+            ("a filter that matches one: m", b"m"),
+            ("a filter that matches nothing", b"zzz"),
+            ("backspace", b"\x7f"),
+            ("clear the filter", CTRL_U),
+            ("a filter again", b"n"),
+            ("lift while filtered", SPACE),
+            ("put it down", ESC),
+            ("clear", CTRL_U),
+        ],
+        base,
+    );
+}
+
+#[test]
+fn the_session_list_and_the_window_list_keep_their_frame_under_a_filter() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    for key in [b"s", b"w"] {
+        client.send(PREFIX);
+        client.send(key);
+        let ok = client.wait_until(WAIT, |c| frame(c).is_some());
+        assert!(ok, "{}", client.screen_text());
+        let base = frame(&client).unwrap();
+        keep_the_frame(
+            &mut client,
+            &[
+                ("typing a", b"a"),
+                ("typing more", b"l"),
+                ("typing what matches nothing", b"qqq"),
+                ("backspace", b"\x7f"),
+                ("clear", CTRL_U),
+                ("down", DOWN),
+                ("up", UP),
+            ],
+            base,
+        );
+        client.send(ESC);
+        closed(&mut client);
+    }
+}
+
+/// The last two rows inside the box: what Enter does, and the keys.
+fn footers(client: &TestClient) -> (String, String) {
+    let rows = box_rows(client);
+    let inner = |r: &str| {
+        r.trim_start_matches('│')
+            .trim_end_matches('│')
+            .trim()
+            .to_string()
+    };
+    let n = rows.len();
+    (inner(&rows[n - 3]), inner(&rows[n - 2]))
+}
+
+#[test]
+fn the_key_line_says_which_keys_there_are_in_each_state() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    open_tree(&mut client);
+    let (_, keys) = footers(&client);
+    for expected in [
+        "up down move",
+        "left right close/open",
+        "enter go",
+        "space lift",
+        "type to filter",
+        "esc close",
+    ] {
+        assert!(keys.contains(expected), "no {expected:?} in {keys:?}");
+    }
+    // Something lifted: where to put it, and how to let go.
+    client.send(SPACE);
+    let ok = client.wait_until(WAIT, |c| footers(c).1.contains("cancel the lift"));
+    assert!(ok, "{}", client.screen_text());
+    let (_, keys) = footers(&client);
+    for expected in ["choose where", "enter put down", "esc cancel the lift"] {
+        assert!(keys.contains(expected), "no {expected:?} in {keys:?}");
+    }
+    assert!(
+        box_rows(&client)[0].contains("moving"),
+        "{:?}",
+        box_rows(&client)[0]
+    );
+    client.send(ESC);
+    // A filter: how to clear it.
+    client.send(b"e");
+    let ok = client.wait_until(WAIT, |c| footers(c).1.contains("clear filter"));
+    assert!(ok, "{}", client.screen_text());
+    let (_, keys) = footers(&client);
+    for expected in [
+        "up down move",
+        "enter go",
+        "ctrl+u clear filter",
+        "esc close",
+    ] {
+        assert!(keys.contains(expected), "no {expected:?} in {keys:?}");
+    }
+    assert!(
+        !keys.contains("type to filter") && !keys.contains("lift"),
+        "{keys:?}"
+    );
+}
+
+#[test]
+fn the_title_says_what_is_lifted() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    open_tree(&mut client);
+    assert!(
+        box_rows(&client)[0].starts_with("┌ Tree ─"),
+        "{:?}",
+        box_rows(&client)[0]
+    );
+    client.send(SPACE);
+    let ok = client.wait_until(WAIT, |c| {
+        box_rows(c)[0].contains("Tree \u{b7} moving pane zsh")
+    });
+    assert!(ok, "{}", client.screen_text());
+    client.send(ESC);
+    let ok = client.wait_until(WAIT, |c| box_rows(c)[0].starts_with("┌ Tree ─"));
+    assert!(ok, "{}", client.screen_text());
+}
+
+#[test]
+fn enter_says_it_does_nothing_when_nothing_matches_and_really_does_nothing() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    open_tree(&mut client);
+    client.send(b"zzzz");
+    let ok = client.wait_until(WAIT, |c| footers(c).0.contains("nothing matches"));
+    assert!(ok, "{}", client.screen_text());
+    assert!(
+        footers(&client).0.starts_with("Enter does nothing"),
+        "{:?}",
+        footers(&client)
+    );
+    client.send(ENTER);
+    settle(&mut client);
+    // The tree is still open, and the client has not gone anywhere.
+    assert!(frame(&client).is_some(), "{}", client.screen_text());
+}
+
+#[test]
+fn what_enter_does_is_said_in_a_short_line() {
+    let daemon = TestDaemon::start();
+    let mut client = world(&daemon);
+    open_tree(&mut client);
+    client.send(SPACE);
+    // Over the pane nvim, in the same window.
+    client.send(UP);
+    let ok = client.wait_until(WAIT, |c| footers(c).0.contains("put pane beside nvim"));
+    assert!(ok, "{}", client.screen_text());
+    let line = footers(&client).0;
+    assert!(line.contains(" (alpha \u{203a} 1 editor)"), "{line:?}");
+    assert!(line.chars().count() < 80, "{line:?}");
+    client.send(SPACE);
+}
+
+#[test]
+fn a_narrow_terminal_cuts_the_key_line_without_widening_or_breaking_the_frame() {
+    let daemon = TestDaemon::start();
+    let mut client = world_sized(&daemon, 44, 24);
+    open_tree(&mut client);
+    let f = frame(&client).expect("a frame");
+    assert!(f.left + f.width <= 44, "{f:?}");
+    let rows = box_rows(&client);
+    let width = rows[0].chars().count();
+    assert!(rows.iter().all(|r| r.chars().count() == width), "{rows:?}");
+    // What did not fit ends in the ellipsis.
+    let (_, keys) = footers(&client);
+    assert!(keys.ends_with('\u{2026}'), "{keys:?}");
+    keep_the_frame(&mut client, &[("down", DOWN), ("a filter", b"e")], f);
+}
+
+#[test]
+fn a_title_longer_than_the_screen_is_cut_and_the_frame_stays_inside() {
+    let daemon = TestDaemon::start();
+    let mut client = world_sized(&daemon, 60, 24);
+    client.type_line(&format!(
+        "printf '\\033]2;{}\\007'; echo long-$((40 + 2))",
+        "w".repeat(150)
+    ));
+    client.wait_for_text("long-42").unwrap();
+    open_tree(&mut client);
+    let f = frame(&client).expect("a frame");
+    assert!(f.left + f.width <= 60 && f.top + f.height <= 24, "{f:?}");
+    assert!(box_rows(&client).join("\n").contains('\u{2026}'));
+    keep_the_frame(
+        &mut client,
+        &[("down", DOWN), ("up", UP), ("a filter", b"w")],
+        f,
+    );
+}
+
+#[test]
+fn rebinding_the_lift_key_changes_the_key_line() {
+    let dir = std::env::temp_dir().join(format!("arc-tree-keyline-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("config.toml");
+    std::fs::write(
+        &file,
+        "[keys.list]\n\"x\" = \"list.lift\"\n\"space\" = false\n",
+    )
+    .unwrap();
+    let path = file.clone();
+    let daemon = TestDaemon::start_with(move |c| c.config_path = Some(path));
+    let mut client = world(&daemon);
+    open_tree(&mut client);
+    let (_, keys) = footers(&client);
+    assert!(keys.contains("x lift"), "{keys:?}");
+    assert!(!keys.contains("space"), "{keys:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
