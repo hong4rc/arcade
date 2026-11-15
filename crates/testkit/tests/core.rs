@@ -276,8 +276,10 @@ fn the_program_is_told_about_a_resize_with_a_signal() {
     let daemon = TestDaemon::start();
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
-    client.type_line("trap 'echo winch-$(stty size)' WINCH; echo ready-to-trap");
-    client.wait_for_text("ready-to-trap").unwrap();
+    // The ready word is computed, so that the typed command (which the terminal echoes) does not
+    // contain it: waiting for it waits for the shell to have run the trap command.
+    client.type_line("trap 'echo winch-$(stty size)' WINCH; echo ready-$((40 + 2))");
+    client.wait_for_text("ready-42").unwrap();
     client.resize(70, 25);
     // Some shells (dash) run a trap only once the next command is read, so a command follows.
     client.type_line("true");
