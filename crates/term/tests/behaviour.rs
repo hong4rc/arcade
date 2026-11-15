@@ -593,3 +593,26 @@ fn other_window_operations_are_not_taken_for_title_ones() {
     t.feed(b"\x1b[22;1t\x1b[23;1t\x1b[22;2;3t\x1b[18t\x1b[222t\x1b[?22t\x1b[22;22222222222t");
     assert!(t.drain_events().is_empty());
 }
+
+#[test]
+fn a_push_or_pop_is_seen_once_whatever_the_split_between_reads() {
+    for (sequence, event) in [
+        (&b"\x1b[22;2t"[..], Event::TitlePush),
+        (&b"\x1b[23;0t"[..], Event::TitlePop),
+        (&b"\x1b[22t"[..], Event::TitlePush),
+    ] {
+        for cut in 0..=sequence.len() {
+            let mut t = term(40, 5);
+            // Colour and cursor escapes around it, which are not it.
+            t.feed(b"a\x1b[2Jb\x1b[22mc\x1b[2;3Hd");
+            t.drain_events();
+            let mut first = b"xy".to_vec();
+            first.extend_from_slice(&sequence[..cut]);
+            t.feed(&first);
+            let mut second = sequence[cut..].to_vec();
+            second.extend_from_slice(b"z\x1b[1mw");
+            t.feed(&second);
+            assert_eq!(t.drain_events(), vec![event.clone()], "cut at {cut}");
+        }
+    }
+}

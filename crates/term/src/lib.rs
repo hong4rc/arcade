@@ -265,22 +265,53 @@ pub struct Term {
     anchor: Option<TrackedGridRef>,
     /// Where the bytes so far stand in a `CSI 22 t` / `CSI 23 t`, which the library ignores.
     title_scan: TitleScan,
+    /// Where a title push or pop could start: `ESC [ 2`, with a 2 or a 3 after it.
+    start: memchr::memmem::Finder<'static>,
 }
 
 /// Looks for `CSI 22 t` and `CSI 23 t` (also with a second parameter of 0 or 2, the ones that
 /// say "window title"; 1 is the icon and changes nothing) in the bytes a program wrote. The
-/// state is kept between calls, because a sequence may arrive in two pieces.
-#[derive(Clone, Debug, Default)]
+/// state is kept between calls, because a sequence may arrive in two pieces. It allocates
+/// nothing: it sits on the path of every byte a pane prints.
+#[derive(Clone, Copy, Debug, Default)]
 enum TitleScan {
     #[default]
     Ground,
     Esc,
     /// Inside `ESC [`, with the parameter bytes so far (at most eight; more is not ours).
-    Csi(Vec<u8>),
+    Csi {
+        params: [u8; 8],
+        len: u8,
+    },
+}
+
+/// Whether bytes that start with `ESC [ 2` are, or may become once more bytes come, one of the
+/// title pushes and pops `22`, `22;0`, `22;2`, `23`, `23;0`, `23;2` followed by `t`. Most others
+/// (`ESC[22;3H`, `ESC[2J`) are told apart here without the state machine.
+fn could_be_title_push_or_pop(bytes: &[u8]) -> bool {
+    match bytes {
+        [_, _, _] => true,
+        [_, _, _, b'2' | b'3', rest @ ..] => matches!(
+            rest,
+            [] | [b't', ..] | [b';'] | [b';', b'0' | b'2'] | [b';', b'0' | b'2', b't', ..]
+        ),
+        _ => false,
+    }
+}
+
+/// Where the end of `bytes` is the beginning of a title push or pop that the next read may
+/// finish: the position of a trailing `ESC`, `ESC [` or `ESC [ 2`.
+fn split_start(bytes: &[u8]) -> Option<usize> {
+    const START: &[u8] = b"\x1b[2";
+    (1..=START.len().min(bytes.len()))
+        .rev()
+        .find(|n| bytes[bytes.len() - n..] == START[..*n])
+        .map(|n| bytes.len() - n)
 }
 
 impl TitleScan {
     /// Take one byte; `Some(true)` when it ended a push, `Some(false)` when it ended a pop.
+    #[inline]
     fn byte(&mut self, b: u8) -> Option<bool> {
         match self {
             TitleScan::Ground => {
@@ -290,15 +321,21 @@ impl TitleScan {
             }
             TitleScan::Esc => {
                 *self = match b {
-                    b'[' => TitleScan::Csi(Vec::new()),
+                    b'[' => TitleScan::Csi {
+                        params: [0; 8],
+                        len: 0,
+                    },
                     0x1b => TitleScan::Esc,
                     _ => TitleScan::Ground,
                 };
             }
-            TitleScan::Csi(params) => match b {
-                b'0'..=b'9' | b';' if params.len() < 8 => params.push(b),
+            TitleScan::Csi { params, len } => match b {
+                b'0'..=b'9' | b';' if usize::from(*len) < params.len() => {
+                    params[usize::from(*len)] = b;
+                    *len += 1;
+                }
                 b't' => {
-                    let found = match params.as_slice() {
+                    let found = match &params[..usize::from(*len)] {
                         b"22" | b"22;0" | b"22;2" => Some(true),
                         b"23" | b"23;0" | b"23;2" => Some(false),
                         _ => None,
@@ -387,6 +424,7 @@ impl Term {
             stuck_deadline: None,
             anchor: None,
             title_scan: TitleScan::default(),
+            start: memchr::memmem::Finder::new(b"\x1b[2").into_owned(),
         })
     }
 
@@ -418,8 +456,25 @@ impl Term {
         let mut at = 0;
         while at < bytes.len() {
             if matches!(self.title_scan, TitleScan::Ground) {
-                // The usual case, a flood of text: jump to the next escape.
-                match bytes[at..].iter().position(|b| *b == 0x1b) {
+                // The usual case, a flood of output: look for where a title push or pop could
+                // start (`ESC [ 2 2` or `ESC [ 2 3`, found at the speed of a substring search
+                // since colours and cursor moves almost never start so), or where this read
+                // ends inside what could become one. Only those go through the state machine.
+                let rest = &bytes[at..];
+                let mut from = 0;
+                let mut found = split_start(rest);
+                while let Some(n) = self.start.find(&rest[from..]) {
+                    let n = from + n;
+                    if found.is_some_and(|f| f < n) {
+                        break;
+                    }
+                    if could_be_title_push_or_pop(&rest[n..]) {
+                        found = Some(n);
+                        break;
+                    }
+                    from = n + 1;
+                }
+                match found {
                     Some(n) => at += n,
                     None => break,
                 }

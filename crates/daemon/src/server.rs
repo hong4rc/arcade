@@ -174,6 +174,9 @@ struct Pane {
     title_owner: Option<i32>,
     /// Titles the program asked to keep (`CSI 22 t`), the newest last.
     title_stack: Vec<TitleSave>,
+    /// The foreground group as last asked, and when: asking is a system call on the terminal,
+    /// costly while a program floods the pane with titles.
+    writer_seen: Option<(Option<i32>, Instant)>,
 }
 
 /// A title kept by `CSI 22 t`, with who set it and who asked to keep it.
@@ -188,7 +191,23 @@ struct TitleSave {
 /// How many titles a pane keeps for its program; one more push drops the oldest.
 const TITLE_STACK_DEPTH: usize = 10;
 
+/// How long the foreground group asked for last is taken to be still the one.
+const WRITER_CACHE: Duration = Duration::from_millis(50);
+
 impl Pane {
+    /// The foreground process group that is writing now, `None` for the shell itself; the answer
+    /// of the last 50 milliseconds is reused.
+    fn writer_group(&mut self, now: Instant) -> Option<i32> {
+        if let Some((group, at)) = self.writer_seen
+            && now.duration_since(at) < WRITER_CACHE
+        {
+            return group;
+        }
+        let group = pty::foreground_group(self.master.as_raw_fd()).filter(|g| *g != self.pid);
+        self.writer_seen = Some((group, now));
+        group
+    }
+
     /// Drop what the programs that are gone left behind: the title one of them set (the title it
     /// had kept comes back, when it kept one, else the pane has none) and the titles they kept.
     /// Returns whether the title changed.
@@ -1325,6 +1344,7 @@ impl Server {
             title: None,
             title_owner: None,
             title_stack: Vec::new(),
+            writer_seen: None,
         })
     }
 
@@ -1580,9 +1600,11 @@ impl Server {
         // Answers the terminal wants to give to the program go back to it at once.
         let mut clipboard_writes = Vec::new();
         let mut signals = Vec::new();
-        // Who has the terminal now: a title belongs to the program that wrote it.
-        let writer = pty::foreground_group(pane.master.as_raw_fd()).filter(|g| *g != pane.pid);
+
         if pane.term.has_events() {
+            // Who has the terminal now: a title belongs to the program that wrote it. Asked
+            // only when something came, since it is a system call.
+            let writer = pane.writer_group(Instant::now());
             let mut replies = Vec::new();
             for event in pane.term.drain_events() {
                 match event {

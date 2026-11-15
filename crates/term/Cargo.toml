@@ -10,6 +10,10 @@ publish.workspace = true
 # interface may change; keeping every call here means only this crate needs fixing when it does.
 libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "cd4d497e8c698b27054a677ce19d1bd1a1a4d8bf" }
 
+# Finds the next escape byte in a flood of output fast; the title push and pop scan sits on the
+# path of every byte a pane prints.
+memchr = "2"
+
 [dev-dependencies]
 arcade-workload = { path = "../workload" }
 
