@@ -23,6 +23,9 @@ pub struct KeysConfig {
     pub nav: [char; 4],
     /// How long the prefix table stays active after a repeatable binding.
     pub repeat_window: Duration,
+    /// The line of key hints replaces the status bar after the prefix and while the prefix's
+    /// modifier is held.
+    pub hint: bool,
 }
 
 impl Default for KeysConfig {
@@ -42,6 +45,7 @@ impl Default for KeysConfig {
             }),
             nav: ['h', 'j', 'k', 'l'],
             repeat_window: Duration::from_millis(600),
+            hint: false,
         }
     }
 }
@@ -360,6 +364,21 @@ pub fn typed_name(key: Key) -> String {
         }
     }
     key_name(key)
+}
+
+/// The modifiers as words joined by `+` (`ctrl+alt`).
+pub fn mods_name(mods: Mods) -> String {
+    [
+        (mods.ctrl, "ctrl"),
+        (mods.alt, "alt"),
+        (mods.super_key, "super"),
+        (mods.shift, "shift"),
+    ]
+    .iter()
+    .filter(|(on, _)| *on)
+    .map(|(_, word)| *word)
+    .collect::<Vec<_>>()
+    .join("+")
 }
 
 pub fn key_name(key: Key) -> String {

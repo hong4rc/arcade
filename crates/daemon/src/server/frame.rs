@@ -301,12 +301,17 @@ impl Server {
             session.screen.draw_dividers(&dividers, origin, focus_rect);
             if let Some(y) = status_row(rows, status_position) {
                 let copy_on = self.panes.get(&focus).is_some_and(|p| p.copy.is_some());
-                let hint = (session.picker.is_none()
+                // The key hint is off unless `[keys] hint` is set; the line that says which keys give
+                // the direction of a swap is not a hint but the question the swap is waiting on.
+                let swapping =
+                    matches!(session.key_state.prefix, keys::PrefixState::Swapping { .. });
+                let hint = ((self.config.keys.hint || swapping)
+                    && session.picker.is_none()
                     && session.tree.is_none()
                     && session.key_state.hint_visible())
                 .then(|| {
                     let width = usize::from(cols);
-                    if matches!(session.key_state.prefix, keys::PrefixState::Swapping { .. }) {
+                    if swapping {
                         crate::keymap::swap_hint_line(&self.keymap.prefix, width)
                     } else {
                         crate::keymap::hint_line(&self.keymap.prefix, width)

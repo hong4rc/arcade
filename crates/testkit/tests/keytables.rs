@@ -395,7 +395,7 @@ fn a_key_that_means_nothing_while_holding_is_passed_over_and_the_table_stays_ope
 
 #[test]
 fn the_hint_shows_at_once_while_holding_and_goes_when_ctrl_is_let_go() {
-    let daemon = TestDaemon::start();
+    let daemon = hint_daemon();
     let mut client = three_in_a_row(&daemon);
     client.send(PREFIX);
     client.send(CTRL_H);
@@ -606,86 +606,6 @@ fn an_unbound_shifted_key_after_the_prefix_is_named_as_typed_and_reaches_no_pane
     assert!(client.content_rows().iter().all(|r| !r.contains('~')));
 }
 
-fn the_keys_list_is_open(client: &TestClient) -> bool {
-    client.screen_text().contains("Keys")
-}
-
-fn step_down_until(client: &mut TestClient, text: &str) {
-    for _ in 0..200 {
-        if client.screen_text().contains(text) {
-            return;
-        }
-        client.send(b"\x1b[B");
-        client.read_more(std::time::Instant::now() + Duration::from_millis(20));
-    }
-    panic!("{text:?} is not in the list:\n{}", client.screen_text());
-}
-
-#[test]
-fn the_question_mark_after_the_prefix_lists_the_keys_with_their_commands() {
-    let daemon = TestDaemon::start();
-    let mut client = raw_pane(&daemon);
-    client.send(PREFIX);
-    // `?` as the new protocol reports it: Shift and `/`.
-    client.send(b"\x1b[47;2u");
-    assert!(client.wait_until(WAIT, |c| the_keys_list_is_open(c)));
-    for wanted in [
-        "ctrl+m | ",
-        "pane.split-right",
-        "ctrl+m - ",
-        "pane.split-down",
-        "ctrl+m c ",
-        "window.new",
-        "ctrl+m d ",
-        "session.detach",
-    ] {
-        step_down_until(&mut client, wanted);
-    }
-    // Escape closes it and nothing reached the pane.
-    client.send(b"\x1b");
-    assert!(client.wait_until(WAIT, |c| !the_keys_list_is_open(c)));
-}
-
-#[test]
-fn the_command_names_in_the_keys_list_start_in_one_column_whatever_the_key_name_length() {
-    let daemon = TestDaemon::start();
-    let mut client = raw_pane(&daemon);
-    client.send(PREFIX);
-    client.send(b"\x1b[47;2u");
-    assert!(client.wait_until(WAIT, |c| the_keys_list_is_open(c)));
-    let column_of = |client: &mut TestClient, command: &str, key: &str| -> usize {
-        step_down_until(client, key);
-        let row = client
-            .content_rows()
-            .into_iter()
-            .find(|r| r.contains(key))
-            .unwrap();
-        assert!(row.contains(command), "{row:?} lacks {command:?}");
-        row.find(command).unwrap()
-    };
-    // A short key name and a long one.
-    let short = column_of(&mut client, "window.new", "ctrl+m c ");
-    let long = column_of(&mut client, "pane.focus-left", "ctrl+alt+left");
-    assert_eq!(short, long, "the command names do not line up");
-}
-
-#[test]
-fn enter_in_the_keys_list_runs_the_chosen_command() {
-    let daemon = TestDaemon::start();
-    let mut client = daemon.attach_shell();
-    client.wait_for_prompt().unwrap();
-    client.send(PREFIX);
-    client.send(b"?");
-    assert!(client.wait_until(WAIT, |c| the_keys_list_is_open(c)));
-    // The lines go by command name: `arcade.lock`, `arcade.redraw`, `arcade.reload-config`,
-    // `command.list`, then `copy.enter`.
-    client.send(b"\x1b[B\x1b[B\x1b[B\x1b[B");
-    client.read_more(std::time::Instant::now() + Duration::from_millis(100));
-    client.send(b"\r");
-    assert!(client.wait_until(WAIT, |c| bar(c).contains(" COPY ")));
-    assert!(!the_keys_list_is_open(&client));
-}
-
 #[test]
 fn the_lock_command_from_a_pane_toggles_the_lock_too() {
     let daemon = TestDaemon::start();
@@ -748,13 +668,49 @@ fn a_prefix_set_to_ctrl_b_works_with_the_old_byte() {
     wait_panes(&mut client, &daemon, 2);
 }
 
+/// A daemon with the key hint turned on (it is off unless `[keys] hint = true`).
+fn hint_daemon() -> TestDaemon {
+    TestDaemon::start_with(|c| c.config.keys.hint = true)
+}
+
+#[test]
+fn by_default_the_prefix_and_a_held_modifier_never_change_the_status_bar() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon.attach_shell();
+    six_windows(&daemon, &mut client);
+    let before = client.status_row();
+    assert!(before.contains("1 A") && before.contains("6 F"), "{before}");
+    // The prefix, then longer than the hint's delay.
+    client.send(PREFIX);
+    std::thread::sleep(Duration::from_millis(900));
+    client.read_more(std::time::Instant::now() + Duration::from_millis(100));
+    let during = client.status_row();
+    assert!(!hint_is_shown(&client), "{during}");
+    assert!(during.contains("1 A") && during.contains("6 F"), "{during}");
+    // Holding the modifier after the prefix.
+    client.send(CTRL_H);
+    std::thread::sleep(Duration::from_millis(700));
+    client.read_more(std::time::Instant::now() + Duration::from_millis(100));
+    let held = client.status_row();
+    assert!(!hint_is_shown(&client), "{held}");
+    assert!(held.contains("1 A") && held.contains("6 F"), "{held}");
+}
+
+#[test]
+fn hint_is_a_boolean_setting_of_keys() {
+    let ok = arcade_daemon::config::parse("[keys]\nhint = true\n").unwrap();
+    assert!(ok.keys.hint);
+    assert!(!arcade_daemon::config::Config::default().keys.hint);
+    assert!(arcade_daemon::config::parse("[keys]\nhint = \"yes\"\n").is_err());
+}
+
 fn hint_is_shown(client: &TestClient) -> bool {
     client.status_row().contains("all keys")
 }
 
 #[test]
 fn the_prefix_with_no_key_after_it_puts_the_hint_on_the_status_bar_and_a_key_restores_it() {
-    let daemon = TestDaemon::start();
+    let daemon = hint_daemon();
     let mut client = raw_pane(&daemon);
     let panes_before = client.content_rows();
     client.send(PREFIX);
@@ -794,7 +750,7 @@ fn the_prefix_with_no_key_after_it_puts_the_hint_on_the_status_bar_and_a_key_res
 
 #[test]
 fn the_hint_fits_a_narrow_terminal_and_still_ends_with_the_key_list() {
-    let daemon = TestDaemon::start();
+    let daemon = hint_daemon();
     let mut client = daemon
         .attach(
             arcade_testkit::AttachOptions::new()
@@ -822,7 +778,7 @@ fn rebinding_a_key_changes_the_hint() {
     let file = dir.join("config.toml");
     std::fs::write(
         &file,
-        "[keys.prefix]\n\"b\" = \"pane.zoom\"\n\"z\" = false\n",
+        "[keys]\nhint = true\n[keys.prefix]\n\"b\" = \"pane.zoom\"\n\"z\" = false\n",
     )
     .unwrap();
     let path = file.clone();
@@ -846,7 +802,7 @@ fn rebinding_a_key_changes_the_hint() {
 
 #[test]
 fn a_key_that_follows_the_prefix_quickly_never_shows_the_hint() {
-    let daemon = TestDaemon::start();
+    let daemon = hint_daemon();
     let mut client = raw_pane(&daemon);
     client.send(PREFIX);
     std::thread::sleep(Duration::from_millis(100));

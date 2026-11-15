@@ -567,6 +567,11 @@ fn read_keys(r: &mut Reader<'_>, table: &DeTable<'_>, config: &mut Config) {
                     }
                 }
             }
+            "hint" => {
+                if let Some(on) = r.boolean("hint", value) {
+                    config.keys.hint = on;
+                }
+            }
             "repeat-window-ms" => {
                 if let Some(ms) = r.integer("repeat-window-ms", value) {
                     config.keys.repeat_window = Duration::from_millis(ms as u64);
@@ -583,6 +588,7 @@ fn read_keys(r: &mut Reader<'_>, table: &DeTable<'_>, config: &mut Config) {
                         "prefix",
                         "direct-modifier",
                         "nav",
+                        "hint",
                         "repeat-window-ms",
                         "direct",
                         "after-prefix",
