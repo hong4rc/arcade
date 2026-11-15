@@ -3,7 +3,7 @@
 //! The colors are the ones the program asked for (or the theme's): palette numbers stay palette
 //! numbers, so the host terminal's own theme applies. Nothing here picks a color.
 
-use arcade_term::{Cell, CellWidth, Color, Cursor, CursorShape, Style, Underline};
+use arcade_term::{Cell, CellWidth, Color, Cursor, CursorShape, LinkSpan, Style, Underline};
 
 use crate::compose::Screen;
 
@@ -75,8 +75,22 @@ fn is_plain_blank(cell: &Cell) -> bool {
     cell.text.is_empty() && cell.style == Style::default()
 }
 
-/// Draw one row: move to it, then write every column (or erase the plain tail).
-fn push_row(out: &mut Vec<u8>, y: u16, cells: &[Cell]) {
+/// Open a link on the host terminal (OSC 8). The id is made from the address, so a link that
+/// goes on over several rows, or over two runs, is one link for the host terminal.
+fn push_link_open(out: &mut Vec<u8>, uri: &str) {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    uri.hash(&mut hasher);
+    out.extend_from_slice(format!("\x1b]8;id={:x};", hasher.finish()).as_bytes());
+    out.extend_from_slice(uri.as_bytes());
+    out.extend_from_slice(b"\x1b\\");
+}
+
+const LINK_CLOSE: &[u8] = b"\x1b]8;;\x1b\\";
+
+/// Draw one row: move to it, then write every column (or erase the plain tail). The cells in
+/// `links` are written inside a link, which is closed again before anything else.
+fn push_row(out: &mut Vec<u8>, y: u16, cells: &[Cell], links: &[LinkSpan]) {
     out.extend_from_slice(format!("\x1b[{};1H", y + 1).as_bytes());
     // Leave out a tail of plain blank cells and erase it instead.
     let mut end = cells.len();
@@ -85,7 +99,20 @@ fn push_row(out: &mut Vec<u8>, y: u16, cells: &[Cell]) {
     }
     let mut current = Style::default();
     out.extend_from_slice(b"\x1b[0m");
-    for cell in &cells[..end] {
+    let mut open_until: Option<u16> = None;
+    let mut next_link = links.iter().peekable();
+    for (x, cell) in cells[..end].iter().enumerate() {
+        let x = x as u16;
+        if open_until == Some(x) {
+            out.extend_from_slice(LINK_CLOSE);
+            open_until = None;
+        }
+        if open_until.is_none()
+            && let Some(span) = next_link.next_if(|span| span.from <= x && x < span.to)
+        {
+            push_link_open(out, &span.uri);
+            open_until = Some(span.to);
+        }
         if cell.width == CellWidth::SpacerTail {
             continue;
         }
@@ -98,6 +125,9 @@ fn push_row(out: &mut Vec<u8>, y: u16, cells: &[Cell]) {
         } else {
             out.extend_from_slice(cell.text.as_bytes());
         }
+    }
+    if open_until.is_some() {
+        out.extend_from_slice(LINK_CLOSE);
     }
     if end < cells.len() {
         if current != Style::default() {
@@ -191,7 +221,7 @@ impl Renderer {
                 continue;
             }
             let mut bytes = Vec::new();
-            push_row(&mut bytes, y, screen.row(y));
+            push_row(&mut bytes, y, screen.row(y), screen.row_links(y));
             let slot = &mut self.rows[usize::from(y)];
             if slot.as_deref() != Some(bytes.as_slice()) {
                 body.extend_from_slice(&bytes);
@@ -281,5 +311,70 @@ mod tests {
         );
         let off = renderer.render(&mut screen, &cursor, HostModes::default());
         assert!(has(&off, MOUSE_OFF));
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    fn cells(text: &str) -> Vec<Cell> {
+        crate::compose::text_cells(text, Style::default())
+    }
+
+    fn span(from: u16, to: u16) -> LinkSpan {
+        LinkSpan {
+            from,
+            to,
+            uri: "https://a.example/x".into(),
+        }
+    }
+
+    fn row(text: &str, links: &[LinkSpan]) -> String {
+        let mut out = Vec::new();
+        push_row(&mut out, 0, &cells(text), links);
+        String::from_utf8(out).unwrap().replace('\x1b', "<E>")
+    }
+
+    #[test]
+    fn a_link_is_opened_before_its_first_cell_and_closed_before_the_next_one() {
+        let got = row("ab cd ef", &[span(3, 5)]);
+        let id = got.split("id=").nth(1).unwrap().split(';').next().unwrap();
+        assert_eq!(
+            got,
+            format!("<E>[1;1H<E>[0mab <E>]8;id={id};https://a.example/x<E>\\cd<E>]8;;<E>\\ ef")
+        );
+    }
+
+    #[test]
+    fn a_link_that_reaches_the_end_of_the_row_is_closed_there() {
+        let got = row("ab", &[span(0, 2)]);
+        assert!(got.ends_with("ab<E>]8;;<E>\\"), "{got}");
+        // Blank cells at the end are erased rather than written; the link is closed before.
+        let mut blanks = cells("ab");
+        blanks.extend(vec![crate::compose::blank(Style::default()); 2]);
+        let mut out = Vec::new();
+        push_row(&mut out, 0, &blanks, &[span(0, 4)]);
+        let got = String::from_utf8(out).unwrap().replace('\x1b', "<E>");
+        assert!(got.contains("ab<E>]8;;<E>\\<E>[K"), "{got}");
+    }
+
+    #[test]
+    fn two_links_next_to_each_other_are_closed_and_opened_in_turn() {
+        let got = row("abcd", &[span(0, 2), span(2, 4)]);
+        assert_eq!(got.matches("]8;;<E>\\").count(), 2, "{got}");
+        assert_eq!(got.matches("https://a.example/x").count(), 2, "{got}");
+        assert!(got.contains("ab<E>]8;;<E>\\<E>]8;id="), "{got}");
+    }
+
+    #[test]
+    fn a_wide_character_is_inside_the_link_with_its_second_column() {
+        let got = row("a漢b", &[span(1, 3)]);
+        assert!(got.contains("漢<E>]8;;<E>\\b"), "{got}");
+    }
+
+    #[test]
+    fn a_row_without_links_has_no_link_bytes() {
+        assert!(!row("abc", &[]).contains("]8;"));
     }
 }

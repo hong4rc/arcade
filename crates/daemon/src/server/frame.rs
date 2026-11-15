@@ -243,7 +243,11 @@ impl Server {
                         .view(&pane.term)
                         .into_iter()
                         .enumerate()
-                        .map(|(y, cells)| arcade_term::RowUpdate { y: y as u16, cells })
+                        .map(|(y, cells)| arcade_term::RowUpdate {
+                            y: y as u16,
+                            cells,
+                            links: Vec::new(),
+                        })
                         .collect();
                     session.screen.blit(
                         *rect,

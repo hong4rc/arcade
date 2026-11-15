@@ -5,7 +5,7 @@
 //! update are marked changed; the renderer then sends only those rows that really differ from
 //! what the host terminal already shows.
 
-use arcade_term::{Cell, CellWidth, Frame, RowUpdate, Style};
+use arcade_term::{Cell, CellWidth, Frame, LinkSpan, RowUpdate, Style};
 
 use crate::layout::{Divider, Rect};
 use crate::theme::{self, Role, Symbol};
@@ -98,6 +98,9 @@ pub struct Screen {
     rows: u16,
     cells: Vec<Vec<Cell>>,
     dirty: Vec<bool>,
+    /// For each row, the runs of columns that belong to a link, left to right. Almost always
+    /// empty; whatever is drawn over a link takes the link away from the cells it covers.
+    links: Vec<Vec<LinkSpan>>,
 }
 
 impl Screen {
@@ -121,6 +124,43 @@ impl Screen {
         let row = vec![blank(Style::default()); usize::from(self.cols)];
         self.cells = vec![row; usize::from(self.rows)];
         self.dirty = vec![true; usize::from(self.rows)];
+        self.links = vec![Vec::new(); usize::from(self.rows)];
+    }
+
+    /// The link runs of a row.
+    pub fn row_links(&self, y: u16) -> &[LinkSpan] {
+        &self.links[usize::from(y)]
+    }
+
+    /// Take the columns `from..to` of a row out of any link, cutting a run that reaches over
+    /// them in two.
+    fn unlink(spans: &mut Vec<LinkSpan>, from: usize, to: usize) {
+        if spans.is_empty() {
+            return;
+        }
+        let (from, to) = (from as u16, to.min(usize::from(u16::MAX)) as u16);
+        let mut kept = Vec::with_capacity(spans.len() + 1);
+        for span in spans.drain(..) {
+            if span.to <= from || span.from >= to {
+                kept.push(span);
+                continue;
+            }
+            if span.from < from {
+                kept.push(LinkSpan {
+                    from: span.from,
+                    to: from,
+                    uri: span.uri.clone(),
+                });
+            }
+            if span.to > to {
+                kept.push(LinkSpan {
+                    from: to,
+                    to: span.to,
+                    uri: span.uri,
+                });
+            }
+        }
+        *spans = kept;
     }
 
     pub fn row(&self, y: u16) -> &[Cell] {
@@ -134,26 +174,42 @@ impl Screen {
 
     /// Write the rows a pane's terminal reported into the room `rect` (in grid coordinates).
     pub fn blit(&mut self, rect: Rect, frame: Frame) {
-        for RowUpdate { y, cells } in frame.rows {
+        for RowUpdate { y, cells, links } in frame.rows {
             if y >= rect.h || rect.y + y >= self.rows {
                 continue;
             }
-            let row = &mut self.cells[usize::from(rect.y + y)];
+            let gy = usize::from(rect.y + y);
+            let row = &mut self.cells[gy];
             let start = usize::from(rect.x);
             let end = (start + usize::from(rect.w)).min(row.len());
             if start >= end {
                 continue;
             }
+            Self::unlink(&mut self.links[gy], start, end);
             let room = end - start;
             let mut source = cells.into_iter();
             for slot in &mut row[start..end] {
                 *slot = source.next().unwrap_or_else(|| blank(Style::default()));
             }
             // A wide character cut off by the edge of the room would draw into the divider.
-            if room > 0 && row[end - 1].width == CellWidth::Wide {
+            let cut_wide = room > 0 && row[end - 1].width == CellWidth::Wide;
+            if cut_wide {
                 row[end - 1] = blank(Style::default());
             }
-            self.dirty[usize::from(rect.y + y)] = true;
+            // The links of the pane, moved to where the pane is and cut at the edge of its room.
+            for span in links {
+                let from = start + usize::from(span.from);
+                let to = (start + usize::from(span.to)).min(end - usize::from(cut_wide));
+                if from < to {
+                    self.links[gy].push(LinkSpan {
+                        from: from as u16,
+                        to: to as u16,
+                        uri: span.uri,
+                    });
+                }
+            }
+            self.links[gy].sort_by_key(|span| span.from);
+            self.dirty[gy] = true;
         }
     }
 
@@ -225,6 +281,11 @@ impl Screen {
                 if x >= self.cols || gy >= self.rows {
                     continue;
                 }
+                Self::unlink(
+                    &mut self.links[usize::from(gy)],
+                    usize::from(x),
+                    usize::from(x) + 1,
+                );
                 self.cells[usize::from(gy)][usize::from(x)] = Cell {
                     text: theme::symbol(sym).to_string(),
                     width: CellWidth::Narrow,
@@ -242,6 +303,8 @@ impl Screen {
             if gy >= usize::from(self.rows) {
                 break;
             }
+            let reach = (usize::from(x) + cells.len()).min(usize::from(self.cols));
+            Self::unlink(&mut self.links[gy], usize::from(x), reach);
             let row = &mut self.cells[gy];
             for (j, cell) in cells.iter().enumerate() {
                 let gx = usize::from(x) + j;
@@ -267,6 +330,7 @@ impl Screen {
         }
         let cells = fit(cells, usize::from(self.cols), Style::default());
         self.cells[usize::from(y)] = cells;
+        self.links[usize::from(y)].clear();
         self.dirty[usize::from(y)] = true;
     }
 }
@@ -419,5 +483,101 @@ mod tests {
             [true, true, true, true, false, false, false]
         );
         assert_eq!(colors(&screen, (6..11).map(|x| (x, 3))), [false; 5]);
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    fn link(from: u16, to: u16) -> LinkSpan {
+        LinkSpan {
+            from,
+            to,
+            uri: "u".into(),
+        }
+    }
+
+    fn row_update(links: Vec<LinkSpan>) -> RowUpdate {
+        RowUpdate {
+            y: 0,
+            cells: text_cells("0123456789", Style::default()),
+            links,
+        }
+    }
+
+    fn frame(links: Vec<LinkSpan>) -> Frame {
+        Frame {
+            cols: 10,
+            rows_total: 1,
+            damage: arcade_term::Damage::Full,
+            rows: vec![row_update(links)],
+            cursor: arcade_term::Cursor {
+                x: 0,
+                y: 0,
+                visible: false,
+                shape: arcade_term::CursorShape::Block,
+                blinking: false,
+            },
+        }
+    }
+
+    fn spans(screen: &Screen) -> Vec<(u16, u16)> {
+        screen.row_links(0).iter().map(|s| (s.from, s.to)).collect()
+    }
+
+    #[test]
+    fn a_pane_s_links_move_with_the_pane_and_are_cut_at_its_edge() {
+        let mut screen = Screen::new();
+        screen.resize(20, 1);
+        screen.blit(Rect::new(5, 0, 6, 1), frame(vec![link(1, 3), link(4, 10)]));
+        assert_eq!(spans(&screen), [(6, 8), (9, 11)]);
+    }
+
+    #[test]
+    fn a_pane_drawn_again_replaces_its_links_and_leaves_the_neighbour_s() {
+        let mut screen = Screen::new();
+        screen.resize(20, 1);
+        screen.blit(Rect::new(0, 0, 10, 1), frame(vec![link(0, 2)]));
+        screen.blit(Rect::new(10, 0, 10, 1), frame(vec![link(0, 2)]));
+        screen.blit(Rect::new(10, 0, 10, 1), frame(vec![]));
+        assert_eq!(spans(&screen), [(0, 2)]);
+    }
+
+    #[test]
+    fn links_stay_in_order_when_the_right_pane_is_drawn_first() {
+        let mut screen = Screen::new();
+        screen.resize(20, 1);
+        screen.blit(Rect::new(10, 0, 10, 1), frame(vec![link(0, 2)]));
+        screen.blit(Rect::new(0, 0, 10, 1), frame(vec![link(0, 2)]));
+        assert_eq!(spans(&screen), [(0, 2), (10, 12)]);
+    }
+
+    #[test]
+    fn a_box_drawn_over_a_link_cuts_it() {
+        let mut screen = Screen::new();
+        screen.resize(10, 1);
+        screen.blit(Rect::new(0, 0, 10, 1), frame(vec![link(0, 10)]));
+        screen.overlay(3, 0, &[text_cells("xxx", Style::default())]);
+        assert_eq!(spans(&screen), [(0, 3), (6, 10)]);
+        screen.overlay(0, 0, &[text_cells("yyyy", Style::default())]);
+        assert_eq!(spans(&screen), [(6, 10)]);
+    }
+
+    #[test]
+    fn a_divider_or_a_whole_row_drawn_over_a_link_takes_it_away() {
+        let mut screen = Screen::new();
+        screen.resize(10, 1);
+        screen.blit(Rect::new(0, 0, 10, 1), frame(vec![link(0, 10)]));
+        let divider = Divider {
+            x: 4,
+            y: 0,
+            len: 1,
+            vertical: true,
+        };
+        screen.draw_dividers(&[divider], 0, None);
+        assert_eq!(spans(&screen), [(0, 4), (5, 10)]);
+        screen.set_row(0, text_cells("status", Style::default()));
+        assert!(spans(&screen).is_empty());
     }
 }

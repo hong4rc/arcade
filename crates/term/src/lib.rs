@@ -148,6 +148,35 @@ pub struct Cell {
 pub struct RowUpdate {
     pub y: u16,
     pub cells: Vec<Cell>,
+    /// The runs of columns that belong to a link (OSC 8), left to right. Empty for nearly every
+    /// row. Addresses the host terminal could not take safely (control bytes, not ASCII, too
+    /// long) are left out.
+    pub links: Vec<LinkSpan>,
+}
+
+/// Columns `from..to` of a row that all belong to the link `uri`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkSpan {
+    pub from: u16,
+    pub to: u16,
+    pub uri: String,
+}
+
+/// The longest link address that is passed on to the host terminal.
+pub const LINK_MAX_LEN: usize = 2048;
+
+fn link_at(term: &Terminal<'_, '_>, point: Point) -> Option<String> {
+    let grid_ref = term.grid_ref(point).ok()?;
+    let mut uri = vec![0u8; LINK_MAX_LEN + 1];
+    let len = grid_ref.hyperlink_uri(&mut uri).ok()?;
+    let uri = std::str::from_utf8(&uri[..len]).ok()?;
+    link_is_safe(uri).then(|| uri.to_string())
+}
+
+/// Whether an address can be written into an OSC 8 sequence as it is: printable ASCII only, not
+/// empty, not longer than [`LINK_MAX_LEN`].
+pub fn link_is_safe(uri: &str) -> bool {
+    !uri.is_empty() && uri.len() <= LINK_MAX_LEN && uri.bytes().all(|b| (0x21..0x7f).contains(&b))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -696,18 +725,15 @@ impl Term {
 
     /// The link (OSC 8) a visible cell belongs to, if any.
     pub fn hyperlink_at(&self, row: u16, col: u16) -> Option<String> {
-        let point = Point::Active(Coordinate {
+        self.link_at(Point::Active(Coordinate {
             x: col,
             y: u32::from(row),
-        });
-        let grid_ref = self.term.grid_ref(point).ok()?;
-        let mut uri = vec![0u8; 4096];
-        let len = grid_ref.hyperlink_uri(&mut uri).unwrap_or(0);
-        if len == 0 {
-            None
-        } else {
-            Some(String::from_utf8_lossy(&uri[..len]).into_owned())
-        }
+        }))
+    }
+
+    /// The address of the link at `point`, if any, and if it is safe to pass on to the host.
+    fn link_at(&self, point: Point) -> Option<String> {
+        link_at(&self.term, point)
     }
 
     pub fn mode(&self, mode: Mode) -> Option<bool> {
@@ -825,6 +851,12 @@ impl Term {
                 let changed = row.dirty().map_err(|e| err("row dirty", e))?;
                 if full || changed {
                     let mut cells = Vec::with_capacity(usize::from(cols));
+                    // Only a row the library says may hold links is looked at cell by cell.
+                    let row_links = row
+                        .raw_row()
+                        .and_then(|r| r.has_hyperlink())
+                        .unwrap_or(false);
+                    let mut links: Vec<LinkSpan> = Vec::new();
                     let mut cell_iter = self
                         .cells_iter
                         .update(row)
@@ -861,9 +893,27 @@ impl Term {
                             }
                             _ => {}
                         }
+                        if row_links && raw.has_hyperlink().unwrap_or(false) {
+                            let x = u16::try_from(cells.len()).unwrap_or(u16::MAX);
+                            if let Some(uri) = link_at(
+                                &self.term,
+                                Point::Viewport(Coordinate { x, y: u32::from(y) }),
+                            ) {
+                                match links.last_mut() {
+                                    Some(last) if last.to == x && last.uri == uri => {
+                                        last.to = x + 1
+                                    }
+                                    _ => links.push(LinkSpan {
+                                        from: x,
+                                        to: x + 1,
+                                        uri,
+                                    }),
+                                }
+                            }
+                        }
                         cells.push(Cell { text, width, style });
                     }
-                    updates.push(RowUpdate { y, cells });
+                    updates.push(RowUpdate { y, cells, links });
                     if changed {
                         row.set_dirty(false).map_err(|e| err("clear row", e))?;
                     }
