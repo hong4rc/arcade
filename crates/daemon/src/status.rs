@@ -23,6 +23,19 @@ pub struct Prompt {
     pub text: String,
 }
 
+/// What copy mode is doing, for the word on the bar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CopyState {
+    /// Moving about.
+    Normal,
+    /// A selection by character is active.
+    Visual,
+    /// A selection by line is active.
+    VisualLine,
+    /// A jump is open, with what was typed so far.
+    Jump(String),
+}
+
 pub struct StatusInfo {
     pub session: String,
     pub tabs: Vec<Tab>,
@@ -31,8 +44,8 @@ pub struct StatusInfo {
     pub locked: bool,
     /// The key that ends the lock, as it is typed, when there is one.
     pub unlock_key: Option<String>,
-    /// The focused pane is in copy mode.
-    pub copy: bool,
+    /// The focused pane is in copy mode, and what it is doing.
+    pub copy: Option<CopyState>,
     /// How many panes of the session have a notification, per class in the order of
     /// `Class::BY_URGENCY`.
     pub notices: [usize; 4],
@@ -108,8 +121,13 @@ pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
             None => "LOCK".to_string(),
         });
     }
-    if info.copy {
-        words.push("COPY".to_string());
+    let mut select_word = None;
+    match &info.copy {
+        None => {}
+        Some(CopyState::Normal) => words.push("COPY".to_string()),
+        Some(CopyState::Visual) => select_word = Some("VISUAL".to_string()),
+        Some(CopyState::VisualLine) => select_word = Some("V-LINE".to_string()),
+        Some(CopyState::Jump(typed)) => select_word = Some(format!("JUMP {typed}")),
     }
     let mut right: Vec<Cell> = Vec::new();
     for (class, count) in Class::BY_URGENCY.iter().zip(info.notices) {
@@ -129,6 +147,12 @@ pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
             .iter()
             .flat_map(|w| text_cells(&format!(" {w} "), theme::style(Role::Indicator))),
     );
+    if let Some(word) = select_word {
+        right.extend(text_cells(
+            &format!(" {word} "),
+            theme::style(Role::IndicatorSelect),
+        ));
+    }
     // The counters and the indicators keep their place at the right; the tabs give way.
     if right.len() < width {
         cells = fit(cells, width - right.len(), bar);
@@ -178,7 +202,7 @@ mod tests {
             prefix: false,
             locked: false,
             unlock_key: None,
-            copy: false,
+            copy: None,
             notices: [0; 4],
             message: None,
             prompt: None,
@@ -202,11 +226,32 @@ mod tests {
     }
 
     #[test]
+    fn the_copy_word_says_whether_a_selection_is_active_or_a_jump_is_open() {
+        for (state, word) in [
+            (CopyState::Normal, "COPY"),
+            (CopyState::Visual, "VISUAL"),
+            (CopyState::VisualLine, "V-LINE"),
+            (CopyState::Jump("ab".into()), "JUMP ab"),
+        ] {
+            let mut i = info();
+            i.copy = Some(state);
+            let (cells, _) = build(60, &i);
+            let line = text(&cells);
+            assert!(line.trim_end().ends_with(&format!(" {word}")), "{line:?}");
+        }
+        let select = theme::style(Role::IndicatorSelect);
+        let mut i = info();
+        i.copy = Some(CopyState::Visual);
+        let (cells, _) = build(60, &i);
+        assert!(cells.iter().any(|c| c.style == select));
+    }
+
+    #[test]
     fn mode_words_are_at_the_right_end() {
         let mut i = info();
         i.prefix = true;
         i.locked = true;
-        i.copy = true;
+        i.copy = Some(CopyState::Normal);
         let line = text(&build(60, &i).0);
         assert!(line.trim_end().ends_with("PREFIX  LOCK  COPY"), "{line:?}");
         let quiet = text(&build(60, &info()).0);

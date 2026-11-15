@@ -125,8 +125,13 @@ These keys do not repeat: hold the modifier and press again.
 | `y` | Copy the selection and leave (`Enter` does nothing in copy mode, so it cannot copy by accident; bind it in `[keys.copy]` if you want it to) |
 | `Y` | Copy the selection and stay in copy mode |
 | `o` | Open the link under the cursor (see "Links" below); copy mode goes on |
+| `s` | Jump: type what to go to, then the label of the match (see "Jump" below) |
 | `q` | Leave |
 | `Esc` | Cancel (drop the selection, or leave if nothing is selected) |
+
+**Which state copy mode is in.** The word at the right end of the status bar says it: `COPY` while you only move, `VISUAL` while a selection by character is active, `V-LINE` while a selection by line is active, and `JUMP` followed by what you typed while a jump is open.
+
+**Jump.** `s` opens a jump (as the flash plugin does in Neovim). Type the characters to go to: every match on the rows you see is highlighted, and each match gets a one-letter label drawn on the character right after it. Type a label to move the cursor to the start of that match; the jump ends. More typing narrows the matches. A label letter is never a character that could continue a match, so a key is either a label or more text to look for, never both. A lower case search matches both cases; an upper case letter makes it exact. With more matches than labels (26 letters), the matches nearest to the cursor get them and the others stay highlighted until you type more. `Enter` goes to the first match after the cursor (wrapping to the first), `Backspace` takes the last character back, `Esc` cancels and puts the cursor and the view back. If a selection is active (`v` or `V`), the jump moves the cursor and the selection stretches to it, with its starting point where it was; with no selection, the jump only moves. Example: to copy from here to the word `deploy` farther down, press `v`, `s`, type `deploy`, type the label shown after it, then `y`.
 
 **Links.** A program can mark text as a link (the hidden kind, OSC 8, for example what `ls --hyperlink` or many tools print): Arcade passes those links on to the terminal window, so Ghostty can open them (Cmd+click, or Ctrl+Shift+click while Arcade has the mouse). A link whose address holds a control character, a non-ASCII character or a space, or is longer than 2048 bytes, is not passed on and is drawn as plain text. In copy mode the pane shows its text without the links.
 

@@ -76,7 +76,47 @@ pub enum Outcome {
     Exit,
 }
 
+/// The letters a jump labels its matches with, best first: the home row, then the rest. A
+/// letter that could continue a match is left out when the labels are given (see
+/// `Copy::jump_matches`).
+pub const JUMP_LABELS: &str = "asdfghjklqwertyuiopzxcvbnm";
+
+/// What a key does while a jump is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JumpKey {
+    /// A character: a label, or one more character to look for.
+    Char(char),
+    /// Go to the nearest match.
+    Enter,
+    /// Take the last typed character away.
+    Backspace,
+    /// Cancel and put the cursor back.
+    Escape,
+}
+
+/// A place where what was typed is found on the visible rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JumpMatch {
+    /// The cells of the match, in order: (row, column).
+    pub cells: Vec<(usize, u16)>,
+    /// The cell right after the match, where the label is drawn (the last cell of the match if
+    /// nothing follows it on the row).
+    pub label_at: (usize, u16),
+    pub label: Option<char>,
+}
+
+/// An open jump.
+#[derive(Clone, Debug)]
+pub struct Jump {
+    pub typed: String,
+    pub matches: Vec<JumpMatch>,
+    /// Where the cursor and the view were, to put them back on Escape.
+    origin: (usize, u16, usize),
+}
+
 pub struct Copy {
+    /// The jump that is open, if any.
+    pub jump: Option<Jump>,
     pub row: usize,
     pub col: u16,
     /// The column vertical moves aim for, so that passing a short line loses nothing.
@@ -310,6 +350,7 @@ impl Copy {
         let total = src.total();
         let top = total.saturating_sub(usize::from(rows));
         Copy {
+            jump: None,
             row: (top + usize::from(cursor.1)).min(total.saturating_sub(1)),
             col: cursor.0.min(cols.saturating_sub(1)),
             want: cursor.0,
@@ -556,6 +597,14 @@ impl Copy {
                     None => Outcome::Message("nothing is selected".to_string()),
                 };
             }
+            CopyCommand::Jump => {
+                self.jump = Some(Jump {
+                    typed: String::new(),
+                    matches: Vec::new(),
+                    origin: (self.row, self.col, self.top),
+                });
+                self.dirty = true;
+            }
             CopyCommand::OpenLink => {
                 return match self.link_under_cursor(src) {
                     None => Outcome::Message("no link under the cursor".to_string()),
@@ -613,6 +662,186 @@ impl Copy {
             }
         }
         crate::links::find_address(&text, at?)
+    }
+
+    /// What copy mode is doing, for the status bar.
+    pub fn state(&self) -> crate::status::CopyState {
+        use crate::status::CopyState;
+        if let Some(jump) = &self.jump {
+            return CopyState::Jump(jump.typed.clone());
+        }
+        match self.selection.map(|s| s.kind) {
+            Some(SelectionKind::Char) => CopyState::Visual,
+            Some(SelectionKind::Line) => CopyState::VisualLine,
+            None => CopyState::Normal,
+        }
+    }
+
+    /// A key while a jump is open. Moving the cursor keeps the selection's anchor, so a
+    /// selection that is active is extended to the match.
+    pub fn jump_key<S: Source>(&mut self, src: &S, key: JumpKey) {
+        let Some(jump) = self.jump.as_mut() else {
+            return;
+        };
+        self.dirty = true;
+        match key {
+            JumpKey::Escape => {
+                let (row, col, top) = jump.origin;
+                self.jump = None;
+                self.row = row;
+                self.col = col;
+                self.want = col;
+                self.top = top;
+                self.settle(src);
+            }
+            JumpKey::Backspace => {
+                jump.typed.pop();
+                self.rematch(src);
+            }
+            JumpKey::Enter => {
+                // The first match after the cursor, or the first of all when none is after it.
+                let at = (self.row, self.col);
+                let target = jump
+                    .matches
+                    .iter()
+                    .map(|m| m.cells[0])
+                    .find(|cell| *cell > at)
+                    .or_else(|| jump.matches.first().map(|m| m.cells[0]));
+                if let Some((row, col)) = target {
+                    self.jump = None;
+                    self.go(src, row, col);
+                }
+            }
+            JumpKey::Char(c) => {
+                let labelled = jump
+                    .matches
+                    .iter()
+                    .find(|m| m.label == Some(c))
+                    .map(|m| m.cells[0]);
+                if let Some((row, col)) = labelled {
+                    self.jump = None;
+                    self.go(src, row, col);
+                } else {
+                    jump.typed.push(c);
+                    self.rematch(src);
+                }
+            }
+        }
+        self.remember(src);
+    }
+
+    /// Find again what was typed on the visible rows, and give the labels.
+    fn rematch<S: Source>(&mut self, src: &S) {
+        let Some(typed) = self.jump.as_ref().map(|j| j.typed.clone()) else {
+            return;
+        };
+        let matches = self.jump_matches(src, &typed);
+        if let Some(jump) = self.jump.as_mut() {
+            jump.matches = matches;
+        }
+    }
+
+    /// Every place on the visible rows where `typed` is, with labels for the ones nearest to
+    /// the cursor. A lower case `typed` matches either case; an upper case letter makes it exact.
+    /// A match may go over the end of a row the terminal broke.
+    fn jump_matches<S: Source>(&self, src: &S, typed: &str) -> Vec<JumpMatch> {
+        let want: Vec<char> = typed.chars().collect();
+        if want.is_empty() {
+            return Vec::new();
+        }
+        let exact = want.iter().any(|c| c.is_uppercase());
+        let same = |a: char, b: char| {
+            if exact {
+                a == b
+            } else {
+                a.to_lowercase().eq(b.to_lowercase())
+            }
+        };
+        // The visible cells that hold something, row by row, with their places; a row the
+        // terminal broke goes on from the one above it in the same run.
+        let mut found: Vec<JumpMatch> = Vec::new();
+        let mut run: Vec<(char, usize, u16)> = Vec::new();
+        // The characters that would continue some match cannot be labels, or typing one would be
+        // both a label and a longer search.
+        let mut continuation: Vec<char> = Vec::new();
+        let mut flush = |run: &mut Vec<(char, usize, u16)>, found: &mut Vec<JumpMatch>| {
+            let n = want.len();
+            let mut i = 0;
+            while i + n <= run.len() {
+                if (0..n).all(|k| same(run[i + k].0, want[k])) {
+                    let cells: Vec<(usize, u16)> =
+                        run[i..i + n].iter().map(|(_, r, c)| (*r, *c)).collect();
+                    let last = cells[n - 1];
+                    let label_at = match run.get(i + n) {
+                        Some((c, r, col)) if *r == last.0 => {
+                            continuation.push(c.to_ascii_lowercase());
+                            (*r, *col)
+                        }
+                        _ => last,
+                    };
+                    found.push(JumpMatch {
+                        cells,
+                        label_at,
+                        label: None,
+                    });
+                }
+                i += 1;
+            }
+            run.clear();
+        };
+        for row in self.top..(self.top + usize::from(self.rows)).min(src.total()) {
+            let line = self.line_at(src, row);
+            if !line.continues {
+                flush(&mut run, &mut found);
+            }
+            for (col, cell) in line.cells.iter().enumerate().take(usize::from(self.cols)) {
+                if cell.width == CellWidth::SpacerTail {
+                    continue;
+                }
+                let c = cell.text.chars().next().unwrap_or(' ');
+                run.push((c, row, col as u16));
+            }
+        }
+        flush(&mut run, &mut found);
+        let cursor = (self.row, self.col);
+        found.sort_by_key(|m| {
+            let (r, c) = m.cells[0];
+            (r.abs_diff(cursor.0), c.abs_diff(cursor.1), r, c)
+        });
+        let mut labels = JUMP_LABELS.chars().filter(|l| !continuation.contains(l));
+        for m in &mut found {
+            m.label = labels.next();
+        }
+        found.sort_by_key(|m| m.cells[0]);
+        found
+    }
+
+    /// Mark the jump's matches and labels on a row of the view.
+    fn mark_jump(&self, row: usize, cells: &mut [Cell]) {
+        let Some(jump) = &self.jump else {
+            return;
+        };
+        let hit = theme::style(Role::JumpMatch);
+        let tag = theme::style(Role::JumpLabel);
+        for m in &jump.matches {
+            for (r, c) in &m.cells {
+                if *r == row
+                    && let Some(cell) = cells.get_mut(usize::from(*c))
+                {
+                    cell.style = hit;
+                }
+            }
+            if let (Some(label), (r, c)) = (m.label, m.label_at)
+                && r == row
+                && let Some(cell) = cells.get_mut(usize::from(c))
+            {
+                *cell = Cell {
+                    text: label.to_string(),
+                    width: CellWidth::Narrow,
+                    style: tag,
+                };
+            }
+        }
     }
 
     fn vertical<S: Source>(&mut self, src: &S, row: usize) {
@@ -852,6 +1081,7 @@ impl Copy {
                         cell.style = mark;
                     }
                 }
+                self.mark_jump(row, &mut line.cells);
                 line.cells
             })
             .collect()
@@ -934,6 +1164,255 @@ mod tests {
         let mut c = Copy::enter(&src, (0, 0), 40, 4);
         c.go(&src, row, col);
         (src, c)
+    }
+
+    fn jump_open(c: &mut Copy, src: &Rows) {
+        c.apply(src, CopyCommand::Jump);
+    }
+
+    fn type_jump(c: &mut Copy, src: &Rows, text: &str) {
+        for ch in text.chars() {
+            c.jump_key(src, JumpKey::Char(ch));
+        }
+    }
+
+    fn labels(c: &Copy) -> Vec<(usize, u16, Option<char>)> {
+        c.jump
+            .as_ref()
+            .unwrap()
+            .matches
+            .iter()
+            .map(|m| (m.cells[0].0, m.cells[0].1, m.label))
+            .collect()
+    }
+
+    /// A copy mode with a view of `rows` rows.
+    fn tall(spec: &[&str], rows: u16) -> (Rows, Copy) {
+        let src = rows_of(spec);
+        let c = Copy::enter(&src, (0, 0), COLS, rows);
+        (src, c)
+    }
+
+    fn rows_of(spec: &[&str]) -> Rows {
+        rows(spec)
+    }
+
+    #[test]
+    fn typing_finds_every_match_and_more_typing_narrows_them() {
+        let (src, mut c) = tall(&["ab ac ab", "xx ab"], 2);
+        c.go(&src, 0, 0);
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "a");
+        assert_eq!(labels(&c).len(), 4);
+        type_jump(&mut c, &src, "b");
+        assert_eq!(labels(&c).len(), 3);
+        c.jump_key(&src, JumpKey::Backspace);
+        assert_eq!(labels(&c).len(), 4);
+        assert_eq!(c.state(), crate::status::CopyState::Jump("a".into()));
+    }
+
+    #[test]
+    fn a_label_is_never_a_character_that_could_continue_a_match() {
+        // After each `a` comes `s`, `d`, `f` or `g`: the first labels of the alphabet.
+        let (src, mut c) = tall(&["as ad af", "ag"], 2);
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "a");
+        let got = labels(&c);
+        assert_eq!(got.len(), 4);
+        for (_, _, label) in &got {
+            let label = label.expect("every match has a label");
+            assert!(!"sdfg".contains(label), "label {label}");
+        }
+        // And all four are different.
+        let mut letters: Vec<char> = got.iter().filter_map(|l| l.2).collect();
+        letters.sort_unstable();
+        letters.dedup();
+        assert_eq!(letters.len(), 4);
+    }
+
+    #[test]
+    fn a_label_jumps_to_the_start_of_its_match_and_ends_the_jump_without_a_selection() {
+        let (src, mut c) = tall(&["ab  cd ab"], 1);
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "ab");
+        let last = labels(&c).last().copied().unwrap();
+        c.jump_key(&src, JumpKey::Char(last.2.unwrap()));
+        assert!(c.jump.is_none());
+        assert_eq!(at(&c), (0, 7));
+        assert!(c.selection.is_none());
+        assert_eq!(c.state(), crate::status::CopyState::Normal);
+    }
+
+    #[test]
+    fn a_jump_extends_the_selection_that_is_active_and_keeps_its_anchor() {
+        let (src, mut c) = tall(&["one two", "ten"], 2);
+        c.go(&src, 0, 4);
+        run(&mut c, &src, &[CopyCommand::SelectChar]);
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "te");
+        c.jump_key(&src, JumpKey::Enter);
+        assert_eq!(at(&c), (1, 0));
+        let sel = c.selection.unwrap();
+        assert_eq!((sel.row, sel.col, sel.kind), (0, 4, SelectionKind::Char));
+        assert_eq!(c.selected_text(&src).unwrap(), "two\nt");
+        assert_eq!(c.state(), crate::status::CopyState::Visual);
+        run(&mut c, &src, &[CopyCommand::SelectLine]);
+        assert_eq!(c.state(), crate::status::CopyState::VisualLine);
+    }
+
+    #[test]
+    fn with_more_matches_than_labels_the_nearest_get_them() {
+        let spec: Vec<&str> = vec!["a a a a a "; 12];
+        let (src, mut c) = tall(&spec, 12);
+        c.go(&src, 6, 4);
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "a");
+        let got = labels(&c);
+        assert_eq!(got.len(), 60);
+        assert_eq!(
+            got.iter().filter(|l| l.2.is_some()).count(),
+            JUMP_LABELS.len()
+        );
+        // The match under the cursor is the nearest, so it has the first label; the far
+        // corners are left without.
+        let near = got.iter().find(|l| (l.0, l.1) == (6, 4)).unwrap();
+        assert_eq!(near.2, Some('a'));
+        let far = got.iter().find(|l| (l.0, l.1) == (0, 0)).unwrap();
+        assert_eq!(far.2, None);
+        // Typing a letter that is not a label narrows, it does not jump.
+        type_jump(&mut c, &src, " ");
+        assert!(c.jump.is_some());
+    }
+
+    #[test]
+    fn lower_case_matches_both_cases_and_an_upper_case_letter_makes_it_exact() {
+        let (src, mut c) = tall(&["ab AB Ab", "aB"], 2);
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "ab");
+        assert_eq!(labels(&c).len(), 4);
+        c.jump_key(&src, JumpKey::Backspace);
+        c.jump_key(&src, JumpKey::Backspace);
+        type_jump(&mut c, &src, "Ab");
+        assert_eq!(
+            labels(&c).iter().map(|l| (l.0, l.1)).collect::<Vec<_>>(),
+            [(0, 6)]
+        );
+    }
+
+    #[test]
+    fn wide_characters_count_as_one_character_at_their_first_column() {
+        let (src, mut c) = tall(&["漢字 字x"], 1);
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "字");
+        assert_eq!(labels(&c).iter().map(|l| l.1).collect::<Vec<_>>(), [2, 5]);
+    }
+
+    #[test]
+    fn a_match_can_go_over_the_end_of_a_row_the_terminal_broke() {
+        let (src, mut c) = tall(&["abcdefghhe", "+llo there", "hello"], 3);
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "hello");
+        let got = labels(&c);
+        assert_eq!(
+            got.iter().map(|l| (l.0, l.1)).collect::<Vec<_>>(),
+            [(0, 8), (2, 0)]
+        );
+        // The first match has cells on both rows.
+        let first = &c.jump.as_ref().unwrap().matches[0];
+        assert_eq!(first.cells[0], (0, 8));
+        assert_eq!(first.cells[4], (1, 2));
+        // And a match does not go over a row that is a line of its own.
+        let (src, mut c) = tall(&["abcdefghhe", "llo"], 2);
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "hello");
+        assert!(labels(&c).is_empty());
+    }
+
+    #[test]
+    fn escape_cancels_and_puts_the_cursor_and_the_view_back() {
+        let names: Vec<String> = (0..20).map(|i| format!("l{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let src = rows(&refs);
+        let mut c = copy_at(&src, 10, 1);
+        let before = (c.row, c.col, c.top);
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "l1");
+        c.jump_key(&src, JumpKey::Escape);
+        assert!(c.jump.is_none());
+        assert_eq!((c.row, c.col, c.top), before);
+    }
+
+    #[test]
+    fn enter_goes_to_the_first_match_after_the_cursor_and_wraps() {
+        let (src, mut c) = tall(&["ab cd ab", "ab"], 2);
+        c.go(&src, 0, 3);
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "ab");
+        c.jump_key(&src, JumpKey::Enter);
+        assert_eq!(at(&c), (0, 6));
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "ab");
+        c.jump_key(&src, JumpKey::Enter);
+        assert_eq!(at(&c), (1, 0));
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "ab");
+        c.jump_key(&src, JumpKey::Enter);
+        assert_eq!(at(&c), (0, 0));
+    }
+
+    #[test]
+    fn the_view_shows_the_matches_and_their_labels() {
+        let (src, mut c) = tall(&["ab xx ab"], 1);
+        jump_open(&mut c, &src);
+        type_jump(&mut c, &src, "ab");
+        let view = c.view(&src);
+        let hit = theme::style(Role::JumpMatch);
+        let tag = theme::style(Role::JumpLabel);
+        assert_eq!(view[0][0].style, hit);
+        assert_eq!(view[0][1].style, hit);
+        // The label stands on the cell after the match.
+        assert_eq!(view[0][2].style, tag);
+        assert_eq!(view[0][2].text.len(), 1);
+        assert_eq!(view[0][4].style, Style::default());
+    }
+
+    /// How long the matches and labels of a jump take on a full 200 by 60 pane of dense text
+    /// (run with `--release` and `--nocapture` to see the numbers; the limit here is for the
+    /// slow debug build).
+    #[test]
+    fn a_jump_on_a_full_dense_pane_is_fast() {
+        let mut config = arcade_term::TermConfig::new(200, 60);
+        config.scrollback_lines = 1000;
+        let mut term = arcade_term::Term::new(config).unwrap();
+        let words = [
+            "the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog", "e", "a",
+        ];
+        for y in 0..60 {
+            let mut line = String::new();
+            let mut i = y;
+            while line.len() < 199 {
+                line.push_str(words[i % words.len()]);
+                line.push(' ');
+                i += 3;
+            }
+            term.feed(format!("{}\r\n", &line[..199]).as_bytes());
+        }
+        let mut c = Copy::enter(&term, term.cursor_position(), 200, 60);
+        c.apply(&term, CopyCommand::Jump);
+        let mut times = Vec::new();
+        for typed in ['e', 'r', ' '] {
+            let start = std::time::Instant::now();
+            c.jump_key(&term, JumpKey::Char(typed));
+            let spent = start.elapsed();
+            let n = c.jump.as_ref().unwrap().matches.len();
+            println!("typed {typed:?}: {n} matches, {spent:?}");
+            times.push(spent);
+        }
+        let start = std::time::Instant::now();
+        let view = c.view(&term);
+        println!("drawing the view with labels: {:?}", start.elapsed());
+        assert_eq!(view.len(), 60);
+        assert!(times.iter().all(|t| t.as_millis() < 500), "{times:?}");
     }
 
     fn open(c: &mut Copy, src: &Rows) -> Outcome {

@@ -32,6 +32,8 @@ pub enum CopyCommand {
     Yank,
     YankStay,
     OpenLink,
+    /// Open a jump: type what to go to, then the label of a match.
+    Jump,
     Cancel,
     Exit,
 }
@@ -184,6 +186,7 @@ const NAMES: &[(&str, Command)] = &[
     ("copy.yank", Command::Copy(CopyCommand::Yank)),
     ("copy.yank-stay", Command::Copy(CopyCommand::YankStay)),
     ("copy.open-link", Command::Copy(CopyCommand::OpenLink)),
+    ("copy.jump", Command::Copy(CopyCommand::Jump)),
     ("copy.cancel", Command::Copy(CopyCommand::Cancel)),
     ("copy.exit", Command::Copy(CopyCommand::Exit)),
     ("list.up", Command::List(ListCommand::Up)),

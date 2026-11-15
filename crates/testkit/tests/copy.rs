@@ -38,12 +38,20 @@ fn bar(client: &TestClient) -> String {
     format!("{} ", client.status_row())
 }
 
+/// The word on the bar that says the pane is in copy mode: `COPY`, or `VISUAL` and `V-LINE`
+/// while a selection is active, or `JUMP` while a jump is open.
+fn copy_word(bar: &str) -> Option<&'static str> {
+    ["COPY", "VISUAL", "V-LINE", "JUMP"]
+        .into_iter()
+        .find(|w| bar.contains(&format!(" {w} ")) || bar.trim_end().ends_with(&format!(" {w}")))
+}
+
 fn in_copy_mode(client: &mut TestClient) -> bool {
-    client.wait_until(WAIT, |c| bar(c).contains(" COPY "))
+    client.wait_until(WAIT, |c| copy_word(&bar(c)).is_some())
 }
 
 fn left_copy_mode(client: &mut TestClient) -> bool {
-    client.wait_until(WAIT, |c| !bar(c).contains(" COPY "))
+    client.wait_until(WAIT, |c| copy_word(&bar(c)).is_none())
 }
 
 fn enter(client: &mut TestClient) {
@@ -579,4 +587,67 @@ fn the_cursor_stays_on_its_line_when_identical_lines_are_cut_from_a_full_scrollb
         client.screen_text()
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_bar_tells_copy_visual_v_line_and_jump_apart() {
+    let daemon = TestDaemon::start();
+    let mut client = client(&daemon);
+    client.type_line("echo state-check");
+    client.wait_for_row("state-check").unwrap();
+    enter(&mut client);
+    let word = |client: &mut TestClient, want: &str| {
+        let ok = client.wait_until(WAIT, |c| copy_word(&bar(c)) == Some(want));
+        assert!(ok, "wanted {want}: {}", bar(client));
+    };
+    word(&mut client, "COPY");
+    client.send(b"v");
+    word(&mut client, "VISUAL");
+    client.send(b"V");
+    word(&mut client, "V-LINE");
+    client.send(b"V");
+    word(&mut client, "COPY");
+    client.send(b"s");
+    word(&mut client, "JUMP");
+    client.send(b"st");
+    assert!(client.wait_until(WAIT, |c| bar(c).contains("JUMP st")));
+    client.send(ESC);
+    word(&mut client, "COPY");
+}
+
+#[test]
+fn a_jump_label_moves_the_cursor_and_a_selection_follows_it_to_the_copy() {
+    let daemon = TestDaemon::start();
+    let mut client = client(&daemon);
+    client.type_line("printf 'first mark\\nsecond line\\nthird mark here\\n'");
+    client.wait_for_row("third mark here").unwrap();
+    enter(&mut client);
+    // Select from the cursor's row, then jump to `third`: the jump extends the selection.
+    search(&mut client, false, "first mark");
+    client.wait_for_row("first mark").unwrap();
+    client.send(b"V");
+    client.send(b"sthird");
+    // The label stands right after the match, in its own colour; read it off the screen.
+    let label = {
+        let mut found = None;
+        let ok = client.wait_until(WAIT, |c| {
+            let row = c.screen_rows().iter().position(|r| r.starts_with("third"));
+            if let Some(y) = row {
+                let text = c.screen_rows()[y].clone();
+                let at = text.find("third").unwrap() + "third".len();
+                found = text[at..].chars().next();
+            }
+            found.is_some_and(|ch| ch.is_ascii_lowercase() && ch != ' ')
+        });
+        assert!(ok, "{}", client.screen_text());
+        found.unwrap()
+    };
+    client.send(label.to_string().as_bytes());
+    assert!(client.wait_until(WAIT, |c| copy_word(&bar(c)) == Some("V-LINE")));
+    client.send(b"y");
+    wait_clipboard(&mut client, 1);
+    assert_eq!(
+        client.clipboard_writes[0],
+        b"first mark\nsecond line\nthird mark here".to_vec()
+    );
 }

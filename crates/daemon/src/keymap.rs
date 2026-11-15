@@ -708,6 +708,7 @@ impl Keymap {
         place(t, 'y', None, "copy.yank");
         place(t, 'Y', None, "copy.yank-stay");
         place(t, 'o', None, "copy.open-link");
+        place(t, 's', None, "copy.jump");
         place(t, 'q', None, "copy.exit");
         let ctrl = |c: char| Key {
             code: Code::Char(c),
@@ -985,6 +986,7 @@ mod tests {
             ("y", "copy.yank"),
             ("Y", "copy.yank-stay"),
             ("o", "copy.open-link"),
+            ("s", "copy.jump"),
             ("escape", "copy.cancel"),
             ("q", "copy.exit"),
         ] {

@@ -478,7 +478,12 @@ impl Server {
         let Some(copy) = pane.copy.as_mut() else {
             return Err("the pane is not in copy mode".to_string());
         };
-        match copy.apply(&pane.term, command) {
+        let outcome = copy.apply(&pane.term, command);
+        // The word on the status bar may have changed (a selection began or ended, a jump opened).
+        if let Some(s) = self.sessions.get_mut(&ctx.session) {
+            s.chrome_dirty = true;
+        }
+        match outcome {
             Outcome::Moved => Ok(String::new()),
             Outcome::Message(message) => {
                 self.set_message(ctx.session, &message);

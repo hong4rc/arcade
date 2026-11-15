@@ -8,7 +8,7 @@ use crate::theme;
 
 fn status_info(
     s: &Session,
-    copy: bool,
+    copy: Option<crate::status::CopyState>,
     unlock_key: Option<String>,
     notices: &crate::notify::Store,
     hint: Option<String>,
@@ -304,7 +304,11 @@ impl Server {
             };
             session.screen.draw_dividers(&dividers, origin, focus_rect);
             if let Some(y) = status_row(rows, status_position) {
-                let copy_on = self.panes.get(&focus).is_some_and(|p| p.copy.is_some());
+                let copy_on = self
+                    .panes
+                    .get(&focus)
+                    .and_then(|p| p.copy.as_ref())
+                    .map(crate::copy::Copy::state);
                 // The key hint is off unless `[keys] hint` is set; the line that says which keys give
                 // the direction of a swap is not a hint but the question the swap is waiting on.
                 let swapping =

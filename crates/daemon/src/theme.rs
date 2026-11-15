@@ -34,6 +34,11 @@ pub enum Role {
     PickerHeading,
     /// The cells of copy mode that are selected or found by a search.
     Selection,
+    /// The status bar word that says a selection is active (`VISUAL`, `V-LINE`) or a jump is open.
+    IndicatorSelect,
+    /// The cells that match what was typed in a jump, and the one-letter label of a match.
+    JumpMatch,
+    JumpLabel,
     /// The mark of a notification, one role for each class.
     NoticeApproval,
     NoticeInput,
@@ -103,6 +108,23 @@ pub fn style(role: Role) -> Style {
         Role::PickerSelected => Style {
             fg: Color::Indexed(0),
             bg: Color::Indexed(4),
+            bold: true,
+            ..Style::default()
+        },
+        Role::IndicatorSelect => Style {
+            fg: Color::Indexed(0),
+            bg: Color::Indexed(5),
+            bold: true,
+            ..Style::default()
+        },
+        Role::JumpMatch => Style {
+            fg: Color::Indexed(0),
+            bg: Color::Indexed(3),
+            ..Style::default()
+        },
+        Role::JumpLabel => Style {
+            fg: Color::Indexed(15),
+            bg: Color::Indexed(1),
             bold: true,
             ..Style::default()
         },

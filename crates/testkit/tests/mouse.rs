@@ -61,12 +61,19 @@ fn bar(client: &TestClient) -> String {
     format!("{} ", client.status_row())
 }
 
+/// The bar's word for copy mode: `COPY`, or `VISUAL` once a selection exists.
+fn is_copy(bar: &str) -> bool {
+    ["COPY", "VISUAL", "V-LINE"]
+        .iter()
+        .any(|w| bar.contains(&format!(" {w} ")))
+}
+
 fn in_copy_mode(client: &mut TestClient) -> bool {
-    client.wait_until(WAIT, |c| bar(c).contains(" COPY "))
+    client.wait_until(WAIT, |c| is_copy(&bar(c)))
 }
 
 fn left_copy_mode(client: &mut TestClient) -> bool {
-    client.wait_until(WAIT, |c| !bar(c).contains(" COPY "))
+    client.wait_until(WAIT, |c| !is_copy(&bar(c)))
 }
 
 /// Split the pane in two, side by side; the new pane on the right has the focus. Returns the
@@ -163,7 +170,7 @@ fn a_click_moves_the_focus_to_the_pane_and_a_click_elsewhere_changes_nothing() {
     // Clicking the pane that has the focus changes nothing either, and does not open copy mode.
     click(&mut client, divider + 8, 5);
     assert_eq!(client.focused_pane_id(), right);
-    assert!(!bar(&client).contains(" COPY "));
+    assert!(!is_copy(&bar(&client)));
 }
 
 #[test]
@@ -242,7 +249,7 @@ fn a_program_that_did_not_ask_gets_nothing_and_a_wheel_it_asked_for_is_passed_on
     wheel_up(&mut asked, 10, 4);
     wheel_down(&mut asked, 10, 4);
     wait_screen_has(&mut asked, "^[[<64;11;5M^[[<65;11;5M");
-    assert!(!bar(&asked).contains(" COPY "));
+    assert!(!is_copy(&bar(&asked)));
 }
 
 #[test]
@@ -281,12 +288,12 @@ fn copy_mode_opened_with_the_keyboard_does_not_close_when_the_wheel_reaches_the_
     wheel_down(&mut client, 10, 10);
     wheel_down(&mut client, 10, 10);
     quiet(&mut client);
-    assert!(bar(&client).contains(" COPY "), "{}", bar(&client));
+    assert!(is_copy(&bar(&client)), "{}", bar(&client));
     // And once the wheel took it further up, it still stays when it comes back down.
     wheel_up(&mut client, 10, 10);
     wheel_down(&mut client, 10, 10);
     quiet(&mut client);
-    assert!(bar(&client).contains(" COPY "));
+    assert!(is_copy(&bar(&client)));
 }
 
 #[test]
@@ -328,7 +335,7 @@ fn dragging_selects_text_and_letting_go_does_not_copy() {
     quiet(&mut client);
     // Nothing was copied by letting go.
     assert!(client.clipboard_writes.is_empty());
-    assert!(bar(&client).contains(" COPY "));
+    assert!(is_copy(&bar(&client)));
     // The copy key copies what was selected.
     client.send(b"y");
     let ok = client.wait_until(WAIT, |c| !c.clipboard_writes.is_empty());
@@ -348,7 +355,7 @@ fn a_click_without_a_drag_does_not_open_copy_mode() {
     report(&mut client, 32, 2, 3, false);
     release(&mut client, 2, 3);
     quiet(&mut client);
-    assert!(!bar(&client).contains(" COPY "));
+    assert!(!is_copy(&bar(&client)));
 }
 
 #[test]
@@ -392,7 +399,7 @@ fn a_program_with_the_mouse_gets_the_drag_and_alt_makes_arcade_select_instead() 
     mouse_program(&mut client, "1002h\\033[?1006h");
     drag(&mut client, (1, 3), (6, 3));
     wait_screen_has(&mut client, "^[[<32;");
-    assert!(!bar(&client).contains(" COPY "));
+    assert!(!is_copy(&bar(&client)));
     // With Alt held, the program is left out and a selection begins.
     client.send(b"\x03");
     let mut other = daemon
@@ -438,6 +445,6 @@ fn a_list_a_prompt_and_the_lock_keep_the_mouse_from_the_pane() {
     click(&mut client, 5, 3);
     wheel_up(&mut client, divider + 5, 3);
     quiet(&mut client);
-    assert!(!bar(&client).contains(" COPY "));
+    assert!(!is_copy(&bar(&client)));
     assert_eq!(client.focused_pane_id(), right);
 }

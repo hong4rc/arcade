@@ -2,6 +2,7 @@
 //! keys that go on to the program in the pane.
 
 use super::*;
+use crate::copy::JumpKey;
 use crate::keymap::{self, Binding, Keymap, typed_name};
 use crate::keytools;
 use crate::picker::PickerKind;
@@ -524,6 +525,32 @@ impl Server {
         let in_copy = self.panes.get(&pane).is_some_and(|p| p.copy.is_some());
         if !in_copy {
             self.send_key_to_pane(pane, original, raw);
+            return;
+        }
+        // While a jump is open every key belongs to it.
+        let jumping = self
+            .panes
+            .get(&pane)
+            .and_then(|p| p.copy.as_ref())
+            .is_some_and(|c| c.jump.is_some());
+        if jumping {
+            let key = match original.code {
+                Code::Named(Named::Escape) => Some(JumpKey::Escape),
+                Code::Named(Named::Enter) => Some(JumpKey::Enter),
+                Code::Named(Named::Backspace) => Some(JumpKey::Backspace),
+                _ => typed_text(original, raw)
+                    .and_then(|t| t.chars().next())
+                    .map(JumpKey::Char),
+            };
+            if let Some(key) = key
+                && let Some(p) = self.panes.get_mut(&pane)
+                && let Some(copy) = p.copy.as_mut()
+            {
+                copy.jump_key(&p.term, key);
+                if let Some(s) = self.sessions.get_mut(&session_id) {
+                    s.chrome_dirty = true;
+                }
+            }
             return;
         }
         if let Some(b) = Keymap::get(&self.keymap.copy, original).cloned() {
