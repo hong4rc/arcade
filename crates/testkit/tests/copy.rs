@@ -433,16 +433,25 @@ fn the_authors_movement_keys_and_a_rebound_key_work_in_copy_mode() {
 /// A pane with a scrollback of 200 lines that has printed 1 to 300, and a background job that
 /// prints `more` further lines (numbered from 5001) a moment from now, while copy mode is open,
 /// and then writes the returned file. The test waits for that file instead of sleeping.
+///
+/// The job is started from a subshell: an interactive shell prints `[1] <process number>` for a
+/// job it starts itself, and the search for "250" finds that line (the nearest match going up)
+/// whenever the process number happens to contain 250. A subshell prints nothing.
 fn full_scrollback_with_late_output(daemon: &TestDaemon, more: usize) -> (TestClient, PathBuf) {
     let dir = scratch();
     let marker = dir.join("printed");
     let mut client = client(daemon);
     client.type_line(&format!(
-        "seq 1 300; (sleep 1; seq 5001 {}; touch '{}') &",
+        "seq 1 300; ( (sleep 1; seq 5001 {}; touch '{}') & )",
         5000 + more,
         marker.display()
     ));
     client.wait_for_row("300").unwrap();
+    assert!(
+        client.screen_rows().iter().all(|r| !r.starts_with("[1]")),
+        "the shell printed a job line, which a search for a number can find:\n{}",
+        client.screen_text()
+    );
     enter(&mut client);
     search(&mut client, false, "250");
     client.wait_for_row("250").unwrap();
