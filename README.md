@@ -9,8 +9,13 @@ you when a program in a pane needs you.
 On macOS (Apple silicon) and Linux:
 
 ```sh
+brew tap hong4rc/tap
+brew trust --tap hong4rc/tap
 brew install hong4rc/tap/arcade
 ```
+
+The `brew trust` line is needed on recent Homebrew versions, which refuse to load a formula from
+a tap outside the official ones until you trust the tap.
 
 After an upgrade, run `arcade kill-server` once so that the old background process makes way for
 the new version. This ends the running sessions.
