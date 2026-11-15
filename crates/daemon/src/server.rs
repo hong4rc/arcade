@@ -1048,6 +1048,19 @@ impl Server {
 
     fn attach(&mut self, id: u64, request: AttachRequest) {
         let (cols, rows) = (request.cols.max(1), request.rows.max(1));
+        if let Some(message) = self.attach_from_inside(&request) {
+            self.send(
+                id,
+                &ServerMessage::CommandResult {
+                    ok: false,
+                    output: message,
+                },
+            );
+            if let Some(c) = self.clients.get_mut(&id) {
+                c.close_after_flush = true;
+            }
+            return;
+        }
         let session_id = match self.find_or_create(&request) {
             Ok(session_id) => session_id,
             Err(message) => {
@@ -1065,6 +1078,31 @@ impl Server {
             }
         };
         self.bind_client(id, session_id, cols, rows);
+    }
+
+    /// Why an attach request is refused when it comes from a pane of the session it asks for: the
+    /// screen would show Arcade drawing itself and the client that is there would be thrown out.
+    /// The request says where it comes from in its environment (`ARCADE` is this daemon's socket,
+    /// `ARCADE_PANE` the pane); an Arcade of another socket is real nesting and goes through.
+    fn attach_from_inside(&self, request: &AttachRequest) -> Option<String> {
+        if request.create == CreateMode::Always {
+            return None;
+        }
+        let value = |name: &str| {
+            request
+                .env
+                .iter()
+                .find_map(|e| e.strip_prefix(name)?.strip_prefix('='))
+        };
+        let socket = value("ARCADE")?;
+        if std::path::Path::new(socket) != self.socket_path.as_path() {
+            return None;
+        }
+        let pane: u64 = value("ARCADE_PANE")?.parse().ok()?;
+        let (session, _) = self.locate_pane(pane)?;
+        (self.pick_session(request) == Some(session)).then(|| {
+            "already inside Arcade: this is a pane of that session; use `arcade new` or `arcade attach -t <session>` to go to another one".to_string()
+        })
     }
 
     /// Make `id` the client of the session. The session's earlier client, if another, is told and
@@ -1524,6 +1562,8 @@ impl Server {
             }
         }
         if let Some(title) = new_title {
+            // A title is the program's own words: it is kept no longer than it is ever shown.
+            let title: String = title.chars().take(frame::TITLE_LIMIT).collect();
             pane.title = Some(title).filter(|t| !t.is_empty());
         }
         // Only the latest write counts, and it waits until the output has been passed on.

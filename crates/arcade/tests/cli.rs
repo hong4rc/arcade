@@ -518,6 +518,127 @@ fn new_and_attach_inside_a_pane_switch_the_screen_instead_of_nesting() {
     host.wait_for_text("code-0").unwrap();
 }
 
+/// The number of the pane the host's shell runs in, read from its `ARCADE_PANE`.
+fn pane_number(host: &mut PtyHost) -> u64 {
+    host.type_line("echo pane-number-$((ARCADE_PANE + 0))-end");
+    let mut found = None;
+    let ok = host.wait_until(WAIT, |h| {
+        found = h.screen_rows().iter().find_map(|r| {
+            let rest = r.strip_prefix("pane-number-")?;
+            rest.strip_suffix("-end")?.parse::<u64>().ok()
+        });
+        found.is_some()
+    });
+    assert!(ok, "{}", host.screen_text());
+    found.unwrap()
+}
+
+/// Ask the daemon to attach, as a client with this environment, and return its first answer
+/// after the version check.
+fn raw_attach(socket: &Path, env: Vec<String>) -> ServerMessage {
+    use std::io::{Read, Write};
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream.set_read_timeout(Some(WAIT)).unwrap();
+    let mut out = Vec::new();
+    encode(
+        &ClientMessage::Hello {
+            version: PROTOCOL_VERSION,
+        },
+        &mut out,
+    )
+    .unwrap();
+    encode(
+        &ClientMessage::Attach(arcade_proto::AttachRequest {
+            session: Some("a".to_string()),
+            create: arcade_proto::CreateMode::Never,
+            new_name: None,
+            command: Vec::new(),
+            cwd: "/".to_string(),
+            env,
+            cols: 80,
+            rows: 24,
+        }),
+        &mut out,
+    )
+    .unwrap();
+    stream.write_all(&out).unwrap();
+    let mut decoder = Decoder::<ServerMessage>::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        while let Ok(Some(message)) = decoder.next_message() {
+            if !matches!(message, ServerMessage::HelloOk { .. }) {
+                return message;
+            }
+        }
+        let n = stream.read(&mut buf).expect("the daemon answered");
+        assert!(n > 0, "the daemon closed the connection");
+        decoder.push(&buf[..n]);
+    }
+}
+
+/// Plain `arcade` typed inside a pane would attach Arcade to the session it runs in: it prints
+/// a line and does nothing, and the client that is there stays.
+#[test]
+fn plain_arcade_inside_a_pane_does_not_attach() {
+    let env = Env::new();
+    let mut host = env.host(&["new", "-s", "a"]);
+    host.wait_for_prompt().unwrap();
+    let titles = host.titles.len();
+    host.type_line("arcade; echo code-$((40 + 2 - 41))");
+    host.wait_for_text("already inside Arcade").unwrap();
+    host.wait_for_text("code-1").unwrap();
+    let ls = env.sessions();
+    assert!(ls.contains("a: 1 window, 1 pane (attached)"), "{ls}");
+    assert_eq!(ls.lines().count(), 1, "{ls}");
+    // The client is still on the screen, with the shell under it, and the window title did not
+    // change.
+    assert!(host.screen_rows().last().is_some_and(|r| r.contains(" a ")));
+    assert_eq!(host.titles.len(), titles, "{:?}", host.titles);
+}
+
+/// A request that says it comes from a pane of the session it asks for is refused by the
+/// daemon, whatever the client did; the client that is attached stays.
+#[test]
+fn the_daemon_refuses_an_attach_from_a_pane_of_that_session() {
+    let env = Env::new();
+    let mut host = env.host(&["new", "-s", "a"]);
+    host.wait_for_prompt().unwrap();
+    let pane = pane_number(&mut host);
+    let reply = raw_attach(
+        &env.socket,
+        vec![
+            format!("ARCADE={}", env.socket.display()),
+            format!("ARCADE_PANE={pane}"),
+        ],
+    );
+    match reply {
+        ServerMessage::CommandResult { ok: false, output } => {
+            assert!(output.contains("already inside Arcade"), "{output}");
+        }
+        other => panic!("not refused: {other:?}"),
+    }
+    let ls = env.sessions();
+    assert!(ls.contains("a: 1 window, 1 pane (attached)"), "{ls}");
+    assert!(host.screen_rows().last().is_some_and(|r| r.contains(" a ")));
+}
+
+/// An Arcade of another socket inside a pane is real nesting, and attaches.
+#[test]
+fn an_attach_from_a_pane_of_another_daemon_is_allowed() {
+    let env = Env::new();
+    let mut host = env.host(&["new", "-s", "a"]);
+    host.wait_for_prompt().unwrap();
+    let pane = pane_number(&mut host);
+    let reply = raw_attach(
+        &env.socket,
+        vec![
+            "ARCADE=/tmp/arc-some-other-socket".to_string(),
+            format!("ARCADE_PANE={pane}"),
+        ],
+    );
+    assert!(matches!(reply, ServerMessage::Attached { .. }), "{reply:?}");
+}
+
 /// `arcade new -d` creates a session and does not attach, with or without a terminal.
 #[test]
 fn new_with_d_creates_a_session_without_attaching() {

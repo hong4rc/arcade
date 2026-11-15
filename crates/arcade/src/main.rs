@@ -298,6 +298,14 @@ fn attach_command(
     new_name: Option<String>,
     command: Vec<String>,
 ) -> u8 {
+    // Every way to attach passes through here, so this is the one place that keeps an Arcade
+    // from attaching to the daemon it runs inside of.
+    if in_own_pane(options) {
+        eprintln!(
+            "arcade: already inside Arcade; use `arcade new` or `arcade attach -t <session>` to go to another session"
+        );
+        return 1;
+    }
     if !host::is_tty(0) || !host::is_tty(1) {
         eprintln!("arcade: the keyboard and screen must be a terminal");
         return 1;

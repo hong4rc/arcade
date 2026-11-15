@@ -99,6 +99,30 @@ fn control_characters_in_a_title_are_dropped() {
     assert_eq!(last_title(&client), "abc \u{b7} thu:1");
 }
 
+/// A title is the program's own words: a long one is cut, and the host's window title never grows
+/// past the limit however often it is set.
+#[test]
+fn a_long_title_is_cut_to_the_limit() {
+    let daemon = TestDaemon::start();
+    let mut client = attach(&daemon);
+    client.type_line(
+        "x=$(printf '%01000d' 0 | tr 0 q); printf '\\033]2;%s\\007' \"$x\"; echo set-$((40 + 2))",
+    );
+    client.wait_for_text("set-42").unwrap();
+    wait_title(&mut client, "qqqq");
+    for title in &client.titles {
+        assert!(
+            title.chars().count() <= 200 + " \u{b7} thu:1".len(),
+            "{}",
+            title.len()
+        );
+    }
+    assert_eq!(
+        last_title(&client).chars().filter(|c| *c == 'q').count(),
+        200
+    );
+}
+
 #[test]
 fn the_title_is_not_sent_again_while_nothing_changes() {
     let daemon = TestDaemon::start();

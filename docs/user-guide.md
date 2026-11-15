@@ -41,7 +41,7 @@ The option `--socket <path>`, placed first on the command line, uses another soc
 | `arcade keys list [--host kitty\|legacy] [<file>]` | Print every key binding in force, table by table, with where it comes from (`default` or `config`), then the bindings that cannot work. Reads the file only, so it needs no daemon and gives the same text every time |
 | `arcade keys test [<file>]` | Show, for each key you press, the name Arcade receives, its bytes and what it does in each table. `Ctrl+C` quits and the terminal is given back as it was |
 
-**When typed inside an Arcade pane** (Arcade sets the variables `ARCADE` and `ARCADE_PANE`): `arcade new` and `arcade attach` do not nest an Arcade inside Arcade. They switch the screen you are looking at to the other session. `arcade new -d` still only creates a session and changes nothing.
+**When typed inside an Arcade pane** (Arcade sets the variables `ARCADE` and `ARCADE_PANE`): `arcade new` and `arcade attach` do not nest an Arcade inside Arcade. They switch the screen you are looking at to the other session. `arcade new -d` still only creates a session and changes nothing. Plain `arcade` (and any other way that would attach) does nothing there: it prints `already inside Arcade` and exits with code 1, because attaching would draw Arcade inside the pane it runs in and throw out the client that is already there. The daemon refuses such an attach too. An Arcade of another socket (`--socket` or `ARCADE_SOCKET` set to a different path) is real nesting and still attaches.
 
 ## 3. Default keys
 

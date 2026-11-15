@@ -41,7 +41,7 @@ fn status_info(
 const MARK_MIN_WIDTH: u16 = 12;
 
 /// The longest pane title that goes to the host terminal, in characters.
-const TITLE_LIMIT: usize = 200;
+pub(super) const TITLE_LIMIT: usize = 200;
 
 /// Text from a program or a name, made safe to put inside an escape sequence for the host
 /// terminal: no control characters of any kind, and not longer than `limit` characters.
