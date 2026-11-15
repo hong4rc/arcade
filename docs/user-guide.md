@@ -145,6 +145,8 @@ Every list has a filter box on its first line: type letters and only the lines t
 
 The key list (prefix, then `?`) filters by key and by command name, for example type `zoom`.
 
+The box keeps one size and one place for as long as it is open. Its width comes from the widest line any state could show (every line in full, the key line, the title) and its height from the whole list, so typing in the filter box only blanks rows and never moves or resizes the box. A line wider than the box, and the lines below the last row, are cut with an ellipsis (`…`). On a small terminal the box shrinks to fit the screen. The last line of every list says which keys work right now, built from your key table: if you rebind a key in `[keys.list]`, the line shows the new key, and a key you unbind disappears from it.
+
 ### 3.5 Tree of sessions, windows and panes: jumping, lifting and putting down
 
 The prefix then `t` opens a tree with three tiers: sessions, the windows inside them, the panes inside those. A window line shows the window's name as the status bar does. A pane line shows the title the program set (or the name of the program the pane started if there is none), then `in <directory>` with the last part of the directory the pane stands in, and `running <program>` when a program other than the first one is in the foreground, for example `zsh in arcade running nvim`. The filter looks at all of that. The place you are in is marked (and the session and window carry a `*`); when the tree opens, the branch that holds that place is open and the other branches are closed. The tree does not update by itself over time; if something disappears while the tree is open, the tree is rebuilt at the next drawing and the choice moves to the nearest item that still exists.
@@ -160,7 +162,7 @@ The prefix then `t` opens a tree with three tiers: sessions, the windows inside 
 | `Esc` | Something lifted: put it down, the tree stays open. Nothing lifted: close the tree, and the screen returns exactly as it was |
 | Letters, digits, punctuation | Go into the filter box; the tree turns flat, each matching line with its path, for example `work › 2 server › zsh` |
 
-The bottom line of the box always says in words what `Enter` will do, or why `Enter` does nothing.
+The box has the same fixed size and place as the other lists (section 3.4). It has two lines at the bottom. The first says in words what `Enter` will do (for example `Enter: put pane beside 2 server`), or why `Enter` does nothing (for example `Enter does nothing: nothing matches`). The second is the key line, and it follows what the tree is doing: looking (`up down move  left right close/open  enter go  space lift  type to filter  esc close`), moving something (`up down choose where  enter put down  esc cancel the lift`), or filtering (`up down move  enter go  ctrl+u clear filter  esc close`, without folding and lifting). While something is lifted the title says what, for example `Tree · moving pane zsh`.
 
 A pane line carries the mark of its own notification (`[!]`, `[?]`, `[x]` or `[i]`, section 5.8), and a window or session line carries the most urgent mark of the panes inside it, even when its branch is closed, so that you can see from the tree where something is waiting. The marks have the same colours as on the status bar.
 
