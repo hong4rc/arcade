@@ -733,7 +733,6 @@ impl Keymap {
             &[],
             false,
         );
-        bind(t, plain(Code::Named(Named::Enter)), "copy.yank", &[], false);
         bind(
             t,
             plain(Code::Named(Named::Escape)),
@@ -983,7 +982,6 @@ mod tests {
             ("v", "copy.select-char"),
             ("V", "copy.select-line"),
             ("y", "copy.yank"),
-            ("enter", "copy.yank"),
             ("Y", "copy.yank-stay"),
             ("escape", "copy.cancel"),
             ("q", "copy.exit"),

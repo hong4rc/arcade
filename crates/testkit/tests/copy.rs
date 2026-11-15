@@ -250,6 +250,46 @@ fn the_capital_y_copies_and_stays_in_copy_mode() {
 }
 
 #[test]
+fn enter_does_not_copy_and_the_selection_stays() {
+    let daemon = TestDaemon::start();
+    let mut client = client(&daemon);
+    client.type_line("echo no-enter-copy");
+    client.wait_for_row("no-enter-copy").unwrap();
+    enter(&mut client);
+    search(&mut client, false, "no-enter-copy");
+    client.wait_for_row("no-enter-copy").unwrap();
+    client.send(b"V\r");
+    std::thread::sleep(Duration::from_millis(300));
+    client.read_more(std::time::Instant::now() + Duration::from_millis(100));
+    assert!(client.clipboard_writes.is_empty());
+    assert!(in_copy_mode(&mut client), "{}", bar(&client));
+    // The selection is still there: the copy key copies it.
+    client.send(b"y");
+    wait_clipboard(&mut client, 1);
+    assert_eq!(client.clipboard_writes[0], b"no-enter-copy".to_vec());
+}
+
+#[test]
+fn lines_after_characters_take_the_rows_from_the_anchor_to_the_cursor() {
+    let daemon = TestDaemon::start();
+    let mut client = client(&daemon);
+    client.type_line("printf 'alpha one\\nbeta two\\ngamma three\\ndelta four\\n'");
+    client.wait_for_row("delta four").unwrap();
+    enter(&mut client);
+    search(&mut client, false, "delta four");
+    client.wait_for_row("delta four").unwrap();
+    // Characters from the middle of the last row up to the middle of the first, then lines.
+    client.send(b"wvkkk");
+    client.send(b"V");
+    client.send(b"y");
+    wait_clipboard(&mut client, 1);
+    assert_eq!(
+        client.clipboard_writes[0],
+        b"alpha one\nbeta two\ngamma three\ndelta four".to_vec()
+    );
+}
+
+#[test]
 fn the_paste_key_writes_what_was_copied_into_the_pane() {
     let daemon = TestDaemon::start();
     let mut client = client(&daemon);

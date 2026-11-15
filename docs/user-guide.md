@@ -121,8 +121,8 @@ These keys do not repeat: hold the modifier and press again.
 | `Ctrl+b` / `Ctrl+f`, `PageUp` / `PageDown` | A whole page up / down |
 | `/` / `?` | Search forward / backward |
 | `n` / `N` | Next / previous search result |
-| `v` / `V` | Start selecting by character / by line |
-| `y` or `Enter` | Copy the selection and leave |
+| `v` / `V` | Start selecting by character / by line. The same key again drops the selection; the other one keeps the starting point and changes the kind (`V` after `v` takes whole rows from the starting row to the cursor row, `v` after `V` goes back to characters) |
+| `y` | Copy the selection and leave (`Enter` does nothing in copy mode, so it cannot copy by accident; bind it in `[keys.copy]` if you want it to) |
 | `Y` | Copy the selection and stay in copy mode |
 | `q` | Leave |
 | `Esc` | Cancel (drop the selection, or leave if nothing is selected) |
