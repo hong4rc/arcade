@@ -41,6 +41,14 @@ pub struct ClipboardConfig {
     pub allow_pane_write: bool,
 }
 
+/// How a link is opened from copy mode.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct LinksConfig {
+    /// The program and its first arguments; the address is added as the last argument. `None`
+    /// is `open` on macOS and `xdg-open` elsewhere.
+    pub command: Option<Vec<String>>,
+}
+
 /// The four key tables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TableName {
@@ -168,6 +176,7 @@ pub struct Config {
     pub renumber: bool,
     pub scrollback_lines: Option<usize>,
     pub clipboard: ClipboardConfig,
+    pub links: LinksConfig,
     /// Whether the daemon keeps the machine from sleeping because it sat idle.
     pub prevent_sleep: bool,
     pub on_session_end: OnSessionEnd,
@@ -190,6 +199,7 @@ impl Default for Config {
             on_session_end: OnSessionEnd::Switch,
             notification: NotificationConfig::default(),
             timed_repeat_ignored: false,
+            links: LinksConfig::default(),
             clipboard: ClipboardConfig {
                 mode: ClipboardMode::Osc52,
                 command: None,
@@ -885,12 +895,36 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                     );
                 }
             }
+            "links" => {
+                for (n, v) in table.iter() {
+                    match n.get_ref().as_ref() {
+                        "command" => match v.get_ref() {
+                            DeValue::Array(items) if !items.is_empty() => {
+                                config.links.command = Some(
+                                    items
+                                        .iter()
+                                        .filter_map(|i| r.string("command", i).map(str::to_string))
+                                        .collect(),
+                                );
+                            }
+                            _ => r.error(
+                                v.span().start,
+                                "command must be a list of words, the program first (for example [\"open\"])",
+                            ),
+                        },
+                        other => {
+                            r.error(n.span().start, unknown_key("links", other, &["command"]));
+                        }
+                    }
+                }
+            }
             other => r.error(
                 name.span().start,
                 unknown_key(
                     "",
                     other,
                     &[
+                        "links",
                         "keys",
                         "status",
                         "window",

@@ -166,11 +166,19 @@ pub struct LinkSpan {
 pub const LINK_MAX_LEN: usize = 2048;
 
 fn link_at(term: &Terminal<'_, '_>, point: Point) -> Option<String> {
+    let uri = raw_link_at(term, point)?;
+    link_is_safe(&uri).then_some(uri)
+}
+
+/// The address of the link at `point` as the program wrote it, if it is text without control
+/// characters and not longer than 4096 bytes.
+fn raw_link_at(term: &Terminal<'_, '_>, point: Point) -> Option<String> {
     let grid_ref = term.grid_ref(point).ok()?;
-    let mut uri = vec![0u8; LINK_MAX_LEN + 1];
+    let mut uri = vec![0u8; 4097];
     let len = grid_ref.hyperlink_uri(&mut uri).ok()?;
     let uri = std::str::from_utf8(&uri[..len]).ok()?;
-    link_is_safe(uri).then(|| uri.to_string())
+    (!uri.is_empty() && uri.len() <= 4096 && !uri.chars().any(char::is_control))
+        .then(|| uri.to_string())
 }
 
 /// Whether an address can be written into an OSC 8 sequence as it is: printable ASCII only, not
@@ -729,6 +737,14 @@ impl Term {
             x: col,
             y: u32::from(row),
         }))
+    }
+
+    /// The link of a cell of the whole screen (row 0 is the oldest line of the scrollback), as
+    /// the program wrote it. This is for opening it, as one argument; what is drawn on the host
+    /// terminal goes through [`link_is_safe`] instead.
+    pub fn link_at_screen(&self, row: usize, col: u16) -> Option<String> {
+        let y = u32::try_from(row).ok()?;
+        raw_link_at(&self.term, Point::Screen(Coordinate { x: col, y }))
     }
 
     /// The address of the link at `point`, if any, and if it is safe to pass on to the host.

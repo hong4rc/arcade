@@ -20,9 +20,17 @@ pub trait Source {
     fn anchor_row(&self) -> Option<usize> {
         None
     }
+    /// The address of the link (OSC 8) the cell belongs to.
+    fn link_at(&self, _row: usize, _col: u16) -> Option<String> {
+        None
+    }
 }
 
 impl Source for arcade_term::Term {
+    fn link_at(&self, row: usize, col: u16) -> Option<String> {
+        self.link_at_screen(row, col)
+    }
+
     fn total(&self) -> usize {
         self.total_rows()
     }
@@ -62,6 +70,8 @@ pub enum Outcome {
     AskSearch { forward: bool },
     /// Copy this text; leave copy mode afterwards unless `stay`.
     Yank { text: String, stay: bool },
+    /// Open this address with the system's opener.
+    OpenLink { uri: String },
     /// Leave copy mode without copying.
     Exit,
 }
@@ -546,6 +556,15 @@ impl Copy {
                     None => Outcome::Message("nothing is selected".to_string()),
                 };
             }
+            CopyCommand::OpenLink => {
+                return match self.link_under_cursor(src) {
+                    None => Outcome::Message("no link under the cursor".to_string()),
+                    Some(uri) if crate::links::may_open(&uri) => Outcome::OpenLink { uri },
+                    Some(_) => {
+                        Outcome::Message("only http, https and file links are opened".to_string())
+                    }
+                };
+            }
             CopyCommand::Cancel => {
                 if self.selection.take().is_some() {
                     self.dirty = true;
@@ -556,6 +575,44 @@ impl Copy {
             CopyCommand::Exit => return Outcome::Exit,
         }
         Outcome::Moved
+    }
+
+    /// The link the cursor is on: the one the program marked (OSC 8) on that cell, otherwise an
+    /// address written in the text, also when the terminal broke it over several rows.
+    fn link_under_cursor<S: Source>(&self, src: &S) -> Option<String> {
+        if let Some(uri) = src.link_at(self.row, self.col) {
+            return Some(uri);
+        }
+        // The rows of the line the cursor is on (a bounded number each way).
+        const REACH: usize = 40;
+        let total = src.total();
+        let mut first = self.row;
+        while first > 0 && self.row - first < REACH && self.line_at(src, first).continues {
+            first -= 1;
+        }
+        let mut last = self.row;
+        while last + 1 < total && last - self.row < REACH && self.line_at(src, last + 1).continues {
+            last += 1;
+        }
+        let mut text = String::new();
+        let mut at = None;
+        for row in first..=last {
+            let line = self.line_at(src, row);
+            for (col, cell) in line.cells.iter().enumerate() {
+                if cell.width == CellWidth::SpacerTail {
+                    continue;
+                }
+                if row == self.row && col <= usize::from(self.col) {
+                    at = Some(text.len());
+                }
+                text.push_str(if cell.text.is_empty() {
+                    " "
+                } else {
+                    &cell.text
+                });
+            }
+        }
+        crate::links::find_address(&text, at?)
     }
 
     fn vertical<S: Source>(&mut self, src: &S, row: usize) {
@@ -857,6 +914,121 @@ mod tests {
         for command in commands {
             c.apply(src, *command);
         }
+    }
+
+    /// Like `rows` and `copy_at`, for rows of 40 columns.
+    fn wide(spec: &[&str], row: usize, col: u16) -> (Rows, Copy) {
+        let src = Rows(
+            spec.iter()
+                .map(|text| {
+                    let (continues, text) = match text.strip_prefix('+') {
+                        Some(rest) => (true, rest),
+                        None => (false, *text),
+                    };
+                    let mut cells = text_cells(text, Style::default());
+                    cells.resize(40, blank(Style::default()));
+                    Line { cells, continues }
+                })
+                .collect(),
+        );
+        let mut c = Copy::enter(&src, (0, 0), 40, 4);
+        c.go(&src, row, col);
+        (src, c)
+    }
+
+    fn open(c: &mut Copy, src: &Rows) -> Outcome {
+        c.apply(src, CopyCommand::OpenLink)
+    }
+
+    fn opens(uri: &str) -> Outcome {
+        Outcome::OpenLink { uri: uri.into() }
+    }
+
+    #[test]
+    fn a_plain_address_under_the_cursor_is_opened_without_its_trailing_punctuation() {
+        let text = ["see https://a.example/x?y=1, then"];
+        for col in [4, 10, 25] {
+            let (src, mut c) = wide(&text, 0, col);
+            assert_eq!(
+                open(&mut c, &src),
+                opens("https://a.example/x?y=1"),
+                "{col}"
+            );
+        }
+        // Off the address, or on the comma after it.
+        for col in [0, 3, 27, 30] {
+            let (src, mut c) = wide(&text, 0, col);
+            assert_eq!(
+                open(&mut c, &src),
+                Outcome::Message("no link under the cursor".into()),
+                "{col}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_address_the_terminal_broke_over_two_rows_is_one_address() {
+        // The first row is full: that is what a broken line looks like.
+        let text = [
+            "go https://a.example/aaaaaaaaaaaaaaaaaaa",
+            "+aa/path and more",
+        ];
+        let want = opens("https://a.example/aaaaaaaaaaaaaaaaaaaaa/path");
+        let (src, mut c) = wide(&text, 0, 5);
+        assert_eq!(open(&mut c, &src), want);
+        let (src, mut c) = wide(&text, 1, 2);
+        assert_eq!(open(&mut c, &src), want);
+        // A row that does not go on from the one above is another line.
+        let (src, mut c) = wide(
+            &["go https://a.example/aaaaaaaaaaaaaaaaaaa", "aa/path"],
+            0,
+            5,
+        );
+        assert_eq!(
+            open(&mut c, &src),
+            opens("https://a.example/aaaaaaaaaaaaaaaaaaa")
+        );
+    }
+
+    #[test]
+    fn a_row_with_no_address_says_so_and_stays() {
+        let text = ["nothing here", "ftp://a.example/x"];
+        let (src, mut c) = wide(&text, 0, 2);
+        assert!(matches!(open(&mut c, &src), Outcome::Message(m) if m.contains("no link")));
+        let (src, mut c) = wide(&text, 1, 2);
+        assert!(matches!(open(&mut c, &src), Outcome::Message(m) if m.contains("no link")));
+        assert_eq!((c.row, c.col), (1, 2));
+    }
+
+    #[test]
+    fn the_link_the_program_marked_wins_over_an_address_in_the_text() {
+        let mut term = arcade_term::Term::new(arcade_term::TermConfig::new(60, 5)).unwrap();
+        term.feed(
+            b"see https://text.example/ \x1b]8;;https://marked.example/\x1b\\here\x1b]8;;\x1b\\ \
+              \x1b]8;;ftp://bad.example/\x1b\\odd\x1b]8;;\x1b\\",
+        );
+        let mut c = Copy::enter(&term, term.cursor_position(), 60, 5);
+        let row = c.row;
+        // Find the first row of the screen.
+        let first = term.total_rows() - 5;
+        let _ = row;
+        c.go(&term, first, 28);
+        assert_eq!(
+            c.apply(&term, CopyCommand::OpenLink),
+            opens("https://marked.example/")
+        );
+        // On the plain address, the text decides.
+        c.go(&term, first, 8);
+        assert_eq!(
+            c.apply(&term, CopyCommand::OpenLink),
+            opens("https://text.example/")
+        );
+        // A marked link of another kind is refused, not guessed at.
+        c.go(&term, first, 32);
+        assert!(matches!(
+            c.apply(&term, CopyCommand::OpenLink),
+            Outcome::Message(m) if m.contains("only http")
+        ));
     }
 
     #[test]

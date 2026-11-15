@@ -124,8 +124,13 @@ These keys do not repeat: hold the modifier and press again.
 | `v` / `V` | Start selecting by character / by line. The same key again drops the selection; the other one keeps the starting point and changes the kind (`V` after `v` takes whole rows from the starting row to the cursor row, `v` after `V` goes back to characters) |
 | `y` | Copy the selection and leave (`Enter` does nothing in copy mode, so it cannot copy by accident; bind it in `[keys.copy]` if you want it to) |
 | `Y` | Copy the selection and stay in copy mode |
+| `o` | Open the link under the cursor (see "Links" below); copy mode goes on |
 | `q` | Leave |
 | `Esc` | Cancel (drop the selection, or leave if nothing is selected) |
+
+**Links.** A program can mark text as a link (the hidden kind, OSC 8, for example what `ls --hyperlink` or many tools print): Arcade passes those links on to the terminal window, so Ghostty can open them (Cmd+click, or Ctrl+Shift+click while Arcade has the mouse). A link whose address holds a control character, a non-ASCII character or a space, or is longer than 2048 bytes, is not passed on and is drawn as plain text. In copy mode the pane shows its text without the links.
+
+The `o` key of copy mode opens the link the cursor is on. It takes first the hidden link of the cell under the cursor; otherwise an address written in the text (`http://`, `https://` or `file://`, in any case) that the cursor is on, also when the terminal broke it over two rows of the pane. A sentence's punctuation at the end of the address (`. , ; : ! ? ' "`, a closing bracket without an opening one, `>`) is not part of it. Only those three kinds of address are opened; for anything else, or when there is no link under the cursor, the status bar says so and nothing else happens. The address is given to the opener as one single argument, never through a shell. The opener is `open` on macOS and `xdg-open` elsewhere, and can be changed with `[links] command` (a list of words, the program first; the address is added at the end), for example `command = ["firefox", "--new-tab"]`.
 
 If your movement keys take over one of the keys above, the displaced key moves: `e` becomes `j`, `n` becomes `k`, `N` becomes `K`. A key with no place to move to has no key (see section 4).
 
@@ -205,6 +210,7 @@ TOML format. A misspelled key is reported with a suggestion ("did you mean ...")
 | `[clipboard] mode` | `"osc52"`, `"command"` or `"off"` | `"osc52"` |
 | `[clipboard] command` | A command that receives the text on its standard input; required when `mode = "command"` | none |
 | `[clipboard] allow-pane-write` | Let the program in a pane set the clipboard | `true` |
+| `[links] command` | The program that opens a link with `o` in copy mode, as a list of words; the address is added as the last word | `["open"]` on macOS, `["xdg-open"]` elsewhere |
 | `[power] prevent-sleep` | Keep the machine from sleeping on its own while idle, as long as the daemon runs | `true` |
 | `[notification] auto-jump` | Go to the pane that sent a notification out when the terminal window gets the focus back (section 5.8) | `true` |
 | `[notification] push-when-host-focused` | Send a notification out even when the terminal window has the focus, for a pane other than the one in focus | `true` |

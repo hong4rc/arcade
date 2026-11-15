@@ -31,6 +31,7 @@ pub enum CopyCommand {
     SelectLine,
     Yank,
     YankStay,
+    OpenLink,
     Cancel,
     Exit,
 }
@@ -182,6 +183,7 @@ const NAMES: &[(&str, Command)] = &[
     ("copy.select-line", Command::Copy(CopyCommand::SelectLine)),
     ("copy.yank", Command::Copy(CopyCommand::Yank)),
     ("copy.yank-stay", Command::Copy(CopyCommand::YankStay)),
+    ("copy.open-link", Command::Copy(CopyCommand::OpenLink)),
     ("copy.cancel", Command::Copy(CopyCommand::Cancel)),
     ("copy.exit", Command::Copy(CopyCommand::Exit)),
     ("list.up", Command::List(ListCommand::Up)),

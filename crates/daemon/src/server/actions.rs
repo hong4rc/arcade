@@ -494,6 +494,25 @@ impl Server {
                 }
                 Ok(String::new())
             }
+            Outcome::OpenLink { uri } => {
+                let opener = self
+                    .config
+                    .links
+                    .command
+                    .clone()
+                    .unwrap_or_else(crate::links::default_opener);
+                match crate::links::open(&opener, &uri) {
+                    Ok(()) => self.set_message(ctx.session, &format!("opening {uri}")),
+                    Err(e) => self.set_message(
+                        ctx.session,
+                        &format!(
+                            "cannot run {}: {e}",
+                            opener.first().map_or("", String::as_str)
+                        ),
+                    ),
+                }
+                Ok(String::new())
+            }
             Outcome::Exit => {
                 self.exit_copy(ctx.session, ctx.pane);
                 Ok(String::new())
