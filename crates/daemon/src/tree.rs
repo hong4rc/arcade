@@ -585,6 +585,7 @@ impl Tree {
             footers: &[self.enter_line(), self.key_line(keys)],
             widest: self.widest(keys),
             list_rows: self.entries.len().max(1),
+            margin: (0, 0),
             cols,
             rows,
         })

@@ -7,6 +7,10 @@
 
 use arcade_term::Cell;
 
+mod keylist;
+
+pub use keylist::{KeyCells, KeyRow, KeyView, items as key_items, rows as key_rows};
+
 use crate::compose::{blank, text_cells};
 use crate::keymap::ListKeys;
 use crate::theme::{self, Role, Symbol};
@@ -39,6 +43,8 @@ pub struct Item {
     pub current: bool,
     /// The words the filter looks in, in lower case.
     search: String,
+    /// What a row of the key list says besides its action.
+    pub keys: Option<KeyCells>,
 }
 
 impl Item {
@@ -51,7 +57,14 @@ impl Item {
             detail,
             current,
             search,
+            keys: None,
         }
+    }
+
+    /// The line is a row of the key list.
+    pub fn with_keys(mut self, keys: KeyCells) -> Item {
+        self.keys = Some(keys);
+        self
     }
 
     /// The filter also finds the line by these words.
@@ -73,6 +86,8 @@ pub struct Picker {
     visible: Vec<usize>,
     /// The chosen line, as a position in `visible`.
     pub selected: usize,
+    /// Set for the key list, which draws its lines in groups and columns.
+    key_view: Option<KeyView>,
 }
 
 /// Where the box is and what is in it, in the cells of the client's screen.
@@ -85,7 +100,9 @@ pub struct Drawn {
 impl Picker {
     pub fn new(kind: PickerKind, title: &str, items: Vec<Item>, selected: usize) -> Picker {
         let selected = selected.min(items.len().saturating_sub(1));
-        let visible = (0..items.len()).collect();
+        let visible = (0..items.len())
+            .filter(|i| !items[*i].keys.as_ref().is_some_and(|k| k.filter_only))
+            .collect();
         Picker {
             kind,
             title: title.to_string(),
@@ -93,7 +110,14 @@ impl Picker {
             filter: String::new(),
             visible,
             selected,
+            key_view: None,
         }
+    }
+
+    /// The picker is the key list, with these column titles.
+    pub fn with_key_view(mut self, headers: [String; 3]) -> Picker {
+        self.key_view = Some(KeyView { headers });
+        self
     }
 
     /// Add typed text to the filter.
@@ -120,7 +144,11 @@ impl Picker {
             .items
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.search.contains(&wanted))
+            // The rows that show only for a filter (the keys of copy mode) wait for one.
+            .filter(|(_, item)| {
+                item.search.contains(&wanted)
+                    && (!wanted.is_empty() || !item.keys.as_ref().is_some_and(|k| k.filter_only))
+            })
             .map(|(i, _)| i)
             .collect();
         self.selected = 0;
@@ -192,6 +220,9 @@ impl Picker {
     /// the key line in either state, not from what is shown now, so typing a filter or moving
     /// about never moves the frame.
     pub fn draw(&self, cols: u16, rows: u16, keys: &ListKeys) -> Drawn {
+        if self.key_view.is_some() {
+            return keylist::draw(self, cols, rows, keys);
+        }
         let mut lines: Vec<String> = self
             .shown()
             .enumerate()
@@ -222,6 +253,7 @@ impl Picker {
             footers: &[self.key_line(keys, filtered)],
             widest,
             list_rows: self.items.len().max(1),
+            margin: (0, 0),
             cols,
             rows,
         })
@@ -290,6 +322,8 @@ pub struct BoxSpec<'a> {
     /// The rows the list may take: its length with nothing filtered away. Rows that hold no
     /// line are drawn empty, so the frame does not change size.
     pub list_rows: usize,
+    /// Columns kept free at each side, and rows above and below, around the box.
+    pub margin: (usize, usize),
     pub cols: u16,
     pub rows: u16,
 }
@@ -313,34 +347,67 @@ fn cut(mut cells: Vec<Cell>, width: usize, pad: arcade_term::Style) -> Vec<Cell>
     cells
 }
 
-/// A framed box for a screen of this size: the title in the top edge, the filter line, the lines
-/// (the ones that fit, ending with the chosen one when it would be out of sight, and empty rows
-/// down to the size the whole list would take), and a line of its own for each footer.
-pub fn draw_box(spec: &BoxSpec) -> Drawn {
+/// Where a box goes and how big it is, from what it could hold and the size of the screen.
+pub struct Geometry {
+    /// The cells between the two sides of the frame.
+    pub inner: usize,
+    /// The rows of the body (between the filter line and the footers).
+    pub shown: usize,
+    /// How many footers there is room for.
+    pub footers: usize,
+    /// The first line of the list that shows, when the chosen line has to stay in sight.
+    pub first: usize,
+    pub x: u16,
+    pub y: u16,
+}
+
+/// The box for a screen of this size. `margin` is the room to keep free at the sides and above
+/// and below.
+pub fn geometry(spec: &BoxSpec) -> Geometry {
     let (cols, rows) = (spec.cols, spec.rows);
-    let filter_line = format!("{}{}", theme::symbol(Symbol::PickerFilterMark), spec.filter);
+    let (margin_x, margin_y) = spec.margin;
     // One column of room inside each side, and the frame.
-    let most = usize::from(cols).saturating_sub(2).max(1);
+    let most = usize::from(cols).saturating_sub(2 + 2 * margin_x).max(1);
     let inner = (spec.widest + 2).clamp(20.min(most), most);
     let width = inner + 2;
     // The frame and the filter line take three rows; each footer one more, when there is room.
     let footers = spec.footers.len().min(usize::from(rows).saturating_sub(3));
     let extra = 3 + footers;
-    let room = usize::from(rows).saturating_sub(extra);
+    let room = usize::from(rows).saturating_sub(extra + 2 * margin_y);
     let shown = spec.list_rows.min(room);
     // The lines that show: the first ones, or those that end with the chosen one.
     let first = (spec.selected.unwrap_or(0) + 1).saturating_sub(shown);
     let height = shown + extra;
     let x = (usize::from(cols).saturating_sub(width) / 2) as u16;
     let y = (usize::from(rows).saturating_sub(height) / 2) as u16;
+    Geometry {
+        inner,
+        shown,
+        footers,
+        first,
+        x,
+        y,
+    }
+}
 
+/// A framed box: the title in the top edge, the filter line, the body rows (each with the style
+/// of its blank space, and exactly `geometry.shown` of them), and a line of its own for each
+/// footer.
+pub fn assemble(
+    geometry: &Geometry,
+    title: &str,
+    filter: &str,
+    body: Vec<(Vec<Cell>, arcade_term::Style)>,
+    footers: &[String],
+) -> Drawn {
+    let inner = geometry.inner;
+    let filter_line = format!("{}{}", theme::symbol(Symbol::PickerFilterMark), filter);
     let plain = theme::style(Role::Picker);
-    let chosen = theme::style(Role::PickerSelected);
     let side = |c: Symbol| text_cells(theme::symbol(c), plain);
-    let mut out: Vec<Vec<Cell>> = Vec::with_capacity(height);
+    let mut out: Vec<Vec<Cell>> = Vec::new();
 
     let mut top = side(Symbol::PickerTopLeft);
-    let title_cells = text_cells(&format!(" {} ", spec.title), plain);
+    let title_cells = text_cells(&format!(" {title} "), plain);
     let rule = text_cells(theme::symbol(Symbol::PickerHorizontal), plain);
     let mut title_cells = if title_cells.len() > inner {
         cut(title_cells, inner, plain)
@@ -361,33 +428,22 @@ pub fn draw_box(spec: &BoxSpec) -> Drawn {
         row.extend(side(Symbol::PickerVertical));
         row
     };
-    let mut body = vec![blank(plain)];
-    body.extend(text_cells(&filter_line, plain));
-    out.push(framed(body, plain));
+    let mut line = vec![blank(plain)];
+    line.extend(text_cells(&filter_line, plain));
+    out.push(framed(line, plain));
 
-    let skip = first;
-    for slot in 0..shown {
-        let index = skip + slot;
-        match spec.lines.get(index) {
-            Some(line) => {
-                let style = if Some(index) == spec.selected {
-                    chosen
-                } else {
-                    plain
-                };
-                let mut body = vec![blank(style)];
-                body.extend(text_cells(line, style));
-                color_notice_marks(&mut body);
-                out.push(framed(body, style));
-            }
+    let mut body = body.into_iter();
+    for _ in 0..geometry.shown {
+        match body.next() {
+            Some((cells, style)) => out.push(framed(cells, style)),
             None => out.push(framed(Vec::new(), plain)),
         }
     }
 
-    for footer in spec.footers.iter().take(footers) {
-        let mut body = vec![blank(plain)];
-        body.extend(text_cells(footer, plain));
-        out.push(framed(body, plain));
+    for footer in footers.iter().take(geometry.footers) {
+        let mut line = vec![blank(plain)];
+        line.extend(text_cells(footer, plain));
+        out.push(framed(line, plain));
     }
 
     let mut bottom = side(Symbol::PickerBottomLeft);
@@ -396,7 +452,36 @@ pub fn draw_box(spec: &BoxSpec) -> Drawn {
     }
     bottom.extend(side(Symbol::PickerBottomRight));
     out.push(bottom);
-    Drawn { x, y, rows: out }
+    Drawn {
+        x: geometry.x,
+        y: geometry.y,
+        rows: out,
+    }
+}
+
+/// A framed box for a screen of this size: the title in the top edge, the filter line, the lines
+/// (the ones that fit, ending with the chosen one when it would be out of sight, and empty rows
+/// down to the size the whole list would take), and a line of its own for each footer.
+pub fn draw_box(spec: &BoxSpec) -> Drawn {
+    let geometry = geometry(spec);
+    let plain = theme::style(Role::Picker);
+    let chosen = theme::style(Role::PickerSelected);
+    let mut body = Vec::new();
+    for slot in 0..geometry.shown {
+        let index = geometry.first + slot;
+        if let Some(line) = spec.lines.get(index) {
+            let style = if Some(index) == spec.selected {
+                chosen
+            } else {
+                plain
+            };
+            let mut cells = vec![blank(style)];
+            cells.extend(text_cells(line, style));
+            color_notice_marks(&mut cells);
+            body.push((cells, style));
+        }
+    }
+    assemble(&geometry, spec.title, spec.filter, body, spec.footers)
 }
 
 #[cfg(test)]

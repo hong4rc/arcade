@@ -30,6 +30,8 @@ pub enum Role {
     Picker,
     /// The line of the floating list that is chosen.
     PickerSelected,
+    /// The line that names a group of lines, and the column titles, in the floating list.
+    PickerHeading,
     /// The cells of copy mode that are selected or found by a search.
     Selection,
     /// The mark of a notification, one role for each class.
@@ -90,6 +92,12 @@ pub fn style(role: Role) -> Style {
         Role::Picker => Style {
             fg: Color::Indexed(7),
             bg: Color::Indexed(0),
+            ..Style::default()
+        },
+        Role::PickerHeading => Style {
+            fg: Color::Indexed(6),
+            bg: Color::Indexed(0),
+            bold: true,
             ..Style::default()
         },
         Role::PickerSelected => Style {
@@ -181,6 +189,8 @@ pub enum Symbol {
     PickerNoMatch,
     /// Ends a line that was cut because it did not fit.
     Ellipsis,
+    /// After a key of the key list that this terminal cannot send.
+    KeyUnavailable,
     /// Between a mode word on the status bar and what it tells the user to do.
     HintSeparator,
     /// In front of a session or window of the tree that shows what is inside it, and of one that
@@ -218,6 +228,7 @@ pub fn symbol(symbol: Symbol) -> &'static str {
         Symbol::PickerFilterMark => "/ ",
         Symbol::PickerNoMatch => "no match",
         Symbol::Ellipsis => "…",
+        Symbol::KeyUnavailable => "!",
         Symbol::HintSeparator => " · ",
         Symbol::TreeOpen => "▾ ",
         Symbol::TreeClosed => "▸ ",

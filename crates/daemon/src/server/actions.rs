@@ -5,7 +5,7 @@ use crate::commands::{self, Command, CopyCommand, ListCommand};
 use crate::copy::{Copy, Outcome};
 use crate::keymap::{Binding, typed_name};
 use crate::layout::{Axis, Direction, LayoutError};
-use crate::picker::{Item, PickerKind};
+use crate::picker::{self, Item, PickerKind};
 use crate::tree::Key as TreeKey;
 
 /// Where a command acts: a session, one of its windows, and a pane in that window.
@@ -597,24 +597,19 @@ impl Server {
             return self.open_notifications(session_id, 0);
         }
         if kind == PickerKind::Keys {
-            let bindings = self.key_bindings();
-            // Every key name takes the room of the longest, so the command names line up.
-            let width = bindings
-                .iter()
-                .map(|(label, _)| label.chars().count())
-                .max()
-                .unwrap_or(0);
-            let items: Vec<Item> = bindings
-                .into_iter()
-                .enumerate()
-                .map(|(id, (label, binding))| {
-                    let line = binding_line(&binding);
-                    Item::new(id, format!("{label:<width$}"), line.clone(), false)
-                        .also_found_by(&line)
-                })
-                .collect();
+            let rows = self.key_rows(session_id);
+            let headers = [
+                "Action".to_string(),
+                format!("After {}", typed_name(self.config.keys.prefix)),
+                match self.config.keys.direct_modifier {
+                    Some(m) => format!("With {}", crate::keymap::mods_name(m)),
+                    None => "Direct".to_string(),
+                },
+            ];
             if let Some(s) = self.sessions.get_mut(&session_id) {
-                s.picker = Some(Picker::new(kind, "Keys", items, 0));
+                s.picker = Some(
+                    Picker::new(kind, "Keys", picker::key_items(&rows), 0).with_key_view(headers),
+                );
                 s.chrome_dirty = true;
             }
             return Ok(());
@@ -702,6 +697,24 @@ impl Server {
 
     /// Every binding of the prefix table, then of the direct table, as what a person presses and
     /// the binding, in a fixed order (by command, then by keys).
+    /// The rows of the key list: one for each action, in groups.
+    fn key_rows(&self, session_id: u64) -> Vec<picker::KeyRow> {
+        let host = self.sessions.get(&session_id).and_then(|s| s.host_keyboard);
+        let warnings = crate::keytools::warnings(&self.config, host);
+        let cannot_work = |table: crate::config::TableName, key: Key| {
+            let place = format!("keys.{}", table.word());
+            warnings.iter().any(|w| {
+                w.place == place && crate::keymap::normalize(w.key) == crate::keymap::normalize(key)
+            })
+        };
+        picker::key_rows(
+            &self.keymap,
+            self.config.keys.prefix,
+            self.config.keys.direct_modifier,
+            &cannot_work,
+        )
+    }
+
     fn key_bindings(&self) -> Vec<(String, Binding)> {
         let prefix = typed_name(self.config.keys.prefix);
         let mut after_prefix: Vec<(String, Binding)> = self
@@ -794,10 +807,12 @@ impl Server {
                 };
                 return match kind {
                     PickerKind::Keys => {
-                        // The list was made from the tables in this order, and nothing in them
-                        // changes while it is open.
-                        if let Some((_, binding)) = self.key_bindings().into_iter().nth(index) {
-                            self.run_binding(session_id, &binding);
+                        // The rows were made from the tables in this order, and nothing in them
+                        // changes while the list is open.
+                        if let Some(row) = self.key_rows(session_id).into_iter().nth(index)
+                            && row.runnable
+                        {
+                            self.run_binding(session_id, &row.binding);
                         }
                         Ok(String::new())
                     }

@@ -277,8 +277,10 @@ fn the_keys_list_is_filtered_by_what_the_command_is_called_and_enter_runs_it() {
     screen_has(&mut client, "Keys");
     client.send(b"copy.enter");
     let ok = client.wait_until(WAIT, |c| {
+        // The column titles, the heading of the group and the row of the action are all that
+        // is left.
         let lines = lines_of_the_list(c);
-        lines.len() == 1 && lines[0].contains("copy.enter")
+        lines.len() == 3 && lines[1].contains("Copy and paste") && lines[2].contains("copy mode")
     });
     assert!(ok, "{}", client.screen_text());
     client.send(b"\r");
