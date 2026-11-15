@@ -335,10 +335,15 @@ impl Server {
                     .get_mut(&ctx.session)
                     .and_then(|s| s.window_mut(ctx.window))
                     .ok_or_else(|| "no such window".to_string())?;
-                window.name = name;
-                window.name_manual = true;
+                // An empty name gives the window back to automatic naming, which takes over at
+                // the next look at the names.
+                window.name_manual = !name.is_empty();
+                if !name.is_empty() {
+                    window.name = name;
+                }
                 if let Some(s) = self.sessions.get_mut(&ctx.session) {
                     s.chrome_dirty = true;
+                    s.names_checked = None;
                 }
                 Ok(String::new())
             }
@@ -1242,6 +1247,9 @@ impl Server {
             .get(&ctx.pane)
             .and_then(|p| pty::process_cwd(p.pid))
             .unwrap_or_else(|| session.cwd.clone());
+        let name = self
+            .program_name(ctx.pane)
+            .unwrap_or_else(|| directory_name(&cwd));
         self.unzoom(ctx);
         self.remove_leaf(ctx);
         let window_id = self.next_window;
@@ -1255,7 +1263,7 @@ impl Server {
             Window {
                 id: window_id,
                 number: 0,
-                name: directory_name(&cwd),
+                name,
                 name_manual: false,
                 layout: Layout::new(ctx.pane, cols, rows),
                 focus: ctx.pane,
@@ -1360,7 +1368,7 @@ impl Server {
             Window {
                 id: window_id,
                 number: 0,
-                name: directory_name(&cwd),
+                name: first_program_name(&[], &env),
                 name_manual: false,
                 layout: Layout::new(pane_id, cols, rows),
                 focus: pane_id,

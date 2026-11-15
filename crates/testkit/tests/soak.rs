@@ -714,6 +714,18 @@ impl Soak {
         let Some(name) = self.attached_name() else {
             self.fail("no session has a client");
         };
+        // The names of the windows follow the programs and are looked at at most once a second,
+        // when an update goes out. A look that is due must have happened before the two screens
+        // are compared, or the takeover's redraw would be the first to see a new name: wait out
+        // the interval and make the session send an update (a rename always does).
+        std::thread::sleep(Duration::from_millis(1100));
+        let _ = self
+            .daemon
+            .command("session.rename", &[&format!("{name}x")]);
+        settle(&mut self.client);
+        let Some(name) = self.attached_name() else {
+            self.fail("no session has a client");
+        };
         let before = rows_of(&mut self.client);
         let (c, r) = self.size;
         let mut fresh = match self

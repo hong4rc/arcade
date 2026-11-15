@@ -327,6 +327,7 @@ impl Server {
                 let window_id = self.next_window;
                 self.next_window += 1;
                 let moved_cwd = self.panes.get(&pane).and_then(|p| pty::process_cwd(p.pid));
+                let moved_name = self.program_name(pane);
                 let Some(destination) = self.sessions.get_mut(&dst_session) else {
                     return Err("that session is gone".to_string());
                 };
@@ -337,7 +338,7 @@ impl Server {
                     Window {
                         id: window_id,
                         number: 0,
-                        name: directory_name(&cwd),
+                        name: moved_name.unwrap_or_else(|| directory_name(&cwd)),
                         name_manual: false,
                         layout: Layout::new(pane, cols, rows),
                         focus: pane,

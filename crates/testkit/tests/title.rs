@@ -137,3 +137,160 @@ fn the_title_is_not_sent_again_while_nothing_changes() {
     client.read_more(std::time::Instant::now() + Duration::from_millis(100));
     assert_eq!(client.titles.len(), before, "{:?}", client.titles);
 }
+
+/// What is typed to push the pane's title (`CSI 22 ; 2 t`), set one, and pop (`CSI 23 ; 2 t`).
+const PUSH: &str = "\\033[22;2t";
+const POP: &str = "\\033[23;2t";
+
+fn set(title: &str) -> String {
+    format!("\\033]2;{title}\\007")
+}
+
+/// Send the bytes from the shell's own printf and wait for the shell to be done with them.
+fn emit(client: &mut TestClient, bytes: &str, done: &str) {
+    client.type_line(&format!("printf '{bytes}'; echo {done}-$((40 + 2))"));
+    client.wait_for_text(&format!("{done}-42")).unwrap();
+}
+
+#[test]
+fn a_program_can_keep_a_title_and_get_it_back_nested() {
+    let daemon = TestDaemon::start();
+    let mut client = attach(&daemon);
+    let line = format!("{}{PUSH}{}{PUSH}{}", set("one"), set("two"), set("three"));
+    emit(&mut client, &line, "nest");
+    wait_title(&mut client, "three");
+    emit(&mut client, POP, "popa");
+    wait_title(&mut client, "two");
+    emit(&mut client, POP, "popb");
+    wait_title(&mut client, "one");
+    // Nothing more is kept: another pop changes nothing.
+    emit(&mut client, POP, "popc");
+    client.wait_until(Duration::from_millis(500), |_| false);
+    assert_eq!(last_title(&client), "one \u{b7} thu:1");
+}
+
+#[test]
+fn a_pop_can_bring_back_having_no_title() {
+    let daemon = TestDaemon::start();
+    let mut client = attach(&daemon);
+    emit(&mut client, &format!("{PUSH}{}", set("temporary")), "tmp");
+    wait_title(&mut client, "temporary");
+    emit(&mut client, POP, "back");
+    assert!(client.wait_until(WAIT, |c| !last_title(c).starts_with("temporary")));
+    // The window's name shows again, so the title still has its session and number.
+    assert!(last_title(&client).ends_with(":1"), "{:?}", client.titles);
+}
+
+#[test]
+fn only_the_title_form_of_push_and_pop_counts() {
+    let daemon = TestDaemon::start();
+    let mut client = attach(&daemon);
+    // `;1` is the icon: nothing is kept and nothing comes back.
+    let line = format!("{}\\033[22;1t{}\\033[23;1t", set("keep"), set("other"));
+    emit(&mut client, &line, "icon");
+    wait_title(&mut client, "other");
+}
+
+#[test]
+fn at_most_ten_titles_are_kept() {
+    let daemon = TestDaemon::start();
+    let mut client = attach(&daemon);
+    client.type_line(&format!(
+        "i=1; while [ $i -le 12 ]; do printf '{}{PUSH}' $i; i=$((i+1)); done; \
+         printf '{}'; i=0; while [ $i -lt 11 ]; do printf '{POP}'; i=$((i+1)); done; echo deep-$((40 + 2))",
+        set("t%s"),
+        set("top"),
+    ));
+    client.wait_for_text("deep-42").unwrap();
+    // Twelve were kept, ten stayed: eleven pops end at the third, not the second.
+    wait_title(&mut client, "t3");
+    assert_eq!(last_title(&client), "t3 \u{b7} thu:1");
+}
+
+#[test]
+fn other_title_cases_hold() {
+    let daemon = TestDaemon::start();
+    let mut client = attach(&daemon);
+    // OSC 1 (the icon name) is ignored; OSC 0 sets; a string terminator ends it as BEL does.
+    emit(&mut client, "\\033]1;icon\\007", "icon");
+    assert!(!client.titles.iter().any(|t| t.starts_with("icon")));
+    emit(&mut client, "\\033]0;zero\\033\\\\", "zero");
+    wait_title(&mut client, "zero");
+    // An empty title gives the window's name back.
+    emit(&mut client, "\\033]2;\\007", "gone");
+    assert!(client.wait_until(WAIT, |c| !last_title(c).starts_with("zero")));
+}
+
+/// A program's title lasts as long as the program does; the shell's own stays.
+#[test]
+fn a_title_goes_when_the_program_that_set_it_ends_and_the_shells_stays() {
+    let daemon = TestDaemon::start();
+    let mut client = attach(&daemon);
+    client.type_line(&format!(
+        "sh -c \"printf '{}'; sleep 2\"; echo ended-$((40 + 2))",
+        set("prog")
+    ));
+    wait_title(&mut client, "prog");
+    client.wait_for_text("ended-42").unwrap();
+    let deadline = std::time::Instant::now() + WAIT;
+    while last_title(&client).starts_with("prog") {
+        client.type_line("");
+        client.wait_until(Duration::from_millis(250), |_| false);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the title stayed: {:?}",
+            client.titles
+        );
+    }
+    // A title the shell itself set stays while other programs run and end.
+    emit(&mut client, &set("shells"), "mine");
+    wait_title(&mut client, "shells");
+    client.type_line("sleep 1; echo slept-$((40 + 2))");
+    client.wait_for_text("slept-42").unwrap();
+    let until = std::time::Instant::now() + Duration::from_millis(2500);
+    while std::time::Instant::now() < until {
+        client.type_line("");
+        client.wait_until(Duration::from_millis(250), |_| false);
+    }
+    assert_eq!(last_title(&client), "shells \u{b7} thu:1");
+}
+
+#[test]
+fn the_title_names_the_program_and_says_the_session_once() {
+    let daemon = TestDaemon::start();
+    let mut client = attach(&daemon);
+    client.type_line("sleep 35");
+    wait_title(&mut client, "sleep");
+    assert_eq!(last_title(&client), "sleep \u{b7} thu:1");
+    client.send(b"\x03");
+    // The window and the session with the same name: said once.
+    run(&daemon, "window.rename", &["same"]);
+    run(&daemon, "session.rename", &["same"]);
+    wait_title(&mut client, "same:1");
+    assert_eq!(last_title(&client), "same:1");
+}
+
+#[test]
+fn the_title_is_sent_again_to_a_client_that_attaches() {
+    let daemon = TestDaemon::start();
+    let mut first = attach(&daemon);
+    emit(&mut first, &set("again"), "set");
+    wait_title(&mut first, "again");
+    let mut second = daemon
+        .attach(AttachOptions::new().size(100, 30).existing(Some("thu")))
+        .unwrap();
+    wait_title(&mut second, "again");
+}
+
+#[test]
+fn two_sessions_started_from_one_folder_get_different_names() {
+    let daemon = TestDaemon::start();
+    let mut a = daemon.attach(AttachOptions::new().size(100, 30)).unwrap();
+    a.wait_for_prompt().unwrap();
+    let mut b = daemon.attach(AttachOptions::new().size(100, 30)).unwrap();
+    b.wait_for_prompt().unwrap();
+    let (_, list) = daemon.command("session.list", &[]).unwrap();
+    let names: Vec<&str> = list.lines().filter_map(|l| l.split('\t').next()).collect();
+    assert_eq!(names.len(), 2, "{list:?}");
+    assert_ne!(names[0], names[1], "{list:?}");
+}

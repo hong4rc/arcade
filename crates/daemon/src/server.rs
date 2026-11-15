@@ -169,9 +169,54 @@ struct Pane {
     copy: Option<Copy>,
     /// The title the program in the pane set (OSC 0 or 2); `None` while it has set none.
     title: Option<String>,
+    /// The foreground process group that set `title`; `None` when the shell set it (or none was
+    /// set). The title is dropped when that group is gone.
+    title_owner: Option<i32>,
+    /// Titles the program asked to keep (`CSI 22 t`), the newest last.
+    title_stack: Vec<TitleSave>,
 }
 
+/// A title kept by `CSI 22 t`, with who set it and who asked to keep it.
+#[derive(Clone, Debug)]
+struct TitleSave {
+    title: Option<String>,
+    owner: Option<i32>,
+    /// The process group that asked; its entries go when it does.
+    by: Option<i32>,
+}
+
+/// How many titles a pane keeps for its program; one more push drops the oldest.
+const TITLE_STACK_DEPTH: usize = 10;
+
 impl Pane {
+    /// Drop what the programs that are gone left behind: the title one of them set (the title it
+    /// had kept comes back, when it kept one, else the pane has none) and the titles they kept.
+    /// Returns whether the title changed.
+    fn expire_titles(&mut self) -> bool {
+        let gone = |group: Option<i32>| group.is_some_and(|g| !pty::group_alive(g));
+        let before = self.title.clone();
+        // Each round settles one dead owner; the stack is short, so a few rounds are all.
+        for _ in 0..=TITLE_STACK_DEPTH {
+            if !gone(self.title_owner) {
+                break;
+            }
+            let owner = self.title_owner;
+            match self.title_stack.iter().position(|s| s.by == owner) {
+                Some(i) => {
+                    self.title = self.title_stack[i].title.clone();
+                    self.title_owner = self.title_stack[i].owner;
+                }
+                None => {
+                    self.title = None;
+                    self.title_owner = None;
+                }
+            }
+            self.title_stack.retain(|s| s.by != owner);
+        }
+        self.title_stack.retain(|s| !gone(s.by));
+        self.title != before
+    }
+
     /// Something about the pane has to be drawn again.
     fn wants_frame(&self) -> bool {
         match &self.copy {
@@ -1278,6 +1323,8 @@ impl Server {
             },
             copy: None,
             title: None,
+            title_owner: None,
+            title_stack: Vec::new(),
         })
     }
 
@@ -1321,7 +1368,7 @@ impl Server {
                 cwd: request.cwd.clone(),
                 windows: vec![Window {
                     id: window_id,
-                    name: directory_name(&request.cwd),
+                    name: first_program_name(&request.command, &request.env),
                     number: self.config.base_index,
                     name_manual: false,
                     layout: Layout::new(pane_id, area_cols, area_rows),
@@ -1532,15 +1579,38 @@ impl Server {
         }
         // Answers the terminal wants to give to the program go back to it at once.
         let mut clipboard_writes = Vec::new();
-        let mut new_title = None;
         let mut signals = Vec::new();
+        // Who has the terminal now: a title belongs to the program that wrote it.
+        let writer = pty::foreground_group(pane.master.as_raw_fd()).filter(|g| *g != pane.pid);
         if pane.term.has_events() {
             let mut replies = Vec::new();
             for event in pane.term.drain_events() {
                 match event {
                     TermEvent::Reply(bytes) => replies.extend_from_slice(&bytes),
                     TermEvent::ClipboardWrite(data) => clipboard_writes.push(data),
-                    TermEvent::Title(title) => new_title = Some(title),
+                    TermEvent::Title(title) => {
+                        // A title is the program's own words: it is kept no longer than it is
+                        // ever shown.
+                        let title: String = title.chars().take(frame::TITLE_LIMIT).collect();
+                        pane.title = Some(title).filter(|t| !t.is_empty());
+                        pane.title_owner = writer;
+                    }
+                    TermEvent::TitlePush => {
+                        pane.title_stack.push(TitleSave {
+                            title: pane.title.clone(),
+                            owner: pane.title_owner,
+                            by: writer,
+                        });
+                        if pane.title_stack.len() > TITLE_STACK_DEPTH {
+                            pane.title_stack.remove(0);
+                        }
+                    }
+                    TermEvent::TitlePop => {
+                        if let Some(saved) = pane.title_stack.pop() {
+                            pane.title = saved.title;
+                            pane.title_owner = saved.owner;
+                        }
+                    }
                     TermEvent::Bell => signals.push(crate::notify::Signal::new(
                         crate::notify::Class::Info,
                         crate::notify::TERMINAL_SOURCE,
@@ -1560,11 +1630,6 @@ impl Server {
             if !replies.is_empty() {
                 queue_pane_input(pane, &replies);
             }
-        }
-        if let Some(title) = new_title {
-            // A title is the program's own words: it is kept no longer than it is ever shown.
-            let title: String = title.chars().take(frame::TITLE_LIMIT).collect();
-            pane.title = Some(title).filter(|t| !t.is_empty());
         }
         // Only the latest write counts, and it waits until the output has been passed on.
         if let Some(data) = clipboard_writes.pop() {
@@ -1771,6 +1836,25 @@ fn default_session_name(cwd: &str) -> String {
         .and_then(|n| n.to_str())
         .filter(|n| !n.is_empty())
         .unwrap_or("0")
+        .to_string()
+}
+
+/// What a window of a new pane is called before the first look at the pane: the program it
+/// starts (the first word of the command, else the user's shell).
+fn first_program_name(command: &[String], env: &[String]) -> String {
+    let program = match command.first() {
+        Some(program) => program.clone(),
+        None => env
+            .iter()
+            .find_map(|e| e.strip_prefix("SHELL=").map(str::to_string))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "sh".to_string()),
+    };
+    program
+        .rsplit('/')
+        .next()
+        .unwrap_or(&program)
+        .trim_start_matches('-')
         .to_string()
 }
 

@@ -77,6 +77,10 @@ impl TermConfig {
 pub enum Event {
     Bell,
     Title(String),
+    /// `CSI 22 t`: the program asks to keep the title it has now (the library does not report this).
+    TitlePush,
+    /// `CSI 23 t`: the program asks to get back the title it kept last.
+    TitlePop,
     /// The program asked to write the clipboard; the bytes are the decoded text.
     ClipboardWrite(Vec<u8>),
     Notification {
@@ -259,6 +263,55 @@ pub struct Term {
     /// A row the library keeps track of as lines are cut off the top of a full scrollback, so
     /// that a reader of the rows can tell how far they moved.
     anchor: Option<TrackedGridRef>,
+    /// Where the bytes so far stand in a `CSI 22 t` / `CSI 23 t`, which the library ignores.
+    title_scan: TitleScan,
+}
+
+/// Looks for `CSI 22 t` and `CSI 23 t` (also with a second parameter of 0 or 2, the ones that
+/// say "window title"; 1 is the icon and changes nothing) in the bytes a program wrote. The
+/// state is kept between calls, because a sequence may arrive in two pieces.
+#[derive(Clone, Debug, Default)]
+enum TitleScan {
+    #[default]
+    Ground,
+    Esc,
+    /// Inside `ESC [`, with the parameter bytes so far (at most eight; more is not ours).
+    Csi(Vec<u8>),
+}
+
+impl TitleScan {
+    /// Take one byte; `Some(true)` when it ended a push, `Some(false)` when it ended a pop.
+    fn byte(&mut self, b: u8) -> Option<bool> {
+        match self {
+            TitleScan::Ground => {
+                if b == 0x1b {
+                    *self = TitleScan::Esc;
+                }
+            }
+            TitleScan::Esc => {
+                *self = match b {
+                    b'[' => TitleScan::Csi(Vec::new()),
+                    0x1b => TitleScan::Esc,
+                    _ => TitleScan::Ground,
+                };
+            }
+            TitleScan::Csi(params) => match b {
+                b'0'..=b'9' | b';' if params.len() < 8 => params.push(b),
+                b't' => {
+                    let found = match params.as_slice() {
+                        b"22" | b"22;0" | b"22;2" => Some(true),
+                        b"23" | b"23;0" | b"23;2" => Some(false),
+                        _ => None,
+                    };
+                    *self = TitleScan::Ground;
+                    return found;
+                }
+                0x1b => *self = TitleScan::Esc,
+                _ => *self = TitleScan::Ground,
+            },
+        }
+        None
+    }
 }
 
 impl Term {
@@ -333,6 +386,7 @@ impl Term {
             string_timeout: config.string_timeout,
             stuck_deadline: None,
             anchor: None,
+            title_scan: TitleScan::default(),
         })
     }
 
@@ -358,7 +412,31 @@ impl Term {
 
     /// Give the terminal bytes the program wrote.
     pub fn feed(&mut self, bytes: &[u8]) {
-        self.term.vt_write(bytes);
+        // The bytes go to the library in pieces cut after each title push or pop, so that the
+        // events come in the order the program wrote them.
+        let mut start = 0;
+        let mut at = 0;
+        while at < bytes.len() {
+            if matches!(self.title_scan, TitleScan::Ground) {
+                // The usual case, a flood of text: jump to the next escape.
+                match bytes[at..].iter().position(|b| *b == 0x1b) {
+                    Some(n) => at += n,
+                    None => break,
+                }
+            }
+            if let Some(push) = self.title_scan.byte(bytes[at]) {
+                self.term.vt_write(&bytes[start..=at]);
+                start = at + 1;
+                let event = if push {
+                    Event::TitlePush
+                } else {
+                    Event::TitlePop
+                };
+                self.events.borrow_mut().push(event);
+            }
+            at += 1;
+        }
+        self.term.vt_write(&bytes[start..]);
         // Not at ground means the bytes ended inside a sequence (or inside a multi-byte
         // character). Remember when, so a sequence that never ends can be cancelled.
         if self.term.is_vt_ground().unwrap_or(true) {

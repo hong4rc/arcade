@@ -237,6 +237,30 @@ pub fn foreground_name(master: std::os::fd::RawFd, first_pid: i32) -> Option<Str
     process_name(group)
 }
 
+/// The foreground process group of the terminal whose master side is `master`.
+pub fn foreground_group(master: std::os::fd::RawFd) -> Option<i32> {
+    // SAFETY: tcgetpgrp reads the foreground group of the terminal behind a descriptor.
+    let group = unsafe { libc::tcgetpgrp(master) };
+    (group > 0).then_some(group)
+}
+
+/// Some process of the group still exists (a zombie that nobody has waited for counts).
+pub fn group_alive(group: i32) -> bool {
+    // SAFETY: signal 0 only asks whether the group can be signalled.
+    let r = unsafe { libc::kill(-group, 0) };
+    r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// The name of the program in the foreground of the terminal, the shell included: what a window
+/// is called while nobody named it.
+pub fn foreground_program(master: std::os::fd::RawFd, first_pid: i32) -> Option<String> {
+    let pid = foreground_group(master).unwrap_or(first_pid);
+    let name = process_name(pid).or_else(|| process_name(first_pid))?;
+    // A login shell may show with the dash it was started with.
+    let name = name.trim_start_matches('-');
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// Wait up to `millis` for `fd` to have something to read or to be hung up. Used for a pane
 /// whose process has ended: its last output may reach the master a moment after the exit.
 pub fn wait_readable(fd: std::os::fd::RawFd, millis: i32) {

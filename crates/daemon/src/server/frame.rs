@@ -53,6 +53,12 @@ fn clean_title(text: &str, limit: usize) -> String {
 }
 
 impl Server {
+    /// What the pane's foreground program is called, for the window the pane makes.
+    pub(super) fn program_name(&self, pane: u64) -> Option<String> {
+        let p = self.panes.get(&pane)?;
+        pty::foreground_program(std::os::fd::AsRawFd::as_raw_fd(&p.master), p.pid)
+    }
+
     /// The title of the host terminal's window: what the focused pane's program calls itself
     /// (or the window's name when it has set no title), then the session and the window number.
     fn host_title(&self, s: &Session) -> String {
@@ -62,12 +68,13 @@ impl Server {
             .get(&window.focus)
             .and_then(|p| p.title.as_deref())
             .unwrap_or(&window.name);
-        format!(
-            "{} \u{b7} {}:{}",
-            clean_title(pane_title, TITLE_LIMIT),
-            clean_title(&s.name, TITLE_LIMIT),
-            window.number
-        )
+        let first = clean_title(pane_title, TITLE_LIMIT);
+        let session = clean_title(&s.name, TITLE_LIMIT);
+        // The same word twice says nothing more.
+        if first == session {
+            return format!("{session}:{}", window.number);
+        }
+        format!("{first} \u{b7} {session}:{}", window.number)
     }
 
     /// Tell each attached client's terminal the title of its window, when and only when it is
@@ -187,12 +194,21 @@ impl Server {
             _ => {
                 session.names_checked = Some(now);
                 session.names_due = None;
+                // A title lasts as long as the program that set it.
+                for window in &session.windows {
+                    for (pane_id, _) in window.layout.rects() {
+                        if let Some(pane) = self.panes.get_mut(&pane_id)
+                            && (pane.title_owner.is_some() || !pane.title_stack.is_empty())
+                        {
+                            pane.expire_titles();
+                        }
+                    }
+                }
                 for window in session.windows.iter_mut().filter(|w| !w.name_manual) {
                     let name = self
                         .panes
                         .get(&window.focus)
-                        .and_then(|p| pty::process_cwd(p.pid))
-                        .map(|cwd| directory_name(&cwd));
+                        .and_then(|p| pty::foreground_program(p.master.as_raw_fd(), p.pid));
                     if let Some(name) = name
                         && name != window.name
                     {

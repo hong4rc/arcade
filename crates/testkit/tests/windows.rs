@@ -190,53 +190,84 @@ fn closing_the_window_in_the_middle_closes_the_gap_in_the_numbers() {
     assert_eq!(list.split('\t').nth(3), Some("2"), "{list:?}");
 }
 
+/// Wait until the bar says the first tab has this name; the name is looked at when something is
+/// drawn anyway, so the pane is kept printing.
+fn tab_becomes(client: &mut TestClient, name: &str) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        client.type_line("");
+        client.wait_until(Duration::from_millis(250), |c| {
+            bar_of(c).contains(&format!(" 1 {name} "))
+        });
+        if bar_of(client).contains(&format!(" 1 {name} ")) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the tab never became {name}: {:?}",
+            bar_of(client)
+        );
+    }
+}
+
+/// Wait until the first tab is not called this any more.
+fn tab_stops_being(client: &mut TestClient, name: &str) {
+    let deadline = Instant::now() + WAIT;
+    while bar_of(client).contains(&format!(" 1 {name} ")) {
+        client.type_line("");
+        client.wait_until(Duration::from_millis(250), |_| false);
+        assert!(
+            Instant::now() < deadline,
+            "the tab is still {name}: {:?}",
+            bar_of(client)
+        );
+    }
+}
+
 #[test]
-fn a_tab_is_named_after_the_directory_unless_it_was_named_by_hand() {
+fn a_tab_is_named_after_the_program_unless_it_was_named_by_hand() {
     let daemon = TestDaemon::start();
-    let dir = daemon.dir().to_path_buf();
-    std::fs::create_dir_all(dir.join("alpha")).unwrap();
-    std::fs::create_dir_all(dir.join("beta")).unwrap();
     let mut client = daemon
         .attach(AttachOptions::new().size(100, 30).named("names"))
         .unwrap();
     client.wait_for_prompt().unwrap();
-    let start = dir.file_name().unwrap().to_str().unwrap().to_string();
-    assert!(client.wait_until(WAIT, |c| bar_of(c).contains(&format!(" 1 {start} "))));
-    // The name is looked at when something is drawn anyway, so keep the pane printing.
-    let follows = |client: &mut TestClient, command: &str, name: &str| {
-        client.type_line(command);
-        let deadline = Instant::now() + WAIT;
-        loop {
-            client.type_line("true");
-            client.wait_until(Duration::from_millis(250), |c| {
-                bar_of(c).contains(&format!(" 1 {name} "))
-            });
-            if bar_of(client).contains(&format!(" 1 {name} ")) {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the tab never became {name}: {:?}",
-                bar_of(client)
-            );
-        }
-    };
-    follows(&mut client, "cd alpha", "alpha");
-    follows(&mut client, "cd ../beta", "beta");
-    // A name chosen by hand stays, whatever the pane does afterwards.
+    // The shell first: its name is not the directory's.
+    let start = daemon
+        .dir()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        !bar_of(&client).contains(&format!(" 1 {start} ")),
+        "{:?}",
+        bar_of(&client)
+    );
+    // A program in the foreground gives its name; when it ends the shell's comes back.
+    client.type_line("sleep 31");
+    tab_becomes(&mut client, "sleep");
+    client.send(b"\x03");
+    tab_stops_being(&mut client, "sleep");
+    // A name chosen by hand stays, whatever runs afterwards.
     run(&daemon, "window.rename", &["mine"]);
     assert!(client.wait_until(WAIT, |c| bar_of(c).contains(" 1 mine ")));
-    client.type_line("cd ../alpha");
+    client.type_line("sleep 32");
     let until = Instant::now() + Duration::from_millis(2500);
     while Instant::now() < until {
-        client.type_line("true");
+        client.type_line("");
         client.wait_until(Duration::from_millis(250), |_| false);
     }
     let bar = bar_of(&client);
     assert!(
-        bar.contains(" 1 mine ") && !bar.contains("alpha"),
+        bar.contains(" 1 mine ") && !bar.contains("sleep"),
         "{bar:?}"
     );
+    // An empty name gives the tab back to the program.
+    run(&daemon, "window.rename", &[""]);
+    tab_becomes(&mut client, "sleep");
+    client.send(b"\x03");
+    tab_stops_being(&mut client, "sleep");
 }
 
 #[test]
@@ -273,14 +304,14 @@ fn nothing_reaches_the_client_while_every_pane_is_still() {
     );
 }
 
-/// The tab is named after the directory of its pane. A `cd` right after the screen was last
-/// drawn is seen within a moment, though nothing more is printed afterwards.
+/// The tab takes the name of a program that starts in its pane, a moment after the screen was
+/// last drawn, though nothing more is printed afterwards.
 #[test]
-fn a_tab_takes_the_name_of_the_directory_after_a_cd_with_nothing_printed_later() {
+fn a_tab_takes_the_name_of_a_program_that_starts_with_nothing_printed_later() {
     let daemon = TestDaemon::start();
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
-    client.type_line("cd /usr/local");
-    let ok = client.wait_until(Duration::from_secs(2), |c| bar_of(c).contains(" local "));
+    client.type_line("sleep 33");
+    let ok = client.wait_until(Duration::from_secs(2), |c| bar_of(c).contains(" sleep "));
     assert!(ok, "the bar says {:?}", bar_of(&client));
 }

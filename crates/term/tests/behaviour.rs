@@ -556,3 +556,40 @@ fn wide_and_combining_characters_and_styles_are_read_from_scrollback() {
     assert_eq!(line.cells[3].style.fg, Color::Indexed(1));
     assert_eq!(line.cells[5].text, "e\u{301}");
 }
+
+// ---- Title push and pop ----
+
+#[test]
+fn title_push_and_pop_come_as_events_in_the_order_written() {
+    let mut t = term(40, 5);
+    t.feed(b"\x1b]2;a\x07\x1b[22;2t\x1b]2;b\x07\x1b[23t\x1b[22;0t\x1b[23;0t");
+    assert_eq!(
+        t.drain_events(),
+        vec![
+            Event::Title("a".into()),
+            Event::TitlePush,
+            Event::Title("b".into()),
+            Event::TitlePop,
+            Event::TitlePush,
+            Event::TitlePop,
+        ]
+    );
+}
+
+#[test]
+fn a_push_split_between_two_reads_is_still_seen_once() {
+    let mut t = term(40, 5);
+    t.feed(b"text\x1b[2");
+    t.feed(b"2;2");
+    assert!(t.drain_events().is_empty());
+    t.feed(b"tmore");
+    assert_eq!(t.drain_events(), vec![Event::TitlePush]);
+    assert_eq!(t.row_text(0), "textmore");
+}
+
+#[test]
+fn other_window_operations_are_not_taken_for_title_ones() {
+    let mut t = term(40, 5);
+    t.feed(b"\x1b[22;1t\x1b[23;1t\x1b[22;2;3t\x1b[18t\x1b[222t\x1b[?22t\x1b[22;22222222222t");
+    assert!(t.drain_events().is_empty());
+}
