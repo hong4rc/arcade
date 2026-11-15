@@ -10,8 +10,16 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
     steps:
       - uses: actions/checkout@v4
+
+      - name: zig dependency cache
+        uses: actions/cache@v4
+        with:
+          path: .zig-global-cache
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-zig.sh', 'Cargo.lock') }}
 
       - name: install tmux
         run: |
@@ -19,6 +27,9 @@ jobs:
 
       - name: fetch zig
         run: ./scripts/fetch-zig.sh
+
+      - name: build (again if Zig crashes fetching its dependencies)
+        run: ./scripts/retry-build.sh cargo test --workspace --no-run
 
       - name: format
         run: cargo fmt --all --check

@@ -18,7 +18,7 @@ if [ "$(uname -s)-$(uname -m)" != "$HOST" ]; then
   exit 1
 fi
 ./scripts/fetch-zig.sh
-cargo build --release -p arcade
+./scripts/retry-build.sh cargo build --release -p arcade
 NAME="arcade-$TARGET"
 rm -rf "dist/$NAME" "dist/$NAME.tar.gz"
 mkdir -p "dist/$NAME"

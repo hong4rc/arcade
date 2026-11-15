@@ -9,7 +9,7 @@ permissions:
 jobs:
   build:
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - target: macos-apple-silicon
@@ -19,8 +19,16 @@ jobs:
           - target: linux-arm64
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
     steps:
       - uses: actions/checkout@v4
+
+      - name: zig dependency cache
+        uses: actions/cache@v4
+        with:
+          path: .zig-global-cache
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-zig.sh', 'Cargo.lock') }}
 
       - name: build and package
         run: ./scripts/package.sh ${{ matrix.target }}
