@@ -987,3 +987,17 @@ fn a_daemon_killed_hard_leaves_no_process_holding_the_machine_awake() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+#[test]
+fn the_version_is_printed_without_starting_a_daemon() {
+    let env = Env::new();
+    for arg in ["--version", "version"] {
+        let out = env.plain(&[arg]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(
+            stdout(&out).trim(),
+            format!("arcade {}", env!("CARGO_PKG_VERSION"))
+        );
+    }
+    assert!(!env.socket.exists());
+}

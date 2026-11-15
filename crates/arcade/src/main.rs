@@ -40,6 +40,7 @@ commands:
                                   take a notification away
   notify check [--target <pane>]  show which pane and socket would be used, and send a test
   notify log                      show what became of the latest signals
+  version, --version              print the version
 ";
 
 fn main() -> ExitCode {
@@ -57,6 +58,13 @@ fn usage_error(message: &str) -> u8 {
 }
 
 fn run(mut args: Vec<String>) -> u8 {
+    if matches!(
+        args.first().map(String::as_str),
+        Some("--version" | "version")
+    ) {
+        println!("arcade {}", env!("CARGO_PKG_VERSION"));
+        return 0;
+    }
     let mut socket_arg: Option<PathBuf> = None;
     if args.first().map(String::as_str) == Some("--socket") {
         if args.len() < 2 {

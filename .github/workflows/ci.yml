@@ -1,0 +1,30 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install tmux
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then brew install tmux; else sudo apt-get update && sudo apt-get install -y tmux; fi
+
+      - name: fetch zig
+        run: ./scripts/fetch-zig.sh
+
+      - name: format
+        run: cargo fmt --all --check
+
+      - name: lint
+        run: cargo lint
+
+      - name: test
+        run: cargo test --workspace

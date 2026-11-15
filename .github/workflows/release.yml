@@ -1,0 +1,101 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: macos-apple-silicon
+            os: macos-14
+          - target: linux-amd64
+            os: ubuntu-latest
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build and package
+        run: ./scripts/package.sh ${{ matrix.target }}
+
+      - name: the binary starts and has the version of the tag
+        run: |
+          dir=$(mktemp -d)
+          tar -xzf dist/arcade-${{ matrix.target }}.tar.gz -C "$dir"
+          want="arcade ${GITHUB_REF_NAME#v}"
+          got=$("$dir/arcade-${{ matrix.target }}/arcade" --version)
+          [ "$got" = "$want" ] || { echo "::error::version is '$got', expected '$want'"; exit 1; }
+
+      - name: the archive keeps the executable bit
+        run: |
+          tar -tvzf dist/arcade-${{ matrix.target }}.tar.gz | grep -E '^-rwx.* arcade-[a-z0-9-]+/arcade$' >/dev/null \
+            || { echo "::error::missing executable bit"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum arcade-*.tar.gz > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes \
+            --notes "Install: brew install hong4rc/tap/arcade. After an upgrade run arcade kill-server once. See the README."
+
+  # Opens a pull request on the Homebrew tap that points the formula at this release. Needs a
+  # repository secret TAP_TOKEN: a personal access token that can write contents and pull
+  # requests on hong4rc/homebrew-tap. Without it this job is skipped with a notice and the
+  # release stays as it is; the formula is then updated by hand.
+  tap:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bump the formula and open a pull request
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::notice::secret TAP_TOKEN is not set; the Homebrew formula was not bumped"
+            exit 0
+          fi
+          tag=${GITHUB_REF_NAME}
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p SHA256SUMS.txt -D "$RUNNER_TEMP"
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/hong4rc/homebrew-tap.git" "$RUNNER_TEMP/tap"
+          cd "$RUNNER_TEMP/tap"
+          git checkout -B "bump/arcade-$tag"
+          python3 -I "$GITHUB_WORKSPACE/scripts/bump-formula.py" Formula/arcade.rb "$tag" "$RUNNER_TEMP/SHA256SUMS.txt"
+          git -c user.name=hong4rc -c user.email=hong4rc@users.noreply.github.com \
+            commit -am "feat: bump arcade to $tag"
+          git push --force origin "bump/arcade-$tag"
+          gh pr view "bump/arcade-$tag" -R hong4rc/homebrew-tap >/dev/null 2>&1 \
+            || gh pr create -R hong4rc/homebrew-tap --base main --head "bump/arcade-$tag" \
+                 --title "feat: bump arcade to $tag" \
+                 --body "Points the arcade formula at $tag. Opened by the arcade release workflow."
