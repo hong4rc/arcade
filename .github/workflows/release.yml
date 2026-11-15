@@ -13,7 +13,7 @@ jobs:
       matrix:
         include:
           - target: macos-apple-silicon
-            os: macos-14
+            os: macos-latest
           - target: linux-amd64
             os: ubuntu-latest
           - target: linux-arm64
