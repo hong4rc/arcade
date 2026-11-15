@@ -565,9 +565,12 @@ impl Copy {
     }
 
     fn toggle_selection(&mut self, kind: SelectionKind) {
+        // As in Vim: the same kind again turns the selection off; the other kind keeps the
+        // anchor and changes how the span from it to the cursor is read.
         self.selection = match self.selection {
             Some(s) if s.kind == kind => None,
-            _ => Some(Selection {
+            Some(s) => Some(Selection { kind, ..s }),
+            None => Some(Selection {
                 kind,
                 row: self.row,
                 col: self.col,
@@ -1177,6 +1180,42 @@ mod tests {
         assert_eq!(c.apply(&src, CopyCommand::Cancel), Outcome::Moved);
         assert!(c.selection.is_none());
         assert_eq!(c.apply(&src, CopyCommand::Cancel), Outcome::Exit);
+    }
+
+    #[test]
+    fn changing_from_characters_to_lines_keeps_the_anchor_row_going_down() {
+        let src = rows(&["one two", "three", "four", "five six"]);
+        let mut c = copy_at(&src, 0, 4);
+        run(&mut c, &src, &[CopyCommand::SelectChar]);
+        c.go(&src, 2, 1);
+        run(&mut c, &src, &[CopyCommand::SelectLine]);
+        assert_eq!(c.selected_text(&src).unwrap(), "one two\nthree\nfour");
+    }
+
+    #[test]
+    fn changing_from_characters_to_lines_keeps_the_anchor_row_going_up() {
+        let src = rows(&["one two", "three", "four", "five six"]);
+        let mut c = copy_at(&src, 3, 5);
+        run(&mut c, &src, &[CopyCommand::SelectChar]);
+        c.go(&src, 1, 2);
+        run(&mut c, &src, &[CopyCommand::SelectLine]);
+        assert_eq!(c.selected_text(&src).unwrap(), "three\nfour\nfive six");
+    }
+
+    #[test]
+    fn changing_from_lines_to_characters_keeps_the_anchor_cell() {
+        let src = rows(&["one two", "three", "four"]);
+        let mut c = copy_at(&src, 0, 4);
+        run(&mut c, &src, &[CopyCommand::SelectLine]);
+        c.go(&src, 2, 1);
+        run(&mut c, &src, &[CopyCommand::SelectChar]);
+        assert_eq!(c.selected_text(&src).unwrap(), "two\nthree\nfo");
+        // Upwards: from the anchor cell back to the cursor.
+        let mut c = copy_at(&src, 2, 1);
+        run(&mut c, &src, &[CopyCommand::SelectLine]);
+        c.go(&src, 0, 4);
+        run(&mut c, &src, &[CopyCommand::SelectChar]);
+        assert_eq!(c.selected_text(&src).unwrap(), "two\nthree\nfo");
     }
 
     #[test]
