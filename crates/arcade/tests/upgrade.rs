@@ -772,8 +772,16 @@ fn a_daemon_from_before_the_feature_is_restarted_with_its_sessions_made_again() 
             env.sessions()
         );
         // With --restart the old daemon ends and the session is made again.
-        let out = env.plain(&["upgrade", "--restart"]);
+        // The program that runs the command is the one that is used, not one found on PATH.
+        let here = env.copy_of_program("arcade-here");
+        let out = env.plain_with(&here, &["upgrade", "--restart"]);
         assert!(out.status.success(), "{version}: {}", text(&out));
+        let shown = here.canonicalize().unwrap().display().to_string();
+        assert!(
+            text(&out).contains(&format!("({shown})")),
+            "{version}: {}",
+            text(&out)
+        );
         assert!(
             text(&out).contains("made again with 2 window(s)"),
             "{version}: {}",
@@ -791,6 +799,14 @@ fn a_daemon_from_before_the_feature_is_restarted_with_its_sessions_made_again() 
         );
         // The shells of the new daemon: one in each directory the old panes had.
         let daemon = *env.daemon_pids().last().unwrap();
+        let command = Command::new("ps")
+            .args(["-o", "command=", "-p", &daemon.to_string()])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&command.stdout).contains("arcade-here"),
+            "{version}: the daemon is not the program that ran the command"
+        );
         let table = Command::new("ps")
             .args(["-axo", "pid=,ppid="])
             .output()

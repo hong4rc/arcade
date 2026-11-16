@@ -113,6 +113,11 @@ pub fn mismatch_message(daemon: u32, client: u32) -> String {
 /// Start the daemon in the background, detached from this terminal, and wait until it listens.
 pub fn start_daemon(socket: &Path) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find myself: {e}"))?;
+    start_daemon_as(&exe, socket)
+}
+
+/// Start the daemon as the given program.
+pub fn start_daemon_as(exe: &Path, socket: &Path) -> Result<(), String> {
     let mut command = Command::new(exe);
     command
         .arg("--socket")

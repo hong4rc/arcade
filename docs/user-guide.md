@@ -35,7 +35,7 @@ The option `--socket <path>`, placed first on the command line, uses another soc
 | `arcade attach [-t <session>]` | Enter a session |
 | `arcade ls` | List the sessions |
 | `arcade kill-session [-t <session>]` | Close a session |
-| `arcade upgrade [--force] [--restart] [<program>]` | Make the running daemon continue as a newer `arcade` (the one found first on `PATH`, or the file you give) without ending any session or program (see 5.13) |
+| `arcade upgrade [--force] [--restart] [<program>]` | Make the running daemon continue as a newer `arcade` (the program you ran, or the file you give) without ending any session or program (see 5.13) |
 | `arcade kill-server` | Stop the daemon and every session |
 | `arcade run <command> [<argument>...]` | Run a named command (for example `session.detach`), meant for scripts |
 | `arcade config check [--host kitty\|legacy] [<file>]` | Check a configuration file and list its errors, then the bindings that cannot work on the terminal (see 5.11), without a daemon |

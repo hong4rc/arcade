@@ -124,13 +124,23 @@ pub fn old_panes(socket: &std::path::Path) -> Vec<OldPane> {
     children
         .into_iter()
         .map(|shell| {
-            let running = (shell.tpgid > 0 && shell.tpgid != shell.pgid && shell.tty != "?")
+            // The foreground program of the pane's terminal; when nothing else runs there, the shell.
+            let foreground = (shell.tpgid > 0 && shell.tpgid != shell.pgid && shell.tty != "?")
                 .then(|| {
                     all.iter()
                         .find(|p| p.tty == shell.tty && p.pid == shell.tpgid)
                         .map(|p| program_name(&p.command))
                 })
                 .flatten();
+            let running = foreground
+                .or_else(|| {
+                    Some(
+                        program_name(&shell.command)
+                            .trim_start_matches('-')
+                            .to_string(),
+                    )
+                })
+                .filter(|n| !n.is_empty());
             OldPane {
                 pid: shell.pid,
                 cwd: cwd_of(shell.pid),
@@ -193,7 +203,7 @@ fn show(sessions: &[OldSession], panes: &[OldPane], plan: &Plan) -> String {
             p.cwd.as_deref().unwrap_or("directory unknown"),
             p.running
                 .as_deref()
-                .map_or(String::new(), |r| format!(", running {r}")),
+                .map_or(String::new(), |r| format!(", program {r}")),
         );
     }
     text += "\nAfter the restart: each session again by name with the same number of windows, each with a shell";
@@ -252,6 +262,7 @@ fn wait_for_result(connection: &mut Connection) -> Result<(), String> {
 
 /// Make one session, with its first window in `dir` and one more window for each further entry.
 fn make_session(
+    program: &std::path::Path,
     socket: &std::path::Path,
     name: &str,
     windows: &[Option<String>],
@@ -259,7 +270,7 @@ fn make_session(
     let stream = match connect(socket) {
         Ok(s) => s,
         Err(_) => {
-            crate::connection::start_daemon(socket)?;
+            crate::connection::start_daemon_as(program, socket)?;
             connect(socket).map_err(|_| "cannot connect to the daemon just started".to_string())?
         }
     };
@@ -314,7 +325,12 @@ fn make_session(
 }
 
 /// Offer the restart (or do it, with `--restart`). Returns the exit code.
-pub fn offer(socket: &std::path::Path, list_output: &str, restart: bool) -> u8 {
+pub fn offer(
+    program: &std::path::Path,
+    socket: &std::path::Path,
+    list_output: &str,
+    restart: bool,
+) -> u8 {
     let sessions = parse_sessions(list_output);
     let panes = old_panes(socket);
     let plan = plan(&sessions, &panes);
@@ -363,7 +379,7 @@ pub fn offer(socket: &std::path::Path, list_output: &str, restart: bool) -> u8 {
         std::thread::sleep(Duration::from_millis(50));
     }
     for (name, windows) in &plan.sessions {
-        if let Err(e) = make_session(socket, name, windows) {
+        if let Err(e) = make_session(program, socket, name, windows) {
             eprintln!("arcade: could not make session {name} again: {e}");
             return 1;
         }

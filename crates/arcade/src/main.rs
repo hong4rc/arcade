@@ -27,7 +27,7 @@ commands:
   kill-session [-t <session>]     close a session
   upgrade [--force] [--restart] [<program>]
                                   make the running daemon continue as a newer arcade
-                                  (default: the arcade found on PATH) without ending any
+                                  (default: the program you ran) without ending any
                                   session; attached screens reattach by themselves
   kill-server                     stop the daemon and every session
   run <command> [<argument>...]   run a command, for scripts (for example session.detach)
@@ -326,12 +326,11 @@ fn upgrade_command(options: &Options, rest: &[String]) -> u8 {
     }
     let program = match program {
         Some(p) => p,
-        None => match find_on_path("arcade") {
-            Some(p) => p,
-            None => {
-                eprintln!(
-                    "arcade: no `arcade` on PATH to upgrade to; give the program: `arcade upgrade <program>`"
-                );
+        // The program the person ran is the program they get.
+        None => match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("arcade: cannot find myself: {e}");
                 return 1;
             }
         },
@@ -375,7 +374,7 @@ fn upgrade_command(options: &Options, rest: &[String]) -> u8 {
                 })
                 .map(|(_, text)| text)
                 .unwrap_or_default();
-            restart::offer(&options.socket, &list, restart)
+            restart::offer(&program, &options.socket, &list, restart)
         }
         Ok((false, output)) => {
             eprintln!("arcade: {}", output.trim_end());
@@ -388,13 +387,6 @@ fn upgrade_command(options: &Options, rest: &[String]) -> u8 {
             1
         }
     }
-}
-
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
 }
 
 /// Connect, starting the daemon first when asked to and none is running.
