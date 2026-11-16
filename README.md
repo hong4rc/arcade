@@ -29,8 +29,8 @@ arcade new -s work
 arcade ls
 ```
 
-The default prefix key, the key tables and every setting are described in the
-[user guide](docs/user-guide.md).
+New here? The [user guide](docs/user-guide.md) starts with a ten-minute tour that tries each
+feature in a throwaway copy; after it come the key tables and every setting.
 
 ## Build from source
 

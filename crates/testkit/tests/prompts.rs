@@ -1,4 +1,4 @@
-//! The shell snippets of the user guide (section 5.12) give the prompt marks that copy mode reads:
+//! The shell snippets of the user guide (section 5.15) give the prompt marks that copy mode reads:
 //! each shell runs in a pane, a command is typed, and `O` selects exactly its output.
 
 use std::path::PathBuf;

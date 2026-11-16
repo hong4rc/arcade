@@ -2,6 +2,45 @@
 
 This guide describes what the current build does. Every key was checked against `crates/daemon/src/keymap.rs` and every configuration key against `crates/daemon/src/config.rs`. Section 6 lists what is not built yet.
 
+## Start here: a ten-minute tour
+
+Read this first if you have never used Arcade. It tries one of everything in a throwaway copy, so it cannot disturb sessions you already have. The rest of the guide is the reference.
+
+**A throwaway Arcade.** A socket of its own means a daemon of its own, and `ARCADE_CONFIG` names a configuration file of its own (a file that does not exist means every default):
+
+```
+mkdir -m 700 ~/arcade-try
+export ARCADE_SOCKET=~/arcade-try/try.sock ARCADE_CONFIG=~/arcade-try/config.toml
+arcade new -s try
+```
+
+When you are done: `arcade kill-server`, then delete `~/arcade-try` and close that shell (or `unset ARCADE_SOCKET ARCADE_CONFIG`).
+
+**The prefix.** Almost every command is the prefix `Ctrl+m`, let go, then one key. `Ctrl+m` needs a terminal with the kitty keyboard protocol (Ghostty and kitty have it); elsewhere it is the same as `Enter` (section 5.2). There, put `[keys]` and `prefix = "ctrl+b"` in the configuration file and read "prefix" below as that key.
+
+| Step | Do | What you should see |
+|---|---|---|
+| 1 | prefix, `\|` then prefix, `-` | The pane splits to the right, then downwards. Three shells |
+| 2 | prefix, an arrow key (or `h` `j` `k` `l`) | The focus moves to the pane on that side |
+| 3 | prefix, `z` and again | The pane fills the window, then goes back; the tab says `[Z]` meanwhile |
+| 4 | prefix, `c`, then prefix, `1` | A second window, named after its directory, then back to the first. A click on a tab does the same |
+| 5 | run `seq 1 200`, then prefix, `[` | Copy mode: the arrows move a cursor through the history, and `[above/history]` at the top right says where you are |
+| 6 | `v`, move, `y` | The selection is copied to the clipboard and copy mode ends. `q` or `Enter` leaves without copying; `Esc` drops the selection first |
+| 7 | in another pane: `sleep 3; arcade notify --class input --message hello`, then go to a different window | After three seconds the tab of the first window carries a mark: a program there wants you. Prefix, `a` lists the notifications |
+| 8 | prefix, `t` | The tree of sessions, windows and panes; `Enter` jumps to the line you are on |
+| 9 | prefix, `?` and prefix, `:` | The list of every key, and the list of every command by name with a filter |
+| 10 | prefix, `d`, then `arcade` | You are back in the shell you started from while the session keeps running; `arcade` brings it back as it was |
+
+**The ideas behind it.** These explain most of the choices in the reference:
+
+- A session lives in a background process (the daemon), not in the terminal window, so closing the window loses nothing; `arcade upgrade` even changes the daemon to a new version without ending the programs in the panes (section 5.13).
+- A key after the prefix runs once and then your typing goes to the program again, so a letter is never swallowed by Arcade (section 3.1).
+- Arcade never draws over a pane: hints, messages and states (`PREFIX`, `COPY`, `VISUAL`) are words on the status bar.
+- Copying is always a deliberate key (`y`). `Enter`, a mouse release and `Esc` never copy.
+- A window is named once, after the directory it was made in, and keeps that name until you rename it, so tabs do not change under your eyes; what a tab shows is a setting (section 5.3).
+- A pane that needs you says so with one mark of one cell, wherever it is drawn (section 5.8).
+- Nothing in Arcade is specific to one program in a pane. Programs talk to it through standard terminal sequences and through `arcade notify`.
+
 ## 1. Building and running
 
 The first time on a new machine:
@@ -138,7 +177,7 @@ These keys do not repeat: hold the modifier and press again.
 
 **Jump.** `s` opens a jump (as the flash plugin does in Neovim). Type the characters to go to: every match on the rows you see is highlighted, and each match gets a one-letter label drawn on the character right after it. Type a label to move the cursor to the start of that match; the jump ends. More typing narrows the matches. A label letter is never a character that could continue a match, so a key is either a label or more text to look for, never both. A lower case search matches both cases; an upper case letter makes it exact. With more matches than labels (26 letters), the matches nearest to the cursor get them and the others stay highlighted until you type more. `Enter` goes to the first match after the cursor (wrapping to the first), `Backspace` takes the last character back, `Esc` cancels and puts the cursor and the view back. If a selection is active (`v` or `V`), the jump moves the cursor and the selection stretches to it, with its starting point where it was; with no selection, the jump only moves. Example: to copy from here to the word `deploy` farther down, press `v`, `s`, type `deploy`, type the label shown after it, then `y`.
 
-**Commands and their output.** If the shell tells Arcade where its prompts and the output of each command are (the shell prompt marks, OSC 133, section 5.12), copy mode knows the commands. `[` and `]` move the cursor to the previous and the next prompt. `O` selects, by line, the output of the command the cursor is in: from the first row after the prompt to the row before the next prompt, without the empty rows at the end; with the cursor on a prompt (for example on the last one, where copy mode starts), it selects the output of the command before it, and `O` again goes one command further back. Then `y` copies it. Outside copy mode, the prefix then `Y` copies the output of the last finished command of the pane straight to the clipboard and says how many lines were copied. In a pane with no prompt marks, or showing a full-screen program, these keys only show a message on the status bar. Arcade reads the marks only when you press one of these keys, so nothing is slowed down while output goes by.
+**Commands and their output.** If the shell tells Arcade where its prompts and the output of each command are (the shell prompt marks, OSC 133, section 5.15), copy mode knows the commands. `[` and `]` move the cursor to the previous and the next prompt. `O` selects, by line, the output of the command the cursor is in: from the first row after the prompt to the row before the next prompt, without the empty rows at the end; with the cursor on a prompt (for example on the last one, where copy mode starts), it selects the output of the command before it, and `O` again goes one command further back. Then `y` copies it. Outside copy mode, the prefix then `Y` copies the output of the last finished command of the pane straight to the clipboard and says how many lines were copied. In a pane with no prompt marks, or showing a full-screen program, these keys only show a message on the status bar. Arcade reads the marks only when you press one of these keys, so nothing is slowed down while output goes by.
 
 **Links.** A program can mark text as a link (the hidden kind, OSC 8, for example what `ls --hyperlink` or many tools print): Arcade passes those links on to the terminal window, so Ghostty can open them (Cmd+click, or Ctrl+Shift+click while Arcade has the mouse). A link whose address holds a control character, a non-ASCII character or a space, or is longer than 2048 bytes, is not passed on and is drawn as plain text. A pane that is scrolled back, or in copy mode, keeps the links of the rows it shows (the same rules apply); the selection and search colours are drawn over a link without breaking it, and the position mark `[above/history]` covers the link under it. So that you can see what can be opened without hovering, the cells of a link that is passed on are drawn with a dotted underline (a cell the program underlined itself keeps the program's underline and its colour; a link that is not passed on is not underlined; the copied text is not changed). `[links] underline = false` turns that off.
 
@@ -386,7 +425,7 @@ The key capture is a switch for finding out what a pane is really sent, for exam
 
 ## 6. Not built yet
 
-**5.12 Shell prompt marks (for copy mode's `[`, `]`, `O` and the prefix `Y`).** The keys that work on the output of a command need the shell to say where a prompt starts, where what you type starts, and where the output starts. Shells do it with the OSC 133 marks: `A` at the start of the prompt, `B` at the end of the prompt (where your typing starts), `C` when the command starts running (where its output starts) and, optionally, `D;<exit code>` when it ends. Arcade needs at least `A`, `B` and `C`: without `B` and `C` the text you type and the output cannot be told from the prompt. `D` is sent by the snippets below because other tools expect it, but Arcade does not use it. Arcade writes none of this itself and does not touch your dotfiles; put one of these in the startup file of your shell. They work with a prompt made by starship too (the `B` mark is added after the prompt is built, so keep the line that adds it last).
+**5.15 Shell prompt marks (for copy mode's `[`, `]`, `O` and the prefix `Y`).** The keys that work on the output of a command need the shell to say where a prompt starts, where what you type starts, and where the output starts. Shells do it with the OSC 133 marks: `A` at the start of the prompt, `B` at the end of the prompt (where your typing starts), `C` when the command starts running (where its output starts) and, optionally, `D;<exit code>` when it ends. Arcade needs at least `A`, `B` and `C`: without `B` and `C` the text you type and the output cannot be told from the prompt. `D` is sent by the snippets below because other tools expect it, but Arcade does not use it. Arcade writes none of this itself and does not touch your dotfiles; put one of these in the startup file of your shell. They work with a prompt made by starship too (the `B` mark is added after the prompt is built, so keep the line that adds it last).
 
 For zsh (`~/.zshrc`, after `eval "$(starship init zsh)"` if you use starship):
 
