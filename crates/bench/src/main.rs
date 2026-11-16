@@ -1561,6 +1561,147 @@ fn ensure_arcade(root: &Path) -> R<PathBuf> {
     Ok(exe)
 }
 
+// ---------------------------------------------------------------- upgrade
+
+/// The resident memory (megabytes) of a process, from `ps`.
+fn rss_of(pid: i32) -> f64 {
+    sys::rss_mb(pid)
+}
+
+/// The daemon's own memory plus that of the processes it started to rehearse an upgrade.
+fn daemon_and_rehearsal_mb(daemon: i32) -> f64 {
+    let table = text_of("ps", &["-axo", "pid=,ppid=,command="]);
+    let mut total = rss_of(daemon);
+    for line in table.lines() {
+        let mut f = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (f.next(), f.next()) else {
+            continue;
+        };
+        if ppid.parse::<i32>().ok() == Some(daemon) && line.contains("__rehearse") {
+            if let Ok(pid) = pid.parse::<i32>() {
+                total += rss_of(pid);
+            }
+        }
+    }
+    total
+}
+
+/// `arcade upgrade` on a daemon that holds ten panes with 50,000 lines of scrollback each and a
+/// client attached: how long from the command to the first repaint on the client, the largest
+/// memory during it (the daemon and the rehearsal together), and the size of the snapshot.
+fn run_upgrade(config: &Config) -> R<Value> {
+    let fill = fill_file(config)?;
+    let rounds = if config.quick { 2 } else { 5 };
+    let mut runs = Vec::new();
+    for _ in 0..rounds {
+        let subject = Subject::new(Kind::Arcade, &config.arcade_exe, &config.dir);
+        let new_program = config.dir.join(format!("upgrade-target-{}", subject.name));
+        fs::copy(&config.arcade_exe, &new_program)?;
+        let done: Vec<PathBuf> = (0..10)
+            .map(|n| config.dir.join(format!("filled-{}-{n}", subject.name)))
+            .collect();
+        let script = |n: usize| {
+            format!(
+                "stty -opost; cat {file}; printf 'UPGRADE-MARK\\n'; touch {done}; exec cat",
+                file = shell_quote(&fill),
+                done = shell_quote(&done[n])
+            )
+        };
+        subject.start(&script(0))?;
+        for n in 1..10 {
+            subject.arcade_session(&format!("p{n}"), &script(n))?;
+        }
+        wait_for("ten panes to fill", Duration::from_secs(600), || {
+            done.iter().all(|d| d.exists())
+        })?;
+        thread::sleep(Duration::from_secs(2));
+        let pid = subject.server_pid()?;
+        let mut client = Client::open(&subject.attach_argv())?;
+        read_until(
+            &mut client,
+            b"UPGRADE-MARK",
+            Duration::from_secs(30),
+            Vec::new(),
+        )?;
+        drain_quiet(&mut client, Duration::from_millis(500))?;
+        let before_mb = rss_of(pid);
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let peak = {
+            let stop = stop.clone();
+            thread::spawn(move || {
+                let mut peak = 0.0f64;
+                while !stop.load(Ordering::Relaxed) {
+                    peak = peak.max(daemon_and_rehearsal_mb(pid));
+                    thread::sleep(Duration::from_millis(5));
+                }
+                peak
+            })
+        };
+        let t0 = now_ns();
+        let out = clean_env(
+            Command::new(&config.arcade_exe)
+                .arg("--socket")
+                .arg(&subject.socket)
+                .args(["upgrade", "--force"])
+                .arg(&new_program),
+        )
+        .output()?;
+        let t_command = now_ns();
+        if !out.status.success() {
+            stop.store(true, Ordering::Relaxed);
+            return Err(format!(
+                "upgrade failed: {}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+            .into());
+        }
+        let (t_repaint, _) = read_until(
+            &mut client,
+            b"UPGRADE-MARK",
+            Duration::from_secs(60),
+            Vec::new(),
+        )?;
+        stop.store(true, Ordering::Relaxed);
+        let peak_mb = peak.join().unwrap_or(0.0);
+        let after_pid = subject.server_pid()?;
+        let log = fs::read_to_string(subject.socket.with_extension("log")).unwrap_or_default();
+        let snapshot_bytes = log
+            .lines()
+            .rev()
+            .find_map(|l| {
+                let at = l.find("snapshot ")?;
+                l[at + 9..].split_whitespace().next()?.parse::<u64>().ok()
+            })
+            .unwrap_or(0);
+        println!(
+            "  upgrade: command {:.0} ms, first repaint {:.0} ms, peak memory {:.0} MB (before {:.0} MB), snapshot {:.1} MB, same process: {}",
+            (t_command - t0) as f64 / 1e6,
+            (t_repaint - t0) as f64 / 1e6,
+            peak_mb,
+            before_mb,
+            snapshot_bytes as f64 / 1e6,
+            after_pid == pid
+        );
+        runs.push(json!({
+            "command_ms": ((t_command - t0) as f64 / 1e5).round() / 10.0,
+            "first_repaint_ms": ((t_repaint - t0) as f64 / 1e5).round() / 10.0,
+            "peak_memory_mb": round1(peak_mb),
+            "memory_before_mb": round1(before_mb),
+            "snapshot_mb": round1(snapshot_bytes as f64 / 1e6),
+            "same_process": after_pid == pid,
+        }));
+        drop(client);
+        subject.stop();
+        for d in &done {
+            let _ = fs::remove_file(d);
+        }
+        let _ = fs::remove_file(&new_program);
+    }
+    Ok(json!({ "runs": runs }))
+}
+
 fn run() -> R<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("probe") {
@@ -1653,18 +1794,23 @@ fn run() -> R<()> {
     }
 
     type Test = fn(&Config) -> R<Value>;
-    let tests: [(&str, &str, Test); 6] = [
+    let tests: [(&str, &str, Test); 7] = [
         ("throughput", "Throughput", run_throughput),
         ("latency", "Key latency", run_latency),
         ("idle", "Idle", run_idle),
         ("memory", "Memory", run_memory),
         ("startup", "Startup", run_startup),
         ("stages", "Stages of a key and its echo", run_stages),
+        (
+            "upgrade",
+            "Upgrade of a daemon that holds ten full panes",
+            run_upgrade,
+        ),
     ];
     for (key, title, test) in tests {
         // The stage-timing run is made only when asked for by name.
         let asked = config.tests.iter().any(|t| t == key);
-        if !config.runs(key) || (key == "stages" && !asked) {
+        if !config.runs(key) || ((key == "stages" || key == "upgrade") && !asked) {
             continue;
         }
         println!("{title}:");
