@@ -89,6 +89,14 @@ impl TestDaemon {
         Self::start_with(|_| {})
     }
 
+    /// A daemon whose status bar counts every pane that has a notification, the attached
+    /// session's too (the default counts only the other sessions', since the tabs say the rest).
+    pub fn start_counting_all() -> TestDaemon {
+        Self::start_with(|c| {
+            c.config.notification.status_count = arcade_daemon::config::StatusCount::All;
+        })
+    }
+
     pub fn start_with(adjust: impl FnOnce(&mut DaemonConfig)) -> TestDaemon {
         // A short path: socket paths are limited to about 100 bytes.
         let dir = PathBuf::from(format!(

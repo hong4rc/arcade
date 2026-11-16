@@ -976,7 +976,7 @@ mod tests {
                     }
                 })
                 .collect();
-            if let Some(at) = text.find("[x]") {
+            if let Some(at) = text.find(theme::notice_symbol(crate::notify::Class::Error)) {
                 let cells: Vec<&arcade_term::Cell> = row.iter().collect();
                 let style = theme::notice_style(crate::notify::Class::Error);
                 let at = text[..at].chars().count();

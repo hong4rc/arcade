@@ -332,7 +332,7 @@ mod tests {
         assert!(line.contains(" work "), "{line}");
         assert!(line.contains(" 1 sh "), "{line}");
         assert!(line.contains(" 2 vim [Z] "), "{line}");
-        let at = |needle: &str| cells[line.find(needle).unwrap()].style;
+        let at = |needle: &str| cells[line[..line.find(needle).unwrap()].chars().count()].style;
         assert_eq!(at("vim"), theme::style(Role::TabCurrent));
         assert_eq!(at("sh"), theme::style(Role::Tab));
         assert_ne!(at("vim"), at("sh"));
@@ -456,7 +456,7 @@ mod tests {
         let line = text(&cells);
         assert!(line.contains(" 1 sh  42% "), "{line}");
         assert!(line.contains(" 2 vim [Z]  err "), "{line}");
-        let at = |needle: &str| cells[line.find(needle).unwrap()].style;
+        let at = |needle: &str| cells[line[..line.find(needle).unwrap()].chars().count()].style;
         assert_eq!(at("42%"), theme::style(Role::TabNumber));
         assert_eq!(at("err"), theme::notice_style(Class::Error));
         // The mark belongs to its tab: a click on it is a click on the tab.
@@ -523,7 +523,11 @@ mod tests {
         }
         i.notices = [10, 0, 0, 0];
         let line = text(&build(60, &i).0);
-        assert!(line.trim_end().ends_with("[!]10"), "{line:?}");
+        let approval = theme::notice_symbol(Class::Approval);
+        assert!(
+            line.trim_end().ends_with(&format!("{approval}10")),
+            "{line:?}"
+        );
     }
 
     #[test]
@@ -533,10 +537,19 @@ mod tests {
         i.notices = [2, 0, 1, 3];
         let (cells, _) = build(80, &i);
         let line = text(&cells);
-        assert!(line.contains(" 1 sh [!] "), "{line}");
-        assert!(line.trim_end().ends_with("[!]2 [x]1 [i]3"), "{line:?}");
-        let at = |needle: &str| cells[line.find(needle).unwrap()].style;
-        assert_eq!(at("[!]2"), theme::notice_style(Class::Approval));
+        let [approval, error, dot] =
+            [Class::Approval, Class::Error, Class::Info].map(theme::notice_symbol);
+        assert!(line.contains(&format!("1 sh {approval} ")), "{line}");
+        assert!(
+            line.trim_end()
+                .ends_with(&format!("{approval}2 {error}1 {dot}3")),
+            "{line:?}"
+        );
+        let at = |needle: &str| cells[line[..line.find(needle).unwrap()].chars().count()].style;
+        assert_eq!(
+            at(&format!("{approval}2")),
+            theme::notice_style(Class::Approval)
+        );
         assert_ne!(
             theme::notice_style(Class::Approval),
             theme::notice_style(Class::Info)
@@ -552,7 +565,7 @@ mod tests {
             }
         }
         let quiet = text(&build(80, &info()).0);
-        assert!(!quiet.contains("[!]") && !quiet.contains("[i]"));
+        assert!(!quiet.contains(approval) && !quiet.contains(dot));
     }
 
     #[test]

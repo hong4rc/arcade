@@ -60,7 +60,7 @@ fn gone(client: &mut TestClient, mark: &str) -> bool {
 
 #[test]
 fn a_notification_from_the_command_shows_on_the_pane_it_names() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, first) = two_panes(&daemon);
     let o = run(
         daemon.socket(),
@@ -69,12 +69,12 @@ fn a_notification_from_the_command_shows_on_the_pane_it_names() {
     );
     assert_eq!(o.status.code(), Some(0));
     assert!(out(&o).is_empty() && err(&o).is_empty());
-    assert!(shown(&mut client, "[i]1"), "{}", bar(&client));
+    assert!(shown(&mut client, "●1"), "{}", bar(&client));
 }
 
 #[test]
 fn the_pane_comes_from_the_environment_when_no_target_is_given() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, first) = two_panes(&daemon);
     let o = run(
         daemon.socket(),
@@ -82,12 +82,12 @@ fn the_pane_comes_from_the_environment_when_no_target_is_given() {
         &["notify", "--class", "approval"],
     );
     assert_eq!(o.status.code(), Some(0));
-    assert!(shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(shown(&mut client, "▲1"), "{}", bar(&client));
 }
 
 #[test]
 fn a_class_that_waits_for_the_user_stays_until_the_user_types_into_the_pane() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, first) = two_panes(&daemon);
     let o = run(
         daemon.socket(),
@@ -95,32 +95,32 @@ fn a_class_that_waits_for_the_user_stays_until_the_user_types_into_the_pane() {
         &["notify", "--class", "input"],
     );
     assert_eq!(o.status.code(), Some(0));
-    assert!(shown(&mut client, "[?]1"), "{}", bar(&client));
+    assert!(shown(&mut client, "◆1"), "{}", bar(&client));
     // Looking at the pane does not take it away.
     client.send(PREFIX);
     client.send(b"h");
     std::thread::sleep(Duration::from_millis(300));
     client.read_more(Instant::now() + Duration::from_millis(50));
-    assert!(bar(&client).contains("[?]1"), "{}", bar(&client));
+    assert!(bar(&client).contains("◆1"), "{}", bar(&client));
     // Typing into it does.
     client.send(b"x");
-    assert!(gone(&mut client, "[?]"), "{}", bar(&client));
+    assert!(gone(&mut client, "◆"), "{}", bar(&client));
 }
 
 #[test]
 fn an_info_notification_goes_away_when_the_pane_is_looked_at() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, first) = two_panes(&daemon);
     run(daemon.socket(), Some(first), &["notify"]);
-    assert!(shown(&mut client, "[i]1"), "{}", bar(&client));
+    assert!(shown(&mut client, "●1"), "{}", bar(&client));
     client.send(PREFIX);
     client.send(b"h");
-    assert!(gone(&mut client, "[i]"), "{}", bar(&client));
+    assert!(gone(&mut client, "●"), "{}", bar(&client));
 }
 
 #[test]
 fn another_source_with_a_lower_class_does_not_replace_and_the_same_source_does() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, first) = two_panes(&daemon);
     let pane = first.to_string();
     run(
@@ -130,7 +130,7 @@ fn another_source_with_a_lower_class_does_not_replace_and_the_same_source_does()
             "notify", "--target", &pane, "--class", "approval", "--source", "a",
         ],
     );
-    assert!(shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(shown(&mut client, "▲1"), "{}", bar(&client));
     run(
         daemon.socket(),
         None,
@@ -140,7 +140,7 @@ fn another_source_with_a_lower_class_does_not_replace_and_the_same_source_does()
     );
     let (_, log) = daemon.command("notify.log", &[]).unwrap();
     assert!(log.contains("dropped"), "{log}");
-    assert!(bar(&client).contains("[!]1"), "{}", bar(&client));
+    assert!(bar(&client).contains("▲1"), "{}", bar(&client));
     run(
         daemon.socket(),
         None,
@@ -148,13 +148,13 @@ fn another_source_with_a_lower_class_does_not_replace_and_the_same_source_does()
             "notify", "--target", &pane, "--class", "error", "--source", "a",
         ],
     );
-    assert!(shown(&mut client, "[x]1"), "{}", bar(&client));
-    assert!(!bar(&client).contains("[!]"), "{}", bar(&client));
+    assert!(shown(&mut client, "■1"), "{}", bar(&client));
+    assert!(!bar(&client).contains("▲"), "{}", bar(&client));
 }
 
 #[test]
 fn clear_takes_one_notification_or_all_of_them_away() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, first) = two_panes(&daemon);
     let pane = first.to_string();
     run(
@@ -162,28 +162,28 @@ fn clear_takes_one_notification_or_all_of_them_away() {
         None,
         &["notify", "--target", &pane, "--class", "error"],
     );
-    assert!(shown(&mut client, "[x]1"), "{}", bar(&client));
+    assert!(shown(&mut client, "■1"), "{}", bar(&client));
     let o = run(
         daemon.socket(),
         None,
         &["notify", "clear", "--target", &pane],
     );
     assert_eq!(o.status.code(), Some(0));
-    assert!(gone(&mut client, "[x]"), "{}", bar(&client));
+    assert!(gone(&mut client, "■"), "{}", bar(&client));
     run(
         daemon.socket(),
         None,
         &["notify", "--target", &pane, "--class", "input"],
     );
-    assert!(shown(&mut client, "[?]1"), "{}", bar(&client));
+    assert!(shown(&mut client, "◆1"), "{}", bar(&client));
     let o = run(daemon.socket(), None, &["notify", "clear", "--all"]);
     assert_eq!(o.status.code(), Some(0));
-    assert!(gone(&mut client, "[?]"), "{}", bar(&client));
+    assert!(gone(&mut client, "◆"), "{}", bar(&client));
 }
 
 #[test]
 fn control_characters_in_the_text_are_not_kept_and_do_not_break_the_screen() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, first) = two_panes(&daemon);
     let o = run(
         daemon.socket(),
@@ -199,13 +199,13 @@ fn control_characters_in_the_text_are_not_kept_and_do_not_break_the_screen() {
         ],
     );
     assert_eq!(o.status.code(), Some(0));
-    assert!(shown(&mut client, "[x]1"), "{}", bar(&client));
+    assert!(shown(&mut client, "■1"), "{}", bar(&client));
     assert!(!client.screen_text().contains("owned"));
 }
 
 #[test]
 fn an_unknown_class_is_refused_quietly_unless_strict() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, first) = two_panes(&daemon);
     let pane = first.to_string();
     let quiet = run(
@@ -225,12 +225,12 @@ fn an_unknown_class_is_refused_quietly_unless_strict() {
     assert!(err(&strict).contains("unknown class"), "{}", err(&strict));
     std::thread::sleep(Duration::from_millis(200));
     client.read_more(Instant::now() + Duration::from_millis(50));
-    assert!(!bar(&client).contains("[i]"), "{}", bar(&client));
+    assert!(!bar(&client).contains("●"), "{}", bar(&client));
 }
 
 #[test]
 fn no_pane_or_a_missing_pane_is_an_error_that_only_strict_reports() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let quiet = run(daemon.socket(), None, &["notify"]);
     assert_eq!(quiet.status.code(), Some(0));
     assert!(out(&quiet).is_empty() && err(&quiet).is_empty());
@@ -271,7 +271,7 @@ fn without_a_daemon_it_is_silent_quick_and_starts_nothing() {
 
 #[test]
 fn a_version_newer_than_the_daemon_knows_is_refused_with_the_supported_one() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (ok, why) = daemon
         .command("notify.send", &["version=2", "target=1"])
         .unwrap();
@@ -288,7 +288,7 @@ fn a_version_newer_than_the_daemon_knows_is_refused_with_the_supported_one() {
 
 #[test]
 fn check_says_which_pane_and_socket_it_uses_and_sends_a_test() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, first) = two_panes(&daemon);
     let o = run(daemon.socket(), Some(first), &["notify", "check"]);
     assert_eq!(o.status.code(), Some(0), "{}", out(&o));
@@ -299,14 +299,14 @@ fn check_says_which_pane_and_socket_it_uses_and_sends_a_test() {
         text.contains(&daemon.socket().display().to_string()),
         "{text}"
     );
-    assert!(shown(&mut client, "[i]1"), "{}", bar(&client));
+    assert!(shown(&mut client, "●1"), "{}", bar(&client));
     let none = run(daemon.socket(), None, &["notify", "check"]);
     assert_ne!(none.status.code(), Some(0));
 }
 
 #[test]
 fn the_log_lists_what_became_of_the_signals_and_keeps_no_text() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (_client, first) = two_panes(&daemon);
     run(
         daemon.socket(),

@@ -159,6 +159,22 @@ pub struct NotificationConfig {
     pub muted_sources: Vec<String>,
     /// Go to the pane that sent a signal out when the host terminal gets the focus back.
     pub auto_jump: bool,
+    /// The mark on the tab of a window that has a notification.
+    pub tab_mark: bool,
+    /// The mark at the top right of a pane out of focus, in a window of several panes.
+    pub pane_mark: bool,
+    /// The count at the right end of the status bar.
+    pub status_count: StatusCount,
+}
+
+/// What the count at the right end of the status bar counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusCount {
+    Off,
+    /// Only the notifications the tabs cannot show: those of the other sessions.
+    OtherSessions,
+    /// Every pane that has one.
+    All,
 }
 
 impl Default for NotificationConfig {
@@ -186,6 +202,9 @@ impl Default for NotificationConfig {
             bell_interval: Duration::from_secs(2),
             muted_sources: Vec::new(),
             auto_jump: true,
+            tab_mark: true,
+            pane_mark: true,
+            status_count: StatusCount::OtherSessions,
         }
     }
 }
@@ -512,6 +531,9 @@ fn read_notification(r: &mut Reader<'_>, table: &DeTable<'_>, config: &mut Notif
         "push-interval",
         "bell-interval",
         "mute-sources",
+        "tab-mark",
+        "pane-mark",
+        "status-count",
         "approval",
         "input",
         "error",
@@ -525,6 +547,28 @@ fn read_notification(r: &mut Reader<'_>, table: &DeTable<'_>, config: &mut Notif
                     config.auto_jump = b;
                 }
             }
+            "tab-mark" => {
+                if let Some(b) = r.boolean("tab-mark", v) {
+                    config.tab_mark = b;
+                }
+            }
+            "pane-mark" => {
+                if let Some(b) = r.boolean("pane-mark", v) {
+                    config.pane_mark = b;
+                }
+            }
+            "status-count" => match r.string("status-count", v) {
+                Some("other-sessions") => config.status_count = StatusCount::OtherSessions,
+                Some("all") => config.status_count = StatusCount::All,
+                Some("off") => config.status_count = StatusCount::Off,
+                Some(other) => r.error(
+                    v.span().start,
+                    format!(
+                        "status-count is \"other-sessions\", \"all\" or \"off\", not \"{other}\""
+                    ),
+                ),
+                None => {}
+            },
             "push-when-host-focused" => {
                 if let Some(b) = r.boolean("push-when-host-focused", v) {
                     config.push_when_host_focused = b;
@@ -1375,6 +1419,25 @@ position = "top"
         assert_eq!(c.muted_sources, ["a", "b"]);
         assert!(c.class(crate::notify::Class::Info).bell);
         assert!(c.class(crate::notify::Class::Info).clear_on_focus);
+    }
+
+    #[test]
+    fn the_places_of_the_notification_marks_can_be_turned_off() {
+        let d = parse("").unwrap().notification;
+        assert!(d.tab_mark && d.pane_mark);
+        assert_eq!(d.status_count, StatusCount::OtherSessions);
+        let c =
+            parse("[notification]\ntab-mark = false\npane-mark = false\nstatus-count = \"off\"\n")
+                .unwrap()
+                .notification;
+        assert!(!c.tab_mark && !c.pane_mark);
+        assert_eq!(c.status_count, StatusCount::Off);
+        let c = parse("[notification]\nstatus-count = \"all\"\n")
+            .unwrap()
+            .notification;
+        assert_eq!(c.status_count, StatusCount::All);
+        let got = lines("[notification]\nstatus-count = \"some\"\n");
+        assert!(got[0].contains("status-count is"), "{got:?}");
     }
 
     #[test]

@@ -20,7 +20,7 @@ fn idle_for(client: &mut arcade_testkit::TestClient, wait: Duration) -> Duration
 
 #[test]
 fn standing_notifications_and_rung_bells_cost_no_processor_time_when_idle() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let mut client = daemon
         .attach(AttachOptions::new().size(100, 30).named("work"))
         .unwrap();
@@ -52,7 +52,7 @@ fn standing_notifications_and_rung_bells_cost_no_processor_time_when_idle() {
             assert!(ok, "{why}");
         }
     }
-    assert!(client.wait_until(WAIT, |c| c.status_row().contains("[!]1")));
+    assert!(client.wait_until(WAIT, |c| c.status_row().contains("▲1")));
     let settling = idle_for(&mut client, Duration::from_secs(3));
     let with = idle_for(&mut client, Duration::from_secs(5));
     eprintln!(

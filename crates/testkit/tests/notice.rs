@@ -44,13 +44,13 @@ fn nothing_shown_for(client: &mut TestClient, mark: &str, wait: Duration) -> boo
 
 #[test]
 fn a_bell_in_a_pane_out_of_focus_shows_on_its_tab_and_in_the_counter_and_looking_clears_it() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let mut client = start(&daemon);
     signal_from_a_pane_left_behind(&mut client, "\\a");
-    assert!(mark_shown(&mut client, "[i]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
     // The tab of the window wears the mark, too.
     assert!(
-        bar(&client).contains(" 1 ") && bar(&client).contains("[i] "),
+        bar(&client).contains(" 1 ") && bar(&client).contains("● "),
         "{}",
         bar(&client)
     );
@@ -58,7 +58,7 @@ fn a_bell_in_a_pane_out_of_focus_shows_on_its_tab_and_in_the_counter_and_looking
     client.send(PREFIX);
     client.send(b"h");
     assert!(
-        client.wait_until(WAIT, |c| !bar(c).contains("[i]")),
+        client.wait_until(WAIT, |c| !bar(c).contains("●")),
         "{}",
         bar(&client)
     );
@@ -66,12 +66,12 @@ fn a_bell_in_a_pane_out_of_focus_shows_on_its_tab_and_in_the_counter_and_looking
 
 #[test]
 fn a_bell_in_the_pane_that_is_looked_at_leaves_nothing() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let mut client = start(&daemon);
     client.type_line("printf '\\a'; echo rang");
     client.wait_for_row("rang").unwrap();
     assert!(
-        nothing_shown_for(&mut client, "[i]", Duration::from_millis(400)),
+        nothing_shown_for(&mut client, "●", Duration::from_millis(400)),
         "{}",
         bar(&client)
     );
@@ -79,7 +79,7 @@ fn a_bell_in_the_pane_that_is_looked_at_leaves_nothing() {
 
 #[test]
 fn the_two_notification_escape_sequences_make_one_each_and_the_others_make_none() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let mut client = start(&daemon);
     // A progress report and the kitty protocol are not notifications of ours.
     signal_from_a_pane_left_behind(
@@ -87,7 +87,7 @@ fn the_two_notification_escape_sequences_make_one_each_and_the_others_make_none(
         "\\033]9;4;1;50\\007\\033]99;i=1:d=0;Hello\\033\\\\\\\\",
     );
     assert!(
-        nothing_shown_for(&mut client, "[i]", Duration::from_millis(1500)),
+        nothing_shown_for(&mut client, "●", Duration::from_millis(1500)),
         "{}",
         bar(&client)
     );
@@ -95,40 +95,40 @@ fn the_two_notification_escape_sequences_make_one_each_and_the_others_make_none(
     client.send(PREFIX);
     client.send(b"h");
     signal_from_a_pane_left_behind(&mut client, "\\033]9;build done\\007");
-    assert!(mark_shown(&mut client, "[i]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
     client.send(PREFIX);
     client.send(b"h");
-    assert!(client.wait_until(WAIT, |c| !bar(c).contains("[i]")));
+    assert!(client.wait_until(WAIT, |c| !bar(c).contains("●")));
     signal_from_a_pane_left_behind(&mut client, "\\033]777;notify;Title;Body\\007");
-    assert!(mark_shown(&mut client, "[i]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
 }
 
 #[test]
 fn the_counter_counts_panes_and_not_signals() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let mut client = start(&daemon);
     // Three bells from one pane are one pane.
     signal_from_a_pane_left_behind(&mut client, "\\a\\a\\a");
-    assert!(mark_shown(&mut client, "[i]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
     // A second pane that rang makes two.
     client.send(PREFIX);
     client.send(b"l");
     signal_from_a_pane_left_behind(&mut client, "\\a");
-    assert!(mark_shown(&mut client, "[i]2"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "●2"), "{}", bar(&client));
 }
 
 #[test]
 fn a_pane_whose_program_ends_takes_its_notification_with_it() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let mut client = start(&daemon);
     client.type_line("sleep 1; printf '\\a'; sleep 2; exit");
     client.send(PREFIX);
     client.send(b"|");
     assert!(client.wait_until(WAIT, |c| c.screen_text().contains('│')));
-    assert!(mark_shown(&mut client, "[i]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
     // The first pane's shell ends, the pane closes, and the counter goes with it.
     assert!(
-        client.wait_until(WAIT, |c| !bar(c).contains("[i]")
+        client.wait_until(WAIT, |c| !bar(c).contains("●")
             && !c.screen_text().contains('│')),
         "{}\n{}",
         client.screen_text(),
@@ -138,16 +138,16 @@ fn a_pane_whose_program_ends_takes_its_notification_with_it() {
 
 #[test]
 fn a_notification_is_kept_when_the_client_detaches_and_attaches_again() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let mut client = start(&daemon);
     signal_from_a_pane_left_behind(&mut client, "\\a");
-    assert!(mark_shown(&mut client, "[i]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
     client.detach();
     assert!(client.wait_closed(WAIT));
     let mut again = daemon
         .attach(AttachOptions::new().size(100, 30).existing(Some("work")))
         .unwrap();
-    assert!(mark_shown(&mut again, "[i]1"), "{}", bar(&again));
+    assert!(mark_shown(&mut again, "●1"), "{}", bar(&again));
 }
 
 // ---- Going to the pane that needs you, the list, clearing, and the marks in the tree ----
@@ -184,12 +184,12 @@ fn three_panes(daemon: &TestDaemon) -> (TestClient, [u64; 3]) {
 
 #[test]
 fn next_goes_to_the_most_urgent_pane_then_the_next_and_skips_the_pane_it_is_in() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, [p1, p2, p3]) = three_panes(&daemon);
     let _ = p3;
     notify(&daemon, p1, "error", "a", "old");
     notify(&daemon, p2, "approval", "b", "newer");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
     // The direct key (Ctrl+Alt+a) goes to the approval; every key press after it leaves the pane it
     // is in for the other one, so four presses end in the error pane. (Looking at the pane with
     // a typed command would clear what waits there, so the focus is asked for only at the end.)
@@ -205,12 +205,12 @@ fn next_goes_to_the_most_urgent_pane_then_the_next_and_skips_the_pane_it_is_in()
 
 #[test]
 fn within_a_class_the_pane_that_waited_longest_comes_first() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, [p1, p2, _]) = three_panes(&daemon);
     notify(&daemon, p1, "input", "a", "first");
     std::thread::sleep(Duration::from_millis(50));
     notify(&daemon, p2, "input", "b", "second");
-    assert!(mark_shown(&mut client, "[?]2"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "◆2"), "{}", bar(&client));
     let (ok, _) = daemon.command("notification.next", &[]).unwrap();
     assert!(ok);
     assert_eq!(client.focused_pane_id(), p1);
@@ -218,7 +218,7 @@ fn within_a_class_the_pane_that_waited_longest_comes_first() {
 
 #[test]
 fn next_with_nothing_waiting_says_so() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let _client = start(&daemon);
     let (ok, why) = daemon.command("notification.next", &[]).unwrap();
     assert!(!ok);
@@ -227,11 +227,11 @@ fn next_with_nothing_waiting_says_so() {
 
 #[test]
 fn the_list_shows_what_waits_and_enter_goes_to_the_chosen_pane() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, [p1, p2, _]) = three_panes(&daemon);
     notify(&daemon, p1, "error", "build", "failed");
     notify(&daemon, p2, "approval", "claude", "may I");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
     client.send(PREFIX);
     client.send(b"a");
     assert!(
@@ -254,11 +254,11 @@ fn the_list_shows_what_waits_and_enter_goes_to_the_chosen_pane() {
 
 #[test]
 fn delete_in_the_list_clears_the_chosen_line_and_the_list_closes_when_empty() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, [p1, p2, _]) = three_panes(&daemon);
     notify(&daemon, p1, "error", "build", "failed");
     notify(&daemon, p2, "approval", "claude", "may I");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
     client.send(PREFIX);
     client.send(b"a");
     assert!(client.wait_until(WAIT, |c| c.screen_text().contains("Notifications")));
@@ -269,14 +269,14 @@ fn delete_in_the_list_clears_the_chosen_line_and_the_list_closes_when_empty() {
         "{}",
         client.screen_text()
     );
-    assert!(gone(&mut client, "[!]"), "{}", bar(&client));
+    assert!(gone(&mut client, "▲"), "{}", bar(&client));
     client.send(DELETE);
     assert!(
         client.wait_until(WAIT, |c| !c.screen_text().contains("Notifications")),
         "{}",
         client.screen_text()
     );
-    assert!(gone(&mut client, "[x]"), "{}", bar(&client));
+    assert!(gone(&mut client, "■"), "{}", bar(&client));
 }
 
 fn gone(client: &mut TestClient, mark: &str) -> bool {
@@ -285,21 +285,21 @@ fn gone(client: &mut TestClient, mark: &str) -> bool {
 
 #[test]
 fn the_keys_clear_the_pane_in_focus_or_every_pane() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, [p1, p2, p3]) = three_panes(&daemon);
     notify(&daemon, p3, "approval", "a", "here");
     notify(&daemon, p1, "error", "a", "there");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
     client.send(PREFIX);
     client.send(b"q");
-    assert!(gone(&mut client, "[!]"), "{}", bar(&client));
-    assert!(bar(&client).contains("[x]1"), "{}", bar(&client));
+    assert!(gone(&mut client, "▲"), "{}", bar(&client));
+    assert!(bar(&client).contains("■1"), "{}", bar(&client));
     notify(&daemon, p2, "input", "a", "x");
-    assert!(mark_shown(&mut client, "[?]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "◆1"), "{}", bar(&client));
     client.send(PREFIX);
     client.send(b"A");
     assert!(
-        client.wait_until(WAIT, |c| !bar(c).contains("[?]") && !bar(c).contains("[x]")),
+        client.wait_until(WAIT, |c| !bar(c).contains("◆") && !bar(c).contains("■")),
         "{}",
         bar(&client)
     );
@@ -307,7 +307,7 @@ fn the_keys_clear_the_pane_in_focus_or_every_pane() {
 
 #[test]
 fn the_tree_marks_panes_windows_and_sessions_and_the_marks_follow_clearing() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let mut other = daemon
         .attach(AttachOptions::new().size(100, 30).named("other"))
         .unwrap();
@@ -325,7 +325,7 @@ fn the_tree_marks_panes_windows_and_sessions_and_the_marks_follow_clearing() {
     };
     assert!(
         client.wait_until(WAIT, |c| row_of(c, "other")
-            .is_some_and(|r| r.contains("[x]"))),
+            .is_some_and(|r| r.contains("■"))),
         "{}",
         client.screen_text()
     );
@@ -338,7 +338,7 @@ fn the_tree_marks_panes_windows_and_sessions_and_the_marks_follow_clearing() {
     client.send(RIGHT);
     assert!(
         client.wait_until(WAIT, |c| {
-            c.screen_rows().iter().filter(|r| r.contains("[x]")).count() >= 3
+            c.screen_rows().iter().filter(|r| r.contains("■")).count() >= 3
         }),
         "{}",
         client.screen_text()
@@ -349,7 +349,7 @@ fn the_tree_marks_panes_windows_and_sessions_and_the_marks_follow_clearing() {
         .unwrap();
     assert!(ok);
     assert!(
-        client.wait_until(WAIT, |c| !c.screen_text().contains("[x]")),
+        client.wait_until(WAIT, |c| !c.screen_text().contains("■")),
         "{}",
         client.screen_text()
     );
@@ -370,10 +370,10 @@ use std::time::Instant;
 
 #[test]
 fn a_class_that_waits_for_you_rings_and_asks_for_a_notification_when_the_pane_is_not_looked_at() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, [first, _, _]) = three_panes(&daemon);
     notify(&daemon, first, "approval", "claude", "may I");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
     settle(&mut client, Duration::from_millis(200));
     assert_eq!(client.bells, 1);
     // A notification of the host terminal's own, from a command: OSC 777, the source for the
@@ -388,11 +388,11 @@ fn a_class_that_waits_for_you_rings_and_asks_for_a_notification_when_the_pane_is
 
 #[test]
 fn nothing_goes_out_for_the_pane_that_is_looked_at() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, [_, _, third]) = three_panes(&daemon);
     // The third pane has the focus and the terminal is looked at.
     notify(&daemon, third, "approval", "claude", "here");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
     settle(&mut client, Duration::from_millis(300));
     assert_eq!(client.bells, 0);
     assert!(client.host_notifications.is_empty());
@@ -402,10 +402,10 @@ fn nothing_goes_out_for_the_pane_that_is_looked_at() {
 
 #[test]
 fn an_info_notification_asks_for_a_notification_but_does_not_ring() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, [first, _, _]) = three_panes(&daemon);
     notify(&daemon, first, "info", "build", "done");
-    assert!(mark_shown(&mut client, "[i]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
     settle(&mut client, Duration::from_millis(200));
     assert_eq!(client.bells, 0);
     assert_eq!(client.host_notifications.len(), 1);
@@ -413,10 +413,10 @@ fn an_info_notification_asks_for_a_notification_but_does_not_ring() {
 
 #[test]
 fn an_escape_sequence_notification_goes_out_as_one_new_sequence_with_the_cleaned_texts() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let mut client = start(&daemon);
     signal_from_a_pane_left_behind(&mut client, "\\033]777;notify;Title;Body\\007");
-    assert!(mark_shown(&mut client, "[i]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
     settle(&mut client, Duration::from_millis(200));
     assert_eq!(
         client.host_notifications,
@@ -427,7 +427,7 @@ fn an_escape_sequence_notification_goes_out_as_one_new_sequence_with_the_cleaned
 
 #[test]
 fn a_notification_typed_in_the_pane_that_is_looked_at_sends_nothing_out() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let mut client = start(&daemon);
     client.type_line("printf '\\033]777;notify;T;B\\007'; echo sent");
     client.wait_for_row("sent").unwrap();
@@ -439,25 +439,25 @@ fn a_notification_typed_in_the_pane_that_is_looked_at_sends_nothing_out() {
 #[test]
 fn when_the_terminal_is_not_looked_at_the_pane_in_focus_is_told_about_and_looking_again_clears_info()
  {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, [_, _, third]) = three_panes(&daemon);
     client.send(FOCUS_OUT);
     notify(&daemon, third, "info", "build", "done");
-    assert!(mark_shown(&mut client, "[i]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
     settle(&mut client, Duration::from_millis(200));
     assert_eq!(client.host_notifications.len(), 1);
     // The terminal gets the focus back: the pane is looked at, and info goes.
     client.send(FOCUS_IN);
-    assert!(gone(&mut client, "[i]"), "{}", bar(&client));
+    assert!(gone(&mut client, "●"), "{}", bar(&client));
 }
 
 #[test]
 fn a_pane_sends_out_at_most_once_in_five_seconds() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, [first, _, _]) = three_panes(&daemon);
     notify(&daemon, first, "input", "a", "one");
     notify(&daemon, first, "input", "a", "two");
-    assert!(mark_shown(&mut client, "[?]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "◆1"), "{}", bar(&client));
     settle(&mut client, Duration::from_millis(300));
     assert_eq!(client.host_notifications.len(), 1);
     let (_, log) = daemon.command("notify.log", &[]).unwrap();
@@ -466,7 +466,7 @@ fn a_pane_sends_out_at_most_once_in_five_seconds() {
 
 #[test]
 fn ten_panes_in_a_second_make_ten_marks_one_bell_at_once_and_one_more_together_later() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let mut client = start(&daemon);
     let mut panes = vec![client.focused_pane_id()];
     for _ in 0..9 {
@@ -480,7 +480,7 @@ fn ten_panes_in_a_second_make_ten_marks_one_bell_at_once_and_one_more_together_l
     for pane in &panes {
         notify(&daemon, *pane, "approval", "agent", "go");
     }
-    assert!(mark_shown(&mut client, "[!]10"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲10"), "{}", bar(&client));
     settle(&mut client, Duration::from_millis(300));
     assert_eq!(client.bells, 1, "one bell at once");
     assert_eq!(client.host_notifications.len(), 10);
@@ -494,7 +494,7 @@ fn ten_panes_in_a_second_make_ten_marks_one_bell_at_once_and_one_more_together_l
 
 #[test]
 fn the_focus_reports_of_the_host_terminal_do_not_reach_the_program_in_the_pane() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let mut client = start(&daemon);
     client.type_line("cat -v");
     client.send(FOCUS_OUT);
@@ -529,6 +529,11 @@ fn daemon_with(settings: &str) -> TestDaemon {
         std::process::id(),
         FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
+    // The counting at the right end is the subject of these tests: count every pane.
+    let settings = match settings.strip_prefix("[notification]\n") {
+        Some(rest) => format!("[notification]\nstatus-count = \"all\"\n{rest}"),
+        None => format!("[notification]\nstatus-count = \"all\"\n{settings}"),
+    };
     std::fs::write(&path, settings).unwrap();
     TestDaemon::start_with(move |c| c.config_path = Some(path))
 }
@@ -538,11 +543,11 @@ const BACK: &[u8] = b"\x1b[111;7u";
 #[test]
 fn when_the_terminal_gets_the_focus_back_the_client_goes_to_the_pane_that_sent_a_notification_out_and_the_return_key_goes_back()
  {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, [first, _, third]) = three_panes(&daemon);
     client.send(FOCUS_OUT);
     notify(&daemon, first, "approval", "claude", "may I");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
     settle(&mut client, Duration::from_millis(200));
     assert_eq!(client.host_notifications.len(), 1);
     client.send(FOCUS_IN);
@@ -555,11 +560,11 @@ fn when_the_terminal_gets_the_focus_back_the_client_goes_to_the_pane_that_sent_a
 
 #[test]
 fn no_jump_when_the_notification_is_gone_or_the_terminal_was_looked_at_all_the_time() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_counting_all();
     let (mut client, [first, _, third]) = three_panes(&daemon);
     client.send(FOCUS_OUT);
     notify(&daemon, first, "approval", "claude", "may I");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
     let (ok, _) = daemon
         .command("notify.clear", &[&format!("target={first}")])
         .unwrap();
@@ -568,7 +573,7 @@ fn no_jump_when_the_notification_is_gone_or_the_terminal_was_looked_at_all_the_t
     assert_eq!(client.focused_pane_id(), third);
     // A notification sent out while the terminal was looked at does not make a jump later.
     notify(&daemon, first, "input", "claude", "again");
-    assert!(mark_shown(&mut client, "[?]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "◆1"), "{}", bar(&client));
     client.send(FOCUS_OUT);
     client.send(FOCUS_IN);
     assert_eq!(client.focused_pane_id(), third);
@@ -580,7 +585,7 @@ fn the_jump_can_be_turned_off() {
     let (mut client, [first, _, third]) = three_panes(&daemon);
     client.send(FOCUS_OUT);
     notify(&daemon, first, "approval", "claude", "may I");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
     client.send(FOCUS_IN);
     assert_eq!(client.focused_pane_id(), third);
 }
@@ -591,12 +596,12 @@ fn a_muted_source_makes_nothing() {
     let (mut client, [first, _, _]) = three_panes(&daemon);
     notify(&daemon, first, "approval", "noisy", "spam");
     settle(&mut client, Duration::from_millis(300));
-    assert!(!bar(&client).contains("[!]"), "{}", bar(&client));
+    assert!(!bar(&client).contains("▲"), "{}", bar(&client));
     assert!(client.host_notifications.is_empty());
     let (_, log) = daemon.command("notify.log", &[]).unwrap();
     assert!(log.contains("muted"), "{log}");
     notify(&daemon, first, "approval", "other", "real");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
 }
 
 #[test]
@@ -607,7 +612,7 @@ fn a_class_can_go_without_an_indicator_without_a_bell_or_without_a_notification(
     let (mut client, [first, second, third]) = three_panes(&daemon);
     notify(&daemon, first, "error", "a", "e");
     settle(&mut client, Duration::from_millis(300));
-    assert!(!bar(&client).contains("[x]"), "{}", bar(&client));
+    assert!(!bar(&client).contains("■"), "{}", bar(&client));
     assert_eq!(
         client.host_notifications.len(),
         1,
@@ -616,7 +621,7 @@ fn a_class_can_go_without_an_indicator_without_a_bell_or_without_a_notification(
     assert_eq!(client.bells, 1);
     // Input: the notification goes out, the bell does not.
     notify(&daemon, second, "input", "a", "i");
-    assert!(mark_shown(&mut client, "[?]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "◆1"), "{}", bar(&client));
     settle(&mut client, Duration::from_millis(300));
     assert_eq!(client.host_notifications.len(), 2);
     assert_eq!(client.bells, 1);
@@ -624,7 +629,7 @@ fn a_class_can_go_without_an_indicator_without_a_bell_or_without_a_notification(
     client.send(PREFIX);
     client.send(b"h");
     notify(&daemon, third, "approval", "a", "p");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
     // The bell of the interval waits; the notification of its own does not come.
     assert_eq!(client.host_notifications.len(), 2);
 }
@@ -634,7 +639,7 @@ fn the_terminal_looked_at_can_keep_everything_in_but_the_indicator() {
     let daemon = daemon_with("[notification]\npush-when-host-focused = false\n");
     let (mut client, [first, second, _]) = three_panes(&daemon);
     notify(&daemon, first, "approval", "a", "quiet");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
     settle(&mut client, Duration::from_millis(300));
     assert!(client.host_notifications.is_empty());
     assert_eq!(client.bells, 0);
@@ -650,7 +655,7 @@ fn a_command_notification_can_go_out_as_one_message() {
     let daemon = daemon_with("[notification]\nosc = \"9\"\n");
     let (mut client, [first, _, _]) = three_panes(&daemon);
     notify(&daemon, first, "approval", "claude", "may I");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
     settle(&mut client, Duration::from_millis(300));
     assert_eq!(
         client.host_notifications,
@@ -663,12 +668,12 @@ fn a_class_can_be_made_to_go_away_when_looked_at() {
     let daemon = daemon_with("[notification.approval]\nclear-on-focus = true\n");
     let (mut client, [first, _, _]) = three_panes(&daemon);
     notify(&daemon, first, "approval", "a", "x");
-    assert!(mark_shown(&mut client, "[!]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
     client.send(PREFIX);
     client.send(b"h");
     client.send(PREFIX);
     client.send(b"h");
-    assert!(gone(&mut client, "[!]"), "{}", bar(&client));
+    assert!(gone(&mut client, "▲"), "{}", bar(&client));
 }
 
 #[test]
@@ -677,7 +682,7 @@ fn the_intervals_come_from_the_settings() {
     let (mut client, [first, _, _]) = three_panes(&daemon);
     notify(&daemon, first, "input", "a", "one");
     notify(&daemon, first, "input", "a", "two");
-    assert!(mark_shown(&mut client, "[?]1"), "{}", bar(&client));
+    assert!(mark_shown(&mut client, "◆1"), "{}", bar(&client));
     settle(&mut client, Duration::from_millis(300));
     assert_eq!(client.host_notifications.len(), 2);
     assert_eq!(client.bells, 2);

@@ -315,6 +315,19 @@ impl Store {
         counts
     }
 
+    /// As `counts`, for every pane that is not among `except`.
+    pub fn counts_outside(&self, except: &[u64]) -> [usize; 4] {
+        let mut counts = [0; 4];
+        for (pane, n) in &self.standing {
+            if !except.contains(pane)
+                && let Some(i) = Class::BY_URGENCY.iter().position(|c| *c == n.class)
+            {
+                counts[i] += 1;
+            }
+        }
+        counts
+    }
+
     /// The panes that have a notification, the most urgent first and, within a class, the one
     /// that has waited longest first.
     pub fn by_priority(&self) -> Vec<(u64, &Notification)> {

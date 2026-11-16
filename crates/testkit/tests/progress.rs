@@ -118,7 +118,7 @@ fn a_report_that_is_not_valid_is_not_passed_on_and_none_is_a_notification() {
     client.wait_until(Duration::from_millis(300), |_| false);
     assert_eq!(client.host_progress.len(), count);
     assert!(
-        !client.status_row().contains("[i]"),
+        !client.status_row().contains("●"),
         "{}",
         client.status_row()
     );

@@ -63,7 +63,11 @@ fn status_info(
                 text: tab_text(config, panes, w),
                 current: w.id == s.current,
                 zoomed: w.zoomed,
-                notice: notices.highest(w.layout.rects().into_iter().map(|(p, _)| p)),
+                notice: config
+                    .notification
+                    .tab_mark
+                    .then(|| notices.highest(w.layout.rects().into_iter().map(|(p, _)| p)))
+                    .flatten(),
                 progress: panes.get(&w.focus).and_then(|p| p.progress).or_else(|| {
                     w.layout
                         .rects()
@@ -76,7 +80,11 @@ fn status_info(
         locked: s.key_state.locked,
         unlock_key,
         copy,
-        notices: notices.counts(s.all_panes()),
+        notices: match config.notification.status_count {
+            crate::config::StatusCount::Off => [0; 4],
+            crate::config::StatusCount::All => notices.counts(s.all_panes()),
+            crate::config::StatusCount::OtherSessions => notices.counts_outside(&s.all_panes()),
+        },
         message: s.key_state.message.clone(),
         prompt: s.key_state.status_prompt(),
         hint,
@@ -479,10 +487,14 @@ impl Server {
             }
         }
         stage_mark!(DaemonSnapshot);
-        // A pane with a notification wears its mark at the top right, over what the program drew.
-        if !self.notices.is_empty() {
+        // A pane out of focus, in a window of several panes, wears the mark of its notification in
+        // one cell at the top right (with one pane the tab says it, and the pane in focus is
+        // being looked at). It covers that cell of what the program drew.
+        if self.config.notification.pane_mark && visible.len() > 1 && !self.notices.is_empty() {
+            let in_focus = session.current_window().focus;
             for (pane_id, rect) in &visible {
-                if let Some(n) = self.notices.get(*pane_id)
+                if *pane_id != in_focus
+                    && let Some(n) = self.notices.get(*pane_id)
                     && rect.w >= MARK_MIN_WIDTH
                 {
                     let mark =

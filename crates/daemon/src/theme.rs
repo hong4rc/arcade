@@ -212,12 +212,15 @@ pub fn notice_style(class: crate::notify::Class) -> Style {
     })
 }
 
+/// The mark of a class: one cell wide wherever it is drawn (tab, count, pane, lists), a shape of
+/// its own so that colour is not all that tells the classes apart, and a shape that text does
+/// not use, so that a line of a list can be searched for it.
 pub fn notice_symbol(class: crate::notify::Class) -> &'static str {
     match class {
-        crate::notify::Class::Approval => "[!]",
-        crate::notify::Class::Input => "[?]",
-        crate::notify::Class::Error => "[x]",
-        crate::notify::Class::Info => "[i]",
+        crate::notify::Class::Approval => "▲",
+        crate::notify::Class::Input => "◆",
+        crate::notify::Class::Error => "■",
+        crate::notify::Class::Info => "●",
     }
 }
 
@@ -340,6 +343,23 @@ mod tests {
         // The name's own lighter text keeps the tab's colours too.
         let title = style(Role::TabTitleCurrent);
         assert_eq!((title.fg, title.bg), (tab.fg, tab.bg));
+    }
+
+    #[test]
+    fn every_notification_mark_is_one_cell_and_a_solid_chip_on_any_tab() {
+        use crate::notify::Class;
+        let tab = style(Role::TabCurrent);
+        let plain_tab = style(Role::Tab);
+        for class in Class::BY_URGENCY {
+            let cells = crate::compose::text_cells(notice_symbol(class), Style::default());
+            assert_eq!(cells.len(), 1, "{class:?}: {:?}", notice_symbol(class));
+            // The mark carries a pair of colours of its own, so it reads the same on the blue of
+            // the current tab and on the others.
+            let mark = notice_style(class);
+            assert_ne!(mark.fg, mark.bg, "{class:?}");
+            assert_ne!(mark.bg, tab.bg, "{class:?}");
+            assert_ne!(mark.bg, plain_tab.bg, "{class:?}");
+        }
     }
 
     #[test]
