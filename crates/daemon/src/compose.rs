@@ -10,10 +10,6 @@ use arcade_term::{Cell, CellWidth, Frame, LinkSpan, RowUpdate, Style};
 use crate::layout::{Divider, Rect};
 use crate::theme::{self, Role, Symbol};
 
-/// How many columns a character takes on screen: 0 for combining marks, 2 for wide characters;
-/// the same as in a pane (see `width`).
-pub use crate::width::char_width;
-
 pub fn blank(style: Style) -> Cell {
     Cell {
         text: String::new(),
@@ -26,20 +22,20 @@ pub fn blank(style: Style) -> Cell {
 /// combining mark joins the cell before it.
 pub fn text_cells(text: &str, style: Style) -> Vec<Cell> {
     let mut cells: Vec<Cell> = Vec::new();
-    for c in text.chars() {
-        match char_width(c) {
+    for unit in crate::width::units(text) {
+        match unit.width {
             0 => {
                 if let Some(last) = cells
                     .iter_mut()
                     .rev()
                     .find(|cell| cell.width != CellWidth::SpacerTail)
                 {
-                    last.text.push(c);
+                    last.text.push_str(unit.text);
                 }
             }
             2 => {
                 cells.push(Cell {
-                    text: c.to_string(),
+                    text: unit.text.to_string(),
                     width: CellWidth::Wide,
                     style,
                 });
@@ -50,7 +46,7 @@ pub fn text_cells(text: &str, style: Style) -> Vec<Cell> {
                 });
             }
             _ => cells.push(Cell {
-                text: c.to_string(),
+                text: unit.text.to_string(),
                 width: CellWidth::Narrow,
                 style,
             }),
@@ -391,18 +387,26 @@ mod tests {
             .collect()
     }
 
-    /// Known difference, not yet closed: the engine joins a character with what follows it (a
-    /// variation selector that asks for the picture, a zero width joiner, a pair of regional
-    /// indicators) into one cluster, and the bar takes the characters one at a time. A window
-    /// name with such a sequence is drawn out of line. Run with `--ignored` to see the list.
+    /// A sequence the engine joins into one cluster is as wide on the bar as in the pane, by the
+    /// few rules of `width::units`.
     #[test]
-    #[ignore = "the bar does not join sequences into clusters as the engine does"]
     fn the_bar_gives_a_sequence_the_width_the_pane_gives_it() {
         let texts = [
             "\u{2665}\u{fe0f}",
             "\u{2764}\u{fe0f}",
+            "\u{2764}\u{fe0e}",
+            "1\u{fe0f}",
+            "a\u{fe0f}",
             "\u{1f468}\u{200d}\u{1f469}",
+            "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+            "\u{1f44d}\u{1f3fd}",
+            "\u{270b}\u{1f3fd}",
             "\u{1f1fa}\u{1f1f8}",
+            "\u{1f1fa}\u{1f1f8}\u{1f1ec}",
+            "\u{1f1fa}\u{1f1f8}\u{1f1ec}\u{1f1e7}",
+            "\u{1f469}\u{200d}\u{2764}\u{fe0f}\u{200d}\u{1f468}",
+            "a\u{200d}b",
+            "\u{1f469}\u{200d}a",
         ];
         assert_eq!(disagreements(&texts), Vec::<String>::new());
     }

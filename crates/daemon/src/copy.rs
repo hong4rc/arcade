@@ -1451,7 +1451,8 @@ impl Copy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compose::{char_width, text_cells};
+    use crate::compose::text_cells;
+    use crate::width::char_width;
 
     const COLS: u16 = 10;
 

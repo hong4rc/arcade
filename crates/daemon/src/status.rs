@@ -42,20 +42,18 @@ pub const TAB_TITLE_CELLS: usize = 24;
 
 /// A text cut to `max` cells, with the cut mark at the end when something was left out.
 pub fn cut_to_cells(text: &str, max: usize) -> String {
-    let total: usize = text.chars().map(crate::compose::char_width).sum();
-    if total <= max {
+    if crate::width::text_width(text) <= max {
         return text.to_string();
     }
     let room = max.saturating_sub(1);
     let mut out = String::new();
     let mut used = 0;
-    for c in text.chars() {
-        let w = crate::compose::char_width(c);
-        if used + w > room {
+    for unit in crate::width::units(text) {
+        if used + unit.width > room {
             break;
         }
-        used += w;
-        out.push(c);
+        used += unit.width;
+        out.push_str(unit.text);
     }
     out.push_str(theme::symbol(Symbol::Ellipsis));
     out
@@ -248,8 +246,7 @@ const TAB_TEXT_MIN: usize = 7;
 fn pieces_width(pieces: &[TabPiece]) -> usize {
     pieces
         .iter()
-        .flat_map(|p| p.text.chars())
-        .map(crate::compose::char_width)
+        .map(|p| crate::width::text_width(&p.text))
         .sum()
 }
 
@@ -261,14 +258,14 @@ fn shorten_pieces(pieces: &[TabPiece], limit: usize) -> Vec<TabPiece> {
     if pieces_width(pieces) <= limit {
         return pieces.to_vec();
     }
-    let chars: Vec<(char, usize, usize)> = pieces
+    // A unit is a character or a sequence that is drawn as one; the cut never lands inside one.
+    let chars: Vec<(&str, usize, usize)> = pieces
         .iter()
         .enumerate()
         .flat_map(|(p, piece)| {
-            piece
-                .text
-                .chars()
-                .map(move |c| (c, p, crate::compose::char_width(c)))
+            crate::width::units(&piece.text)
+                .into_iter()
+                .map(move |u| (u.text, p, u.width))
         })
         .collect();
     let keep = limit.saturating_sub(1);
@@ -291,12 +288,12 @@ fn shorten_pieces(pieces: &[TabPiece], limit: usize) -> Vec<TabPiece> {
         Some((t, p)) if *p == piece => t.push_str(text),
         _ => kept.push((text.to_string(), piece)),
     };
-    for (c, p, _) in &chars[..head] {
-        push(&c.to_string(), *p);
+    for (unit, p, _) in &chars[..head] {
+        push(unit, *p);
     }
     push(theme::symbol(Symbol::Ellipsis), mark_piece);
-    for (c, p, _) in &chars[tail..] {
-        push(&c.to_string(), *p);
+    for (unit, p, _) in &chars[tail..] {
+        push(unit, *p);
     }
     kept.into_iter()
         .map(|(text, piece)| TabPiece {
@@ -1171,6 +1168,43 @@ mod tests {
     /// The cells of the tab `span` covers, as text.
     fn shown_text(cells: &[Cell], span: &TabSpan) -> String {
         text(&cells[usize::from(span.from)..usize::from(span.to)])
+    }
+
+    /// A window named with a heart in picture form or with flags still gives a bar exactly as wide
+    /// as the screen, and a cut never lands inside such a sequence: no cell starts with a
+    /// selector or a joiner, and a cell with a regional indicator holds exactly two.
+    #[test]
+    fn a_cut_never_lands_inside_a_joined_sequence() {
+        let name = "\u{1f1fa}\u{1f1f8}-\u{2764}\u{fe0f}-everfit-microservices-\u{2764}\u{fe0f}-\u{1f1ec}\u{1f1e7}-api";
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}-everfit-api-\u{1f1fa}\u{1f1f8}";
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            let mut i = four_windows();
+            i.style = style;
+            i.tabs[0].text = vec![TabPiece::plain(name)];
+            i.tabs[1].text = vec![TabPiece::plain(family)];
+            for width in 20u16..=200 {
+                let (cells, _, _) = build_with_tabs(width, &i);
+                assert_eq!(cells.len(), usize::from(width), "{style:?} {width}");
+                for cell in &cells {
+                    let first = cell.text.chars().next();
+                    assert!(
+                        !matches!(first, Some('\u{fe0f}' | '\u{fe0e}' | '\u{200d}')),
+                        "{style:?} {width}: a cell starts with a selector or joiner: {}",
+                        text(&cells)
+                    );
+                    let indicators = cell
+                        .text
+                        .chars()
+                        .filter(|c| ('\u{1f1e6}'..='\u{1f1ff}').contains(c))
+                        .count();
+                    assert!(
+                        indicators == 0 || indicators == 2,
+                        "{style:?} {width}: a flag is split: {}",
+                        text(&cells)
+                    );
+                }
+            }
+        }
     }
 
     /// A cut name stays readable and is cut no more than the width needs: at every width the bar
