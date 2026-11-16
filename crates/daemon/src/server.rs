@@ -481,6 +481,8 @@ struct Server {
     panes: HashMap<u64, Pane>,
     exits_rx: Receiver<(u64, String)>,
     exits_tx: Sender<(u64, String)>,
+    /// The process of each pane whose end is being waited for, until its status is taken.
+    watched: HashMap<u64, i32>,
     waker: Arc<Waker>,
     /// Panes whose process ended, waiting to be drained and closed.
     exited: Vec<u64>,
@@ -556,6 +558,7 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         panes: HashMap::new(),
         exits_rx,
         exits_tx,
+        watched: HashMap::new(),
         waker,
         exited: Vec::new(),
         pending_clipboard: HashMap::new(),
@@ -1330,17 +1333,11 @@ impl Server {
 
         // A thread that only waits for the process to end and wakes the loop; it never touches
         // terminal state.
-        let tx = self.exits_tx.clone();
-        let waker = self.waker.clone();
-        let mut child = spawned.child;
-        std::thread::spawn(move || {
-            let note = match child.wait() {
-                Ok(status) => describe_exit(status),
-                Err(e) => format!("[lost: {e}]"),
-            };
-            let _ = tx.send((pane_id, note));
-            let _ = waker.wake();
-        });
+        // The process is not waited for through the child object: the wait is by process number
+        // and leaves the status for the loop to take, so a daemon that replaces its own program
+        // keeps its children and loses no exit.
+        drop(spawned.child);
+        self.watch_exit(pane_id, spawned.pid);
 
         Ok(Pane {
             id: pane_id,
@@ -1777,16 +1774,48 @@ impl Server {
         }
     }
 
+    /// Start the thread that tells the loop when a pane's process has ended. It only waits and
+    /// wakes the loop; the loop takes the exit status.
+    fn watch_exit(&mut self, pane_id: u64, pid: i32) {
+        self.watched.insert(pane_id, pid);
+        let tx = self.exits_tx.clone();
+        let waker = self.waker.clone();
+        std::thread::spawn(move || {
+            let note = match pty::wait_ended(pid) {
+                Ok(()) => String::new(),
+                Err(e) => format!("[lost: {e}]"),
+            };
+            let _ = tx.send((pane_id, note));
+            let _ = waker.wake();
+        });
+    }
+
     fn collect_exits(&mut self) {
         while let Ok((pane_id, note)) = self.exits_rx.try_recv() {
             if pane_id == SLEEP_GUARD_EXIT {
                 self.sleep_guard_exited(&note);
                 continue;
             }
-            if let Some(pane) = self.panes.get_mut(&pane_id) {
-                pane.exit_note = Some(note);
-                self.exited.push(pane_id);
-            }
+            let watched = self.watched.remove(&pane_id);
+            let Some(pane) = self.panes.get_mut(&pane_id) else {
+                // The pane was closed before its process ended: nobody wants the status, but
+                // the process must not stay behind as a zombie.
+                if let Some(pid) = watched {
+                    let _ = pty::reap(pid);
+                }
+                continue;
+            };
+            // An empty note means the wait ended well: the status is taken here.
+            let note = if note.is_empty() {
+                match pty::reap(pane.pid) {
+                    Some(status) => describe_exit(status),
+                    None => "[lost: no exit status]".to_string(),
+                }
+            } else {
+                note
+            };
+            pane.exit_note = Some(note);
+            self.exited.push(pane_id);
         }
     }
 

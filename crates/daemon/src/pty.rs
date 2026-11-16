@@ -148,6 +148,42 @@ pub fn spawn(spec: &SpawnSpec) -> io::Result<Spawned> {
     })
 }
 
+/// Wait until the process has ended, without taking its exit status: the status stays for
+/// [`reap`]. The wait does not depend on who started the process, so a program that replaced the
+/// daemon in place can wait for the children it was given.
+pub fn wait_ended(pid: i32) -> io::Result<()> {
+    loop {
+        // SAFETY: waitid fills the siginfo struct we pass, which is a live zeroed local; with
+        // WNOWAIT it leaves the process waitable.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if rc == 0 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// Take the exit status of a process that has ended; `None` while it still runs or when it is
+/// not ours to wait for.
+pub fn reap(pid: i32) -> Option<std::process::ExitStatus> {
+    use std::os::unix::process::ExitStatusExt;
+    let mut status = 0;
+    // SAFETY: waitpid writes one int into the local we pass.
+    let rc = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+    (rc == pid).then(|| std::process::ExitStatus::from_raw(status))
+}
+
 pub fn set_window_size(master: &File, cols: u16, rows: u16) -> io::Result<()> {
     let winsize = libc::winsize {
         ws_row: rows,
