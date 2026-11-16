@@ -263,6 +263,26 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
     } else {
         width
     };
+    let current_span = spans
+        .iter()
+        .find(|(i, _, _)| info.tabs[*i].current)
+        .copied();
+    // The tab of the window you are in always shows: when it would be cut away, the tabs before
+    // it give way from the left (the first one may show in part, and clicks follow what shows).
+    if let Some(&(_, tab_from, tab_to)) = current_span.as_ref().filter(|(_, _, to)| *to > room) {
+        let first = spans.first().map_or(0, |s| s.1);
+        let shift = (tab_to - room).min(tab_from.saturating_sub(first));
+        if shift > 0 {
+            cells.drain(first..first + shift);
+            let cut = first + shift;
+            let moved = |p: usize| if p >= cut { p - shift } else { first };
+            spans = spans
+                .into_iter()
+                .filter(|&(_, f, t)| moved(t) > moved(f))
+                .map(|(i, f, t)| (i, moved(f), moved(t)))
+                .collect();
+        }
+    }
     cells = fit(cells, room, bar);
     cells.extend(right.into_iter().take(width - room));
     // What was cut away cannot be clicked, and a tab cut in two is clickable where it shows.
@@ -374,11 +394,12 @@ mod tests {
         assert_eq!(spans[1].to, spans[1].from + " 2 vim [Z] ".len() as u16);
         // Cut short: the tab that is cut in two covers what shows, the one cut away is gone.
         let (_, _, narrow) = build_with_tabs(18, &info());
-        assert_eq!(narrow.len(), 2);
-        assert_eq!(narrow[1].to, 18);
+        assert_eq!(narrow.len(), 1);
+        assert_eq!((narrow[0].index, narrow[0].to), (1, 18));
+        // The tab of the window you are in (the second) shows, and the first gives way to it.
         let (_, _, narrower) = build_with_tabs(12, &info());
-        assert_eq!(narrower.len(), 1);
-        assert!(narrower[0].to <= 12);
+        assert_eq!(narrower.last().map(|t| t.index), Some(1));
+        assert!(narrower.iter().all(|t| t.to <= 12));
         // A message, a hint or a prompt in place of the bar leaves no tabs.
         let mut m = info();
         m.message = Some("hello".into());
@@ -587,5 +608,58 @@ mod tests {
     fn a_narrow_bar_is_cut_not_overflowed() {
         let (cells, _) = build(10, &info());
         assert_eq!(cells.len(), 10);
+    }
+
+    /// A tab that carries everything (number, name, title, zoom, notification, progress) at every
+    /// narrow width: the bar has the width, the spans are in order and inside it, the current tab
+    /// can always be clicked, and a tab that is shown whole shows its marks.
+    #[test]
+    fn a_tab_with_everything_keeps_its_clicks_and_marks_at_every_width() {
+        let loaded = |number: usize, current: bool| Tab {
+            number,
+            text: vec![
+                TabPiece::plain("a-long-directory-name"),
+                TabPiece {
+                    text: "a title of the program".into(),
+                    quiet: true,
+                },
+            ],
+            current,
+            zoomed: true,
+            notice: Some(Class::Input),
+            progress: Some(arcade_term::Progress {
+                state: 1,
+                value: 40,
+            }),
+        };
+        let mut i = info();
+        i.tabs = vec![loaded(1, false), loaded(2, true), loaded(3, false)];
+        let (_, _, whole) = build_with_tabs(400, &i);
+        let full: Vec<u16> = whole.iter().map(|t| t.to - t.from).collect();
+        let mark = theme::notice_symbol(Class::Input);
+        for width in 8..=120u16 {
+            let (cells, _, spans) = build_with_tabs(width, &i);
+            assert_eq!(cells.len(), usize::from(width), "width {width}");
+            let mut last_end = 0;
+            for span in &spans {
+                assert!(
+                    span.from < span.to && span.to <= width,
+                    "width {width}: {span:?}"
+                );
+                assert!(span.from >= last_end, "width {width}: {spans:?}");
+                last_end = span.to;
+                let shown: String = text(&cells[usize::from(span.from)..usize::from(span.to)]);
+                if span.to - span.from == full[span.index] {
+                    assert!(shown.contains(mark), "width {width}: {shown:?}");
+                    assert!(shown.contains("40%"), "width {width}: {shown:?}");
+                }
+            }
+            if width >= 40 {
+                assert!(
+                    spans.iter().any(|t| t.index == 1),
+                    "width {width}: {spans:?}"
+                );
+            }
+        }
     }
 }

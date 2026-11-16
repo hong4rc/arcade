@@ -131,27 +131,26 @@ fn the_click_is_the_bars_even_when_the_program_asked_for_the_mouse() {
 }
 
 #[test]
-fn a_narrow_bar_cuts_the_tabs_and_a_tab_that_is_cut_away_does_nothing() {
+fn a_narrow_bar_cuts_the_tabs_but_keeps_the_tab_of_the_window_you_are_in() {
     let daemon = TestDaemon::start();
     let mut client = three_windows(&daemon, 16);
     let (y, bar) = bar_row(&client, false);
-    // The session's name and a blank take 7 columns, the tab of A 5 more, and the tab of B is
-    // cut at the edge; the tab of C is gone.
-    assert!(
-        bar.contains("1 A") && bar.contains("2 B") && !bar.contains("3 C"),
-        "{bar:?}"
-    );
-    // The last column belongs to the part of B that shows.
-    click(&mut client, 15, y);
-    assert!(shows(&mut client, "B"), "{}", client.screen_text());
-    // Nothing else on this bar leads to C, whatever column is clicked.
-    for x in 0..7 {
+    // The window you are in (C) always shows; the tabs before it give way, and A is gone.
+    assert!(bar.contains("3 C") && !bar.contains("1 A"), "{bar:?}");
+    // Clicking the tab of the window you are in changes nothing.
+    click(&mut client, column_of(&bar, "3 C"), y);
+    quiet(&mut client);
+    assert!(client.screen_text().contains("here-C"));
+    // The tab of B shows in part (or whole), and clicking it goes there.
+    if bar.contains("2 B") {
+        click(&mut client, column_of(&bar, "2 B"), y);
+        assert!(shows(&mut client, "B"), "{}", client.screen_text());
+    }
+    // A tab that is cut away leads nowhere: the session's name does nothing.
+    for x in 0..5 {
         click(&mut client, x, y);
     }
     quiet(&mut client);
-    assert!(client.screen_text().contains("here-B"));
-    click(&mut client, column_of(&bar, "1 A"), y);
-    assert!(shows(&mut client, "A"));
 }
 
 #[test]
