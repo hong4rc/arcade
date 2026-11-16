@@ -545,7 +545,7 @@ fn a_large_paste_arrives_complete() {
     for chunk in data.chunks(16 * 1024) {
         client.send(chunk);
     }
-    client.wait_for_row(&format!("stored-{SIZE}")).unwrap();
+    client.wait_for_text(&format!("stored-{SIZE}")).unwrap();
     let stored = std::fs::read(daemon.dir().join("paste.bin")).unwrap();
     assert_eq!(stored.len(), SIZE);
     assert!(stored == data, "the pasted bytes arrived changed");

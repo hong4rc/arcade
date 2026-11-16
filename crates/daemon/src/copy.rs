@@ -586,6 +586,33 @@ impl Copy {
         self.top + usize::from(self.rows) >= src.total()
     }
 
+    /// While a selection is being dragged: put the cursor on a cell of the view and keep the
+    /// anchor where it is, even when the view has moved since the press.
+    pub fn extend_to<S: Source>(&mut self, src: &S, to: (u16, u16)) {
+        self.follow(src);
+        let last_row = self.rows.saturating_sub(1);
+        let last_col = self.cols.saturating_sub(1);
+        self.go(
+            src,
+            self.top + usize::from(to.1.min(last_row)),
+            to.0.min(last_col),
+        );
+        self.by_wheel = false;
+        self.remember(src);
+    }
+
+    /// While a selection is being dragged at an edge of the pane: move the view `lines` rows
+    /// (up when negative) and put the cursor on the cell `to` of the view, so the selection
+    /// grows with it. True when the view moved (it does not at the top of the history or at the
+    /// live bottom).
+    pub fn drag_scroll<S: Source>(&mut self, src: &S, lines: isize, to: (u16, u16)) -> bool {
+        let before = self.top;
+        self.scroll(src, lines);
+        let moved = self.top != before;
+        self.extend_to(src, to);
+        moved
+    }
+
     /// Select from one cell of the view to another, character by character, with the cursor at
     /// the second. Cells outside the view are moved into it.
     pub fn select_between<S: Source>(&mut self, src: &S, from: (u16, u16), to: (u16, u16)) {

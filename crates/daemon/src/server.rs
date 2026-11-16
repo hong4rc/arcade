@@ -796,6 +796,7 @@ impl Server {
             self.finish_exited_panes();
             // (4) Screen updates.
             self.wake_name_checks();
+            self.tick_drag_scrolls();
             self.send_frames();
             self.send_titles();
             self.send_progress();
@@ -869,6 +870,9 @@ impl Server {
                 consider(t);
             }
             if let Some(t) = s.key_state.deadline() {
+                consider(t);
+            }
+            if let Some(t) = s.drag.and_then(|d| d.next_tick) {
                 consider(t);
             }
             if let Some(t) = s.bell_due {

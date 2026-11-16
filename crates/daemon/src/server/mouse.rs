@@ -26,7 +26,20 @@ pub(super) struct Drag {
     forward: bool,
     /// The mouse has left the cell it pressed in, so a selection has begun.
     selecting: bool,
+    /// While the pointer is at the first row of the pane or above it (negative) or at the last
+    /// row or below it: the rows the view scrolls at each tick, more the further out it is.
+    edge: isize,
+    /// The column of the pointer, within the pane, for the cells the scrolling selects.
+    col: u16,
+    /// When the view scrolls next; none while the pointer is inside the pane or the view cannot
+    /// move, so a drag that is not at an edge costs no wake-up.
+    pub(super) next_tick: Option<Instant>,
 }
+
+/// How often the view scrolls while a selection is dragged at an edge of the pane.
+const EDGE_TICK: Duration = Duration::from_millis(50);
+/// The most rows one tick scrolls.
+const EDGE_MAX_ROWS: isize = 5;
 
 /// The bytes that tell a program about a mouse event at `column` and `row` of its pane (from 0),
 /// or nothing when the program did not ask for events of that kind or cannot be told (the old
@@ -182,6 +195,9 @@ impl Server {
                     from,
                     forward: !ours,
                     selecting: false,
+                    edge: 0,
+                    col: from.0,
+                    next_tick: None,
                 };
                 // A pane that is Arcade's only starts a selection with the left button.
                 self.set_drag(session_id, (!ours || button == 0).then_some(drag));
@@ -199,6 +215,7 @@ impl Server {
                     && (drag.selecting || to != drag.from)
                 {
                     self.select_by_mouse(session_id, drag, to);
+                    self.watch_edge(session_id, m, to);
                 }
                 if matches!(m.kind, MouseKind::Release(_)) {
                     self.set_drag(session_id, None);
@@ -305,6 +322,93 @@ impl Server {
         }
     }
 
+    /// Whether the pointer of a selection being dragged is at the first row of its pane or above
+    /// it, or at the last row or below it: then the view scrolls by itself (see
+    /// `tick_drag_scrolls`), also while the pointer stands still.
+    fn watch_edge(&mut self, session_id: u64, m: Mouse, to: (u16, u16)) {
+        let Some(drag) = self
+            .sessions
+            .get_mut(&session_id)
+            .and_then(|s| s.drag.as_mut())
+        else {
+            return;
+        };
+        let rect = drag.rect;
+        let last = rect.bottom().saturating_sub(1);
+        let outside = |distance: u16| (1 + distance as isize).min(EDGE_MAX_ROWS);
+        drag.edge = if m.y <= rect.y {
+            -outside(rect.y - m.y)
+        } else if m.y >= last {
+            outside(m.y - last)
+        } else {
+            0
+        };
+        drag.col = to.0;
+        if drag.edge == 0 {
+            drag.next_tick = None;
+        } else if drag.next_tick.is_none() {
+            drag.next_tick = Some(Instant::now() + EDGE_TICK);
+        }
+    }
+
+    /// The selections that are being dragged at an edge scroll one step.
+    pub(super) fn tick_drag_scrolls(&mut self) {
+        let now = Instant::now();
+        let due: Vec<u64> = self
+            .sessions
+            .values()
+            .filter(|s| {
+                s.drag
+                    .is_some_and(|d| d.next_tick.is_some_and(|t| t <= now))
+            })
+            .map(|s| s.id)
+            .collect();
+        for id in due {
+            self.drag_scroll_tick(id, now);
+        }
+    }
+
+    fn drag_scroll_tick(&mut self, session_id: u64, now: Instant) {
+        let Some(session) = self.sessions.get(&session_id) else {
+            return;
+        };
+        let Some(drag) = session.drag else { return };
+        // The drag is over when the pane is not where it began (closed, resized, another window
+        // shown), the client is gone, or the pane left copy mode.
+        let origin = window_origin(session.rows, self.config.status_position);
+        let in_place = session.client.is_some()
+            && session
+                .current_window()
+                .visible_rects()
+                .into_iter()
+                .any(|(p, r)| {
+                    p == drag.pane && Rect::new(r.x, r.y + origin, r.w, r.h) == drag.rect
+                });
+        let moved = if in_place {
+            self.panes.get_mut(&drag.pane).and_then(|pane| {
+                let copy = pane.copy.as_mut()?;
+                let row = if drag.edge < 0 {
+                    0
+                } else {
+                    copy.rows.saturating_sub(1)
+                };
+                Some(copy.drag_scroll(&pane.term, drag.edge, (drag.col, row)))
+            })
+        } else {
+            None
+        };
+        if let Some(s) = self.sessions.get_mut(&session_id) {
+            match moved {
+                None => s.drag = None,
+                Some(moved) => {
+                    if let Some(d) = s.drag.as_mut() {
+                        d.next_tick = moved.then_some(now + EDGE_TICK);
+                    }
+                }
+            }
+        }
+    }
+
     fn select_by_mouse(&mut self, session_id: u64, drag: Drag, to: (u16, u16)) {
         let Some(pane) = self.panes.get_mut(&drag.pane) else {
             return;
@@ -321,7 +425,13 @@ impl Server {
             ));
         }
         if let Some(copy) = pane.copy.as_mut() {
-            copy.select_between(&pane.term, drag.from, to);
+            // Once the selection began, its anchor stays on its line of the history while the view
+            // moves; the cell of the press is only the anchor the first time.
+            if drag.selecting && copy.selection.is_some() {
+                copy.extend_to(&pane.term, to);
+            } else {
+                copy.select_between(&pane.term, drag.from, to);
+            }
         }
         if opened {
             self.copy_mode_changed(session_id);
