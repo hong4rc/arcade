@@ -62,10 +62,17 @@ impl ProgressScan {
         }
         if self.body.is_some() {
             self.tail.clear();
+        } else if bytes.len() >= PREFIX.len() - 1 {
+            // The usual case: keep at most the few last bytes that could start a report, not a
+            // copy of the whole write.
+            let n = partial_prefix(bytes);
+            self.tail.clear();
+            self.tail.extend_from_slice(&bytes[bytes.len() - n..]);
         } else {
             self.tail.extend_from_slice(bytes);
-            let keep = self.tail.len().saturating_sub(PREFIX.len() - 1);
-            self.tail.drain(..keep);
+            let n = partial_prefix(&self.tail);
+            let drop = self.tail.len() - n;
+            self.tail.drain(..drop);
         }
     }
 
@@ -91,6 +98,14 @@ impl ProgressScan {
         }
         bytes.len()
     }
+}
+
+/// How many bytes at the end of `bytes` are the beginning (not all) of a report's start.
+fn partial_prefix(bytes: &[u8]) -> usize {
+    (1..PREFIX.len().min(bytes.len() + 1))
+        .rev()
+        .find(|n| bytes[bytes.len() - n..] == PREFIX[..*n])
+        .unwrap_or(0)
 }
 
 fn parse(body: &[u8]) -> Option<Progress> {
@@ -171,8 +186,50 @@ mod tests {
     }
 
     #[test]
+    fn only_the_few_last_bytes_that_could_start_a_report_are_kept() {
+        let mut scan = ProgressScan::new();
+        let mut out = Vec::new();
+        scan.scan(&vec![b'a'; 100_000], &mut out);
+        assert!(scan.tail.is_empty());
+        let mut long = vec![b'a'; 1000];
+        long.extend_from_slice(b"\x1b]9;");
+        scan.scan(&long, &mut out);
+        assert_eq!(scan.tail, b"\x1b]9;");
+        scan.scan(b"4;1;7\x07", &mut out);
+        assert_eq!(out, vec![p(1, 7)]);
+        // A start spread over three small writes.
+        let got = scan_all(&[b"x\x1b", b"]9", b";4;2;3\x07"]);
+        assert_eq!(got, vec![p(2, 3)]);
+    }
+
+    #[test]
     fn an_unfinished_report_does_not_stick() {
         let got = scan_all(&[b"\x1b]9;4;1;5", b"zzz plain text\x1b]9;4;1;9\x07"]);
         assert_eq!(got, vec![p(1, 9)]);
+    }
+
+    /// Hand-run timing: `ARCADE_SCAN_FILE=<workload file> cargo test --release -p arcade-term scan_speed -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn scan_speed() {
+        let Some(path) = std::env::var_os("ARCADE_SCAN_FILE") else {
+            return;
+        };
+        let data = std::fs::read(path).unwrap();
+        let mut best = f64::MAX;
+        for _ in 0..7 {
+            let mut scan = ProgressScan::new();
+            let mut out = Vec::new();
+            let t = std::time::Instant::now();
+            for chunk in data.chunks(16 * 1024) {
+                scan.scan(chunk, &mut out);
+            }
+            best = best.min(t.elapsed().as_secs_f64());
+        }
+        println!(
+            "progress scan: {:.0} MB/s over {} MB (best of 7)",
+            data.len() as f64 / 1e6 / best,
+            data.len() / 1_000_000
+        );
     }
 }
