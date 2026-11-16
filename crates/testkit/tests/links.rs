@@ -615,3 +615,94 @@ fn measure_scrolling_a_pane_full_of_links() {
         );
     }
 }
+
+mod underline {
+    use super::*;
+    use arcade_term::Underline;
+
+    fn underline_at(client: &TestClient, row: u16, col: u16) -> Underline {
+        client.style_at(row, col).underline
+    }
+
+    #[test]
+    fn a_link_that_is_passed_on_is_underlined_and_the_cells_around_it_are_not() {
+        let daemon = TestDaemon::start();
+        let mut client = client(&daemon, (80, 20), None);
+        client.type_line(&printf_link("click-me"));
+        client.wait_for_text("click-me after").unwrap();
+        let (row, col) = find(&client, "click-me after").unwrap();
+        for x in col..col + 8 {
+            assert_eq!(underline_at(&client, row, x), Underline::Dotted, "{x}");
+        }
+        for x in [col + 8, col + 9] {
+            assert_eq!(underline_at(&client, row, x), Underline::None, "{x}");
+        }
+    }
+
+    #[test]
+    fn a_link_that_is_not_passed_on_is_not_underlined() {
+        let daemon = TestDaemon::start();
+        let script = "printf '\\033]8;;https://bad.example/\\303\\251\\033\\\\bad-one\\033]8;;\\033\\\\ end\\n'; sleep 30";
+        let mut client = client(&daemon, (80, 20), Some(&["sh", "-c", script]));
+        client.wait_for_text("bad-one end").unwrap();
+        let (row, col) = find(&client, "bad-one").unwrap();
+        assert!(client.screen.hyperlink_at(row, col).is_none());
+        assert_eq!(underline_at(&client, row, col), Underline::None);
+    }
+
+    #[test]
+    fn the_programs_own_underline_is_kept() {
+        let daemon = TestDaemon::start();
+        let script = format!(
+            "printf '\\033]8;;{URL}\\033\\\\\\033[4:3m\\033[58;5;9mcurly\\033[0m-plain\\033]8;;\\033\\\\ end\\n'; sleep 30"
+        );
+        let mut client = client(&daemon, (80, 20), Some(&["sh", "-c", &script]));
+        client.wait_for_text("-plain end").unwrap();
+        let (row, col) = find(&client, "curly").unwrap();
+        // The program's curly underline and its colour stay; the plain part gets the link's.
+        assert_eq!(underline_at(&client, row, col), Underline::Curly);
+        assert_ne!(
+            client.style_at(row, col).underline_color,
+            arcade_term::Color::Default
+        );
+        assert_eq!(underline_at(&client, row, col + 6), Underline::Dotted);
+    }
+
+    #[test]
+    fn with_the_setting_off_nothing_is_underlined() {
+        let daemon = TestDaemon::start_with(|c| c.config.links.underline = false);
+        let mut client = client(&daemon, (80, 20), None);
+        client.type_line(&printf_link("click-me"));
+        client.wait_for_text("click-me after").unwrap();
+        let (row, col) = find(&client, "click-me after").unwrap();
+        assert!(client.screen.hyperlink_at(row, col).is_some());
+        assert_eq!(underline_at(&client, row, col), Underline::None);
+        // No cell of the screen is underlined.
+        for y in 0..client.screen.rows() {
+            for x in 0..client.screen.cols() {
+                assert_eq!(underline_at(&client, y, x), Underline::None, "{y},{x}");
+            }
+        }
+    }
+
+    #[test]
+    fn copy_mode_keeps_the_underline_and_the_copied_text_has_none_of_it() {
+        let daemon = TestDaemon::start();
+        let mut client = client(&daemon, (80, 20), None);
+        client.type_line(&printf_link("click-me"));
+        client.wait_for_text("click-me after").unwrap();
+        client.send(PREFIX);
+        client.send(b"[");
+        assert!(client.wait_until(WAIT, |c| format!("{} ", c.status_row()).contains(" COPY ")));
+        let (row, col) = find(&client, "click-me after").unwrap();
+        assert_eq!(underline_at(&client, row, col), Underline::Dotted);
+        // Select the line of the link and copy it: plain text, no escape sequence.
+        client.send(b"/click-me after\r");
+        client.send(b"V");
+        client.send(b"y");
+        assert!(client.wait_until(WAIT, |c| !c.clipboard_writes.is_empty()));
+        let copied = String::from_utf8_lossy(&client.clipboard_writes[0]).into_owned();
+        assert!(copied.contains("click-me after"), "{copied:?}");
+        assert!(!copied.contains('\x1b'));
+    }
+}

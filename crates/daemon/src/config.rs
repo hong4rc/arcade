@@ -73,12 +73,24 @@ pub struct ClipboardConfig {
     pub allow_pane_write: bool,
 }
 
-/// How a link is opened from copy mode.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+/// How a link is opened from copy mode, and how links are drawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinksConfig {
+    /// Cells of a hidden link that is passed on are underlined (a dotted underline), unless the
+    /// program underlined them itself.
+    pub underline: bool,
     /// The program and its first arguments; the address is added as the last argument. `None`
     /// is `open` on macOS and `xdg-open` elsewhere.
     pub command: Option<Vec<String>>,
+}
+
+impl Default for LinksConfig {
+    fn default() -> Self {
+        LinksConfig {
+            underline: true,
+            command: None,
+        }
+    }
 }
 
 /// The four key tables.
@@ -1024,8 +1036,16 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                                 "command must be a list of words, the program first (for example [\"open\"])",
                             ),
                         },
+                        "underline" => {
+                            if let Some(b) = r.boolean("underline", v) {
+                                config.links.underline = b;
+                            }
+                        }
                         other => {
-                            r.error(n.span().start, unknown_key("links", other, &["command"]));
+                            r.error(
+                                n.span().start,
+                                unknown_key("links", other, &["command", "underline"]),
+                            );
                         }
                     }
                 }
@@ -1072,6 +1092,24 @@ nav = "hnei"
 [status]
 position = "top"
 "#;
+
+    #[test]
+    fn links_are_underlined_unless_the_file_says_not() {
+        assert!(Config::default().links.underline);
+        assert!(
+            parse("[links]\nunderline = true\n")
+                .unwrap()
+                .links
+                .underline
+        );
+        assert!(
+            !parse("[links]\nunderline = false\n")
+                .unwrap()
+                .links
+                .underline
+        );
+        assert!(parse("[links]\nunderline = \"yes\"\n").is_err());
+    }
 
     #[test]
     fn what_happens_when_a_session_ends_is_set_by_on_end() {

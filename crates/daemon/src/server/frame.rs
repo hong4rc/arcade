@@ -348,6 +348,12 @@ impl Server {
         } else if relayout {
             session.screen.clear();
         }
+        session.screen.set_link_underline(
+            self.config
+                .links
+                .underline
+                .then(|| theme::style(theme::Role::LinkUnderline)),
+        );
         let mut failed = Vec::new();
         for (pane_id, rect) in &visible {
             let Some(pane) = self.panes.get_mut(pane_id) else {

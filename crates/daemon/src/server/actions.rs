@@ -1017,6 +1017,7 @@ impl Server {
 
     fn apply_config(&mut self, new: Config) {
         let layout_changed = new.status_position != self.config.status_position;
+        let underline_changed = new.links.underline != self.config.links.underline;
         self.keymap = new.keymap();
         if let Some(lines) = new.scrollback_lines {
             self.scrollback_lines = lines;
@@ -1028,6 +1029,10 @@ impl Server {
         for s in self.sessions.values_mut() {
             s.key_state.prefix = keys::PrefixState::Idle;
             s.chrome_dirty = true;
+            // Cells that are already composed carry the old look of a link: draw it all again.
+            if underline_changed {
+                s.need_full = true;
+            }
             // The program and directory of each window are looked at again.
             s.names_checked = None;
             if renumber {

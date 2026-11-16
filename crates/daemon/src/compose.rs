@@ -101,9 +101,17 @@ pub struct Screen {
     /// For each row, the runs of columns that belong to a link, left to right. Almost always
     /// empty; whatever is drawn over a link takes the link away from the cells it covers.
     links: Vec<Vec<LinkSpan>>,
+    /// The underline given to the cells of a link that are not underlined already; `None` leaves
+    /// them as the program drew them.
+    link_underline: Option<Style>,
 }
 
 impl Screen {
+    /// The style that marks the cells of a link, or none.
+    pub fn set_link_underline(&mut self, style: Option<Style>) {
+        self.link_underline = style;
+    }
+
     pub fn new() -> Screen {
         Screen::default()
     }
@@ -201,6 +209,14 @@ impl Screen {
                 let from = start + usize::from(span.from);
                 let to = (start + usize::from(span.to)).min(end - usize::from(cut_wide));
                 if from < to {
+                    if let Some(mark) = self.link_underline {
+                        for cell in &mut row[from..to] {
+                            if cell.style.underline == arcade_term::Underline::None {
+                                cell.style.underline = mark.underline;
+                                cell.style.underline_color = mark.underline_color;
+                            }
+                        }
+                    }
                     self.links[gy].push(LinkSpan {
                         from: from as u16,
                         to: to as u16,

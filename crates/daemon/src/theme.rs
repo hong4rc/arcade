@@ -45,6 +45,9 @@ pub enum Role {
     IndicatorSelect,
     /// The `[above/history]` mark on the first row of a pane in copy mode.
     ScrollPosition,
+    /// The underline a hidden link (OSC 8) that is passed on gets, unless the program underlined
+    /// the cell itself.
+    LinkUnderline,
     /// The cells that match what was typed in a jump, and the one-letter label of a match.
     JumpMatch,
     JumpLabel,
@@ -147,6 +150,10 @@ pub fn style(role: Role) -> Style {
         Role::ScrollPosition => Style {
             fg: Color::Indexed(0),
             bg: Color::Indexed(3),
+            ..Style::default()
+        },
+        Role::LinkUnderline => Style {
+            underline: arcade_term::Underline::Dotted,
             ..Style::default()
         },
         Role::JumpMatch => Style {
