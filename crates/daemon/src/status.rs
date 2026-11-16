@@ -252,40 +252,57 @@ fn pieces_width(pieces: &[TabPiece]) -> usize {
         .sum()
 }
 
-/// The pieces of a tab's text cut to `limit` cells, the cut marked with `…` in the piece it falls
-/// in; text that is short enough is left as it is.
+/// The pieces of a tab's text cut to `limit` cells, with the cut marked by `…` in the middle:
+/// about half of the cells that are kept come from the start (the start gets the extra one) and
+/// half from the end, because names in one project often share a beginning (`everfit-api`,
+/// `everfit-microservices`) and differ at the end. Text that is short enough is left as it is.
 fn shorten_pieces(pieces: &[TabPiece], limit: usize) -> Vec<TabPiece> {
     if pieces_width(pieces) <= limit {
         return pieces.to_vec();
     }
-    let room = limit.saturating_sub(1);
-    let mut out: Vec<TabPiece> = Vec::new();
+    let chars: Vec<(char, usize, usize)> = pieces
+        .iter()
+        .enumerate()
+        .flat_map(|(p, piece)| {
+            piece
+                .text
+                .chars()
+                .map(move |c| (c, p, crate::compose::char_width(c)))
+        })
+        .collect();
+    let keep = limit.saturating_sub(1);
+    let (head_room, tail_room) = (keep.div_ceil(2), keep / 2);
+    let mut head = 0;
     let mut used = 0;
-    'pieces: for piece in pieces {
-        let mut text = String::new();
-        for c in piece.text.chars() {
-            let w = crate::compose::char_width(c);
-            if used + w > room {
-                out.push(TabPiece {
-                    text,
-                    quiet: piece.quiet,
-                });
-                break 'pieces;
-            }
-            used += w;
-            text.push(c);
-        }
-        out.push(TabPiece {
+    while head < chars.len() && used + chars[head].2 <= head_room {
+        used += chars[head].2;
+        head += 1;
+    }
+    let mut tail = chars.len();
+    used = 0;
+    while tail > head && used + chars[tail - 1].2 <= tail_room {
+        used += chars[tail - 1].2;
+        tail -= 1;
+    }
+    let mark_piece = if head > 0 { chars[head - 1].1 } else { 0 };
+    let mut kept: Vec<(String, usize)> = Vec::new();
+    let mut push = |text: &str, piece: usize| match kept.last_mut() {
+        Some((t, p)) if *p == piece => t.push_str(text),
+        _ => kept.push((text.to_string(), piece)),
+    };
+    for (c, p, _) in &chars[..head] {
+        push(&c.to_string(), *p);
+    }
+    push(theme::symbol(Symbol::Ellipsis), mark_piece);
+    for (c, p, _) in &chars[tail..] {
+        push(&c.to_string(), *p);
+    }
+    kept.into_iter()
+        .map(|(text, piece)| TabPiece {
             text,
-            quiet: piece.quiet,
-        });
-    }
-    // The mark of the cut goes in the last piece that was kept.
-    match out.last_mut() {
-        Some(last) => last.text.push_str(theme::symbol(Symbol::Ellipsis)),
-        None => out.push(TabPiece::plain(theme::symbol(Symbol::Ellipsis))),
-    }
-    out
+            quiet: pieces[piece].quiet,
+        })
+        .collect()
 }
 
 /// What the bar knows about the tabs it lays out: for each, the cells around its text and how
@@ -1058,6 +1075,46 @@ mod tests {
                 assert!(!line.contains(" 1 "), "{line}");
             }
         }
+    }
+
+    /// Names that share their beginning still differ after the cut, because the cut is in the
+    /// middle and the end is kept.
+    #[test]
+    fn a_cut_name_keeps_its_end_so_names_with_one_beginning_stay_apart() {
+        let cut = |name: &str, limit: usize| -> String {
+            shorten_pieces(&[TabPiece::plain(name)], limit)
+                .iter()
+                .map(|p| p.text.as_str())
+                .collect()
+        };
+        assert_eq!(cut("everfit-microservices", 9), "ever…ices");
+        assert_eq!(cut("everfit-api", 9), "ever…-api");
+        // Seven cells kept for a limit of eight: the start gets the odd one.
+        assert_eq!(cut("everfit-microservices", 8), "ever…ces");
+        assert_eq!(cut("abcdefghij", 4), "ab…j");
+        assert_eq!(cut("short", 9), "short");
+        assert_eq!(cut("abcdefghij", 1), "…");
+        for limit in 4..=20 {
+            let (a, b) = (
+                cut("everfit-microservices", limit),
+                cut("everfit-api", limit),
+            );
+            if limit < 11 {
+                assert_ne!(a, b, "limit {limit}");
+            }
+            assert!(a.chars().count() <= limit && b.chars().count() <= limit);
+        }
+        // A title in its own quiet piece keeps its colour where it was cut.
+        let pieces = [
+            TabPiece::plain("name"),
+            TabPiece {
+                text: " a long title of the program".into(),
+                quiet: true,
+            },
+        ];
+        let cut = shorten_pieces(&pieces, 12);
+        assert_eq!(pieces_width(&cut), 12);
+        assert!(!cut[0].quiet && cut.last().unwrap().quiet);
     }
 
     /// The four windows of the author's bar: three quiet, one with a notification that needs them.
