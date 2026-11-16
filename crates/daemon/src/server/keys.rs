@@ -204,6 +204,14 @@ impl Server {
                         continue;
                     }
                     if let Some(pane) = self.focus_pane_of(session_id) {
+                        let flags = self
+                            .panes
+                            .get(&pane)
+                            .map_or(0, |p| p.term.key_modes().kitty_flags);
+                        // What a pane gets must mean what a key means; the rest is dropped.
+                        if !crate::keys::fit_for_pane(&raw, flags) {
+                            continue;
+                        }
                         self.typed_into(pane);
                         self.write_to_pane(pane, &raw);
                     }

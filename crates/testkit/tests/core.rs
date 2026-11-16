@@ -531,7 +531,16 @@ fn a_large_paste_arrives_complete() {
         "stty raw -echo; printf 'armed\\r\\n'; head -c 3145728 > paste.bin; stty sane; echo stored-$(wc -c < paste.bin | tr -d ' ')",
     );
     client.wait_for_row("armed").unwrap();
-    let data: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8).collect();
+    // Text, as a paste is: letters, digits and a few characters of more than one byte. (Bytes that
+    // are no text are not passed on, see `hostbytes.rs`.) A line is 64 bytes, so the size is a
+    // whole number of lines and no character is cut.
+    let mut line = "abc XYZ 0123 é€ 日本 \u{1f600}".to_string();
+    while line.len() < 62 {
+        line.push('.');
+    }
+    line.push_str("\r\n");
+    assert_eq!(line.len(), 64);
+    let data: Vec<u8> = line.as_bytes().iter().copied().cycle().take(SIZE).collect();
     // Send it in pieces the size a terminal would, the way `arcade` does.
     for chunk in data.chunks(16 * 1024) {
         client.send(chunk);

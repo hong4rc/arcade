@@ -17,6 +17,10 @@ use arcade_term::{Code, Key, Mods, Named};
 /// How long a lone Esc waits for the rest of a sequence before it counts as the Esc key.
 pub const ESC_WAIT: Duration = Duration::from_millis(10);
 
+/// How long the start of a multi-byte character waits for the rest of its bytes. An input
+/// method may hand a character over in pieces, so this is far longer than the wait for Esc.
+pub const CHARACTER_WAIT: Duration = Duration::from_millis(250);
+
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
@@ -371,6 +375,10 @@ fn plain(buf: &[u8], extra: Mods) -> Step {
             match std::str::from_utf8(&buf[..need]) {
                 Ok(s) => {
                     let c = s.chars().next().unwrap_or('\u{fffd}');
+                    if c.is_control() {
+                        // A C1 control is no key.
+                        return Step::Done(need, None);
+                    }
                     Step::Done(need, Some(char_key(c, with(Mods::NONE), &buf[..need])))
                 }
                 Err(_) => Step::Done(1, Some(Input::Raw(vec![b]))),
@@ -452,7 +460,12 @@ impl KeyReader {
 
     /// When the bytes that are waiting must be given up on, if any are.
     pub fn deadline(&self) -> Option<Instant> {
-        self.waiting_since.map(|t| t + ESC_WAIT)
+        let wait = if starts_a_character(&self.pending) {
+            CHARACTER_WAIT
+        } else {
+            ESC_WAIT
+        };
+        self.waiting_since.map(|t| t + wait)
     }
 
     /// Give up on what is waiting once its time is up: a lone Esc is the Esc key, anything else
@@ -514,6 +527,54 @@ impl KeyReader {
             }
         }
         self.pending.drain(..at);
+    }
+}
+
+/// Whether the bytes are the start of a multi-byte UTF-8 character that is not complete yet.
+fn starts_a_character(bytes: &[u8]) -> bool {
+    let need = match bytes.first() {
+        Some(0xc2..=0xdf) => 2,
+        Some(0xe0..=0xef) => 3,
+        Some(0xf0..=0xf4) => 4,
+        _ => return false,
+    };
+    bytes.len() < need && bytes[1..].iter().all(|b| (0x80..=0xbf).contains(b))
+}
+
+/// Whether bytes of the host terminal that are not a key Arcade knows may go to a pane's
+/// program. What a pane gets must mean what the key means: a byte that is not valid UTF-8, a
+/// C1 control (the single-byte or the encoded form), and a key report whose code is no key
+/// (zero, a C1 control, a surrogate, past the last character) are dropped; a report in the
+/// kitty form (`CSI code u`) reaches only a program that asked for that protocol.
+pub fn fit_for_pane(raw: &[u8], kitty_flags: u8) -> bool {
+    let body = raw.strip_prefix(b"\x1b").unwrap_or(raw);
+    if let Some(params) = raw
+        .strip_prefix(b"\x1b[")
+        .and_then(|r| r.strip_suffix(b"u"))
+        .filter(|p| p.iter().all(|b| matches!(b, b'0'..=b'9' | b';' | b':')))
+    {
+        if kitty_flags == 0 {
+            return false;
+        }
+        return match param(params, 0) {
+            Some(code) => {
+                code != 0
+                    && !(0x80..=0x9f).contains(&code)
+                    && !(0xd800..=0xdfff).contains(&code)
+                    && code <= 0x10ffff
+            }
+            None => false,
+        };
+    }
+    // A control sequence that was cut off by a byte that cannot be part of it is not a key.
+    if raw == b"\x1b["
+        || (raw.starts_with(b"\x1b[") && !raw.last().is_some_and(|b| (0x40..=0x7e).contains(b)))
+    {
+        return false;
+    }
+    match std::str::from_utf8(body) {
+        Ok(text) => !text.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c)),
+        Err(_) => false,
     }
 }
 
@@ -795,9 +856,13 @@ mod tests {
                     }
                 }
             }
-            // A key release is dropped by design, and a paste that never ended is held back, so
-            // compare only when neither happened.
+            // A key release and a C1 control character are dropped by design, and a paste that
+            // never ended is held back, so compare only when none of them happened.
+            let c1 = bytes
+                .windows(2)
+                .any(|w| w[0] == 0xc2 && (0x80..=0x9f).contains(&w[1]));
             if !saw_mouse
+                && !c1
                 && !bytes.windows(3).any(|w| w == b"\x1b[2")
                 && find(&bytes, b"3u").is_none()
             {
