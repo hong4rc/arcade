@@ -393,7 +393,8 @@ fn a_counting_loop_is_neither_cut_nor_repeated() {
     assert!(out.status.success(), "{}", text(&out));
     // The whole history on one screen: every number once, in order.
     let mut all = env.client("count", 100, 2200);
-    all.wait_for_text("finished").unwrap();
+    all.wait_for_text_within("finished", Duration::from_secs(60))
+        .unwrap();
     let rows = all.screen_rows();
     let numbers: Vec<u32> = rows
         .iter()
