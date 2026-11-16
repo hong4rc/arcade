@@ -94,6 +94,7 @@ pub fn label_of(command: &str, args: &[String]) -> String {
         "pane.close" => "close pane",
         "pane.paste" => "paste",
         "pane.break" => "break to window",
+        "pane.capture-keys" => "key capture (records typing)",
         "pane.move" => "move pane (tree)",
         "window.new" => "new window",
         "window.next" => "next window",

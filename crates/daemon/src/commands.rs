@@ -74,6 +74,8 @@ pub enum Command {
     PaneClose,
     PanePaste,
     PaneBreak,
+    /// Turn the key capture of the pane on or off (see `capture.rs`).
+    PaneCaptureKeys,
     WindowNew,
     WindowSelect(usize),
     WindowNext,
@@ -137,6 +139,7 @@ const NAMES: &[(&str, Command)] = &[
     ("pane.close", Command::PaneClose),
     ("pane.paste", Command::PanePaste),
     ("pane.break", Command::PaneBreak),
+    ("pane.capture-keys", Command::PaneCaptureKeys),
     ("window.new", Command::WindowNew),
     ("window.next", Command::WindowNext),
     ("window.previous", Command::WindowPrevious),

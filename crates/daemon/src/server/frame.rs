@@ -78,6 +78,12 @@ fn status_info(
             .collect(),
         prefix: s.key_state.prefix_active(),
         locked: s.key_state.locked,
+        recording: s
+            .current_window()
+            .layout
+            .rects()
+            .into_iter()
+            .any(|(p, _)| panes.get(&p).is_some_and(|p| p.capture.is_some())),
         unlock_key,
         copy,
         notices: match config.notification.status_count {

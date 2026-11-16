@@ -582,6 +582,7 @@ impl Server {
                         .map(|(state, value)| arcade_term::Progress { state, value }),
                     progress_seq: u64::from(p.progress.is_some()),
                     writer_seen: None,
+                    capture: None,
                 },
             );
             built.panes += 1;

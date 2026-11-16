@@ -24,6 +24,7 @@ macro_rules! stage_count {
     };
 }
 
+mod capture;
 mod clipboard;
 mod commands;
 mod compose;

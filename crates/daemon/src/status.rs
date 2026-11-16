@@ -98,6 +98,8 @@ pub struct StatusInfo {
     /// Waiting for the key after the prefix key.
     pub prefix: bool,
     pub locked: bool,
+    /// The key capture is on for a pane of the window.
+    pub recording: bool,
     /// The key that ends the lock, as it is typed, when there is one.
     pub unlock_key: Option<String>,
     /// The focused pane is in copy mode, and what it is doing.
@@ -220,6 +222,9 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
             None => "LOCK".to_string(),
         });
     }
+    if info.recording {
+        words.push("RECORDING KEYS".to_string());
+    }
     let mut select_word = None;
     match &info.copy {
         None => {}
@@ -314,6 +319,7 @@ mod tests {
             ],
             prefix: false,
             locked: false,
+            recording: false,
             unlock_key: None,
             copy: None,
             notices: [0; 4],
@@ -401,6 +407,15 @@ mod tests {
         i.copy = Some(CopyState::Visual);
         let (cells, _) = build(60, &i);
         assert!(cells.iter().any(|c| c.style == select));
+    }
+
+    #[test]
+    fn a_key_capture_is_said_in_words() {
+        let mut i = info();
+        i.recording = true;
+        let line = text(&build(60, &i).0);
+        assert!(line.trim_end().ends_with("RECORDING KEYS"), "{line:?}");
+        assert!(!text(&build(60, &info()).0).contains("RECORDING"));
     }
 
     #[test]

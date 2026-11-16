@@ -297,6 +297,7 @@ impl Server {
             Command::PaneResize(direction) => self.resize_pane(ctx, direction),
             Command::PaneSwap(direction) => self.swap_pane(ctx, direction),
             Command::PaneBreak => self.break_pane(ctx),
+            Command::PaneCaptureKeys => self.toggle_capture(ctx),
             Command::WindowLayoutNext => self.layout_next(ctx),
             Command::WindowLayoutEven => self.layout_even(ctx),
             Command::PaneSplit(axis) => self.split_pane(ctx, axis),
@@ -1397,6 +1398,35 @@ impl Server {
             .map_err(|_| "cannot even out: a pane would be too small".to_string())?;
         self.window_changed(ctx);
         Ok(String::new())
+    }
+
+    /// Turn the key capture of the pane on, or off when it is on.
+    fn toggle_capture(&mut self, ctx: Ctx) -> Result<String, String> {
+        let dir = self
+            .socket_path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .ok_or_else(|| "no private directory for the capture".to_string())?;
+        let pane = self
+            .panes
+            .get_mut(&ctx.pane)
+            .ok_or_else(|| "no such pane".to_string())?;
+        let message = if let Some(capture) = pane.capture.take() {
+            format!("key capture stopped: {}", capture.path().display())
+        } else {
+            let capture = crate::capture::Capture::start(&dir, ctx.pane)
+                .map_err(|e| format!("cannot start the key capture: {e}"))?;
+            let message = format!(
+                "RECORDING every key typed in this pane, passwords too: {}",
+                capture.path().display()
+            );
+            pane.capture = Some(capture);
+            message
+        };
+        if let Some(session) = self.sessions.get_mut(&ctx.session) {
+            session.chrome_dirty = true;
+        }
+        Ok(message)
     }
 
     fn zoom_pane(&mut self, ctx: Ctx) -> Result<String, String> {

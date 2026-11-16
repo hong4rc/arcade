@@ -170,6 +170,11 @@ fn typed_text(key: Key, raw: &[u8]) -> Option<&str> {
 impl Server {
     /// Keyboard bytes from a client, read as keys.
     pub(super) fn handle_input(&mut self, session_id: u64, bytes: &[u8]) {
+        if let Some(pane) = self.focus_pane_of(session_id)
+            && let Some(capture) = self.panes.get_mut(&pane).and_then(|p| p.capture.as_mut())
+        {
+            capture.record(crate::capture::Direction::Host, bytes);
+        }
         let inputs = match self.sessions.get_mut(&session_id) {
             Some(s) => s.keys.feed(bytes, Instant::now()),
             None => return,

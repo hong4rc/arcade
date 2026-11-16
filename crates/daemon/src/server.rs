@@ -184,6 +184,8 @@ struct Pane {
     /// The foreground group as last asked, and when: asking is a system call on the terminal,
     /// costly while a program floods the pane with titles.
     writer_seen: Option<(Option<i32>, Instant)>,
+    /// The key capture, while it is on for this pane (off when the pane closes).
+    capture: Option<crate::capture::Capture>,
 }
 
 /// A title kept by `CSI 22 t`, with who set it and who asked to keep it.
@@ -1467,6 +1469,7 @@ impl Server {
             progress: None,
             progress_seq: 0,
             writer_seen: None,
+            capture: None,
         })
     }
 
@@ -2110,6 +2113,9 @@ fn queue_pane_input(pane: &mut Pane, bytes: &[u8]) {
     if pane.input.len() + bytes.len() > PANE_INPUT_LIMIT {
         // The program is not reading; dropping further keys beats growing without bound.
         return;
+    }
+    if let Some(capture) = pane.capture.as_mut() {
+        capture.record(crate::capture::Direction::Pane, bytes);
     }
     pane.input.extend_from_slice(bytes);
     stage_mark!(DaemonKeyHandled);
