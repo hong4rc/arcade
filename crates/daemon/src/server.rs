@@ -326,6 +326,9 @@ struct Session {
     /// Which progress report the attached client's terminal was last given: the pane and its
     /// count of reports; `None` while it shows none.
     sent_progress: Option<(u64, u64)>,
+    /// The columns of the status bar that each window's tab covers, as the bar was last drawn:
+    /// the window, from, to (not included). Empty while something else takes the bar's place.
+    tab_bar: Vec<(u64, u16, u16)>,
     /// When the windows' names are to be looked at again because the last look was skipped.
     names_due: Option<Instant>,
     /// The attached client's keyboard bytes that are not complete yet.
@@ -1424,6 +1427,7 @@ impl Server {
                 names_checked: None,
                 sent_title: None,
                 sent_progress: None,
+                tab_bar: Vec::new(),
                 names_due: None,
                 keys: KeyReader::new(),
                 key_state: KeyState::new(),

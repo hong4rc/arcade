@@ -7,6 +7,15 @@ use crate::compose::{blank, fit, text_cells};
 use crate::notify::Class;
 use crate::theme::{self, Role, Symbol};
 
+/// The columns a tab covers on the bar as it is drawn (after any cutting): `from` to `to`, the
+/// end not included, and the index of the tab in `StatusInfo::tabs`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabSpan {
+    pub index: usize,
+    pub from: u16,
+    pub to: u16,
+}
+
 pub struct Tab {
     /// The number shown, which is the window's place in the bar plus the base index.
     pub number: usize,
@@ -57,7 +66,16 @@ pub struct StatusInfo {
 }
 
 /// The cells of the bar, and the column the host's cursor should go to while a prompt is open.
+#[cfg(test)]
 pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
+    let (cells, cursor, _) = build_with_tabs(cols, info);
+    (cells, cursor)
+}
+
+/// The cells of the bar, where the cursor goes when it is a line to type into, and where each
+/// tab that shows (whole or in part) is. A bar that a prompt, a hint or a message replaces has
+/// no tabs.
+pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>, Vec<TabSpan>) {
     let width = usize::from(cols);
     let bar = theme::style(Role::StatusBar);
     if let Some(prompt) = &info.prompt {
@@ -65,17 +83,18 @@ pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
         let mut cells = text_cells(&format!("{}{}", prompt.label, prompt.text), style);
         let cursor = cells.len().min(width.saturating_sub(1));
         cells = fit(cells, width, style);
-        return (cells, Some(cursor as u16));
+        return (cells, Some(cursor as u16), Vec::new());
     }
     if let Some(hint) = &info.hint {
         let style = theme::style(Role::StatusBar);
-        return (fit(text_cells(hint, style), width, style), None);
+        return (fit(text_cells(hint, style), width, style), None, Vec::new());
     }
     if let Some(message) = &info.message {
         let style = theme::style(Role::Message);
         return (
             fit(text_cells(&format!(" {message}"), style), width, style),
             None,
+            Vec::new(),
         );
     }
     let mut cells = text_cells(
@@ -83,7 +102,9 @@ pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
         theme::style(Role::StatusSession),
     );
     cells.push(blank(bar));
-    for tab in &info.tabs {
+    let mut spans = Vec::new();
+    for (index, tab) in info.tabs.iter().enumerate() {
+        let tab_from = cells.len();
         let zoom = if tab.zoomed {
             format!(" {}", theme::symbol(Symbol::Zoomed))
         } else {
@@ -111,6 +132,7 @@ pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
             ));
         }
         cells.extend(text_cells(" ", style));
+        spans.push((index, tab_from, cells.len()));
     }
     let mut words: Vec<String> = Vec::new();
     if info.prefix {
@@ -158,13 +180,24 @@ pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
         ));
     }
     // The counters and the indicators keep their place at the right; the tabs give way.
-    if right.len() < width {
-        cells = fit(cells, width - right.len(), bar);
-        cells.extend(right);
+    let room = if right.len() < width {
+        width - right.len()
     } else {
-        cells = fit(cells, width, bar);
-    }
-    (cells, None)
+        width
+    };
+    cells = fit(cells, room, bar);
+    cells.extend(right.into_iter().take(width - room));
+    // What was cut away cannot be clicked, and a tab cut in two is clickable where it shows.
+    let spans = spans
+        .into_iter()
+        .filter(|(_, from, _)| *from < room)
+        .map(|(index, from, to)| TabSpan {
+            index,
+            from: from as u16,
+            to: to.min(room) as u16,
+        })
+        .collect();
+    (cells, None, spans)
 }
 
 #[cfg(test)]
@@ -234,6 +267,37 @@ mod tests {
             assert_ne!(at(number).fg, at(name).fg, "{number}");
             assert_eq!(at(number).bg, at(name).bg, "{number}");
         }
+    }
+
+    #[test]
+    fn each_tab_knows_the_columns_it_covers_as_drawn_and_a_replaced_bar_has_none() {
+        let (cells, _, spans) = build_with_tabs(60, &info());
+        let line = text(&cells);
+        let col = |needle: &str| line.find(needle).unwrap() as u16;
+        assert_eq!(spans.len(), 2);
+        // A tab covers its number, name and the blanks around them, and no more.
+        assert_eq!(spans[0].index, 0);
+        assert_eq!(
+            (spans[0].from, spans[0].to),
+            (col(" 1 sh "), col(" 1 sh ") + 6)
+        );
+        assert_eq!(spans[1].index, 1);
+        assert_eq!(spans[1].from, spans[0].to);
+        assert_eq!(spans[1].to, spans[1].from + " 2 vim [Z] ".len() as u16);
+        // Cut short: the tab that is cut in two covers what shows, the one cut away is gone.
+        let (_, _, narrow) = build_with_tabs(18, &info());
+        assert_eq!(narrow.len(), 2);
+        assert_eq!(narrow[1].to, 18);
+        let (_, _, narrower) = build_with_tabs(12, &info());
+        assert_eq!(narrower.len(), 1);
+        assert!(narrower[0].to <= 12);
+        // A message, a hint or a prompt in place of the bar leaves no tabs.
+        let mut m = info();
+        m.message = Some("hello".into());
+        assert!(build_with_tabs(60, &m).2.is_empty());
+        let mut h = info();
+        h.hint = Some("hint".into());
+        assert!(build_with_tabs(60, &h).2.is_empty());
     }
 
     #[test]

@@ -361,10 +361,15 @@ impl Server {
                         crate::keymap::hint_line(&self.keymap.prefix, width)
                     }
                 });
-                let (cells, prompt_cursor) = status::build(
+                let (cells, prompt_cursor, spans) = status::build_with_tabs(
                     cols,
                     &status_info(session, copy_on, unlock_key, &self.notices, hint),
                 );
+                // Where the tabs are as drawn, for a click on one.
+                session.tab_bar = spans
+                    .iter()
+                    .filter_map(|t| Some((session.windows.get(t.index)?.id, t.from, t.to)))
+                    .collect();
                 session.screen.set_row(y, cells);
                 cursor_override = prompt_cursor.map(|x| (x, y));
             }

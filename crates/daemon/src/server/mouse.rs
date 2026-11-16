@@ -103,6 +103,25 @@ impl Server {
             return;
         };
         let locked = session.key_state.locked;
+        // A left press on a tab of the status bar shows that window. Nothing else on the bar
+        // does anything, and none of it goes to a pane or starts a selection.
+        // (A drag that began in a pane goes on being that pane's, also over the bar.)
+        let on_bar = status_row(session.rows, self.config.status_position) == Some(m.y);
+        if on_bar && (matches!(m.kind, MouseKind::Press(_)) || session.drag.is_none()) {
+            let target = match m.kind {
+                MouseKind::Press(0) => session
+                    .tab_bar
+                    .iter()
+                    .find(|(_, from, to)| (*from..*to).contains(&m.x))
+                    .map(|(window, _, _)| *window),
+                _ => None,
+            };
+            self.set_drag(session_id, None);
+            if let Some(window) = target {
+                self.select_window(session_id, window);
+            }
+            return;
+        }
         let origin = window_origin(session.rows, self.config.status_position);
         let window = session.current_window();
         let window_id = window.id;
