@@ -17,8 +17,9 @@ brew install hong4rc/tap/arcade
 The `brew trust` line is needed on recent Homebrew versions, which refuse to load a formula from
 a tap outside the official ones until you trust the tap.
 
-After an upgrade, run `arcade kill-server` once so that the old background process makes way for
-the new version. This ends the running sessions.
+After an upgrade, run `arcade upgrade`: the background process continues as the new version and
+keeps your sessions and the programs in them. A daemon from before that command existed still needs
+`arcade kill-server` once, which ends its sessions.
 
 ## First run
 
@@ -45,7 +46,8 @@ cargo build --release -p arcade
 
 To build and install the binary in one step, run `./scripts/install-local.sh`. It puts `arcade` in
 `~/.local/bin` (set `ARCADE_INSTALL_DIR` to choose another folder) and does not touch a daemon that
-is already running; run `arcade kill-server` when you want the new code. To go back, delete that
+is already running; run `arcade upgrade` when you want the new code in it (it keeps the sessions;
+`arcade kill-server` is needed only for a daemon older than that command). To go back, delete that
 file.
 
 To check your changes: `cargo fmt --all --check`, `cargo lint` and `cargo test --workspace`.

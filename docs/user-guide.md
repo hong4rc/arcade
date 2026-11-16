@@ -15,7 +15,7 @@ The first command downloads Zig 0.17 into `.tools/zig` inside the repository (it
 
 To run, type `arcade`. If no daemon is running yet, the command starts one in the background.
 
-**Switching to a new build.** An old daemon keeps running the old code. If the protocol differs, `arcade` says "version mismatch". Then run `arcade kill-server` (this closes every session) and run `arcade` again.
+**Switching to a new build.** An old daemon keeps running the old code. Run `arcade upgrade` and the daemon continues as the new program without ending any session (see 5.13). Only a daemon older than that feature, or one with a different protocol (`arcade` then says "version mismatch"), needs `arcade kill-server` (this closes every session) before you run `arcade` again.
 
 Default paths:
 
@@ -35,6 +35,7 @@ The option `--socket <path>`, placed first on the command line, uses another soc
 | `arcade attach [-t <session>]` | Enter a session |
 | `arcade ls` | List the sessions |
 | `arcade kill-session [-t <session>]` | Close a session |
+| `arcade upgrade [--force] [<program>]` | Make the running daemon continue as a newer `arcade` (the one found first on `PATH`, or the file you give) without ending any session or program (see 5.13) |
 | `arcade kill-server` | Stop the daemon and every session |
 | `arcade run <command> [<argument>...]` | Run a named command (for example `session.detach`), meant for scripts |
 | `arcade config check [--host kitty\|legacy] [<file>]` | Check a configuration file and list its errors, then the bindings that cannot work on the terminal (see 5.11), without a daemon |
@@ -352,6 +353,14 @@ If you use both ways, the notification from the hook replaces the one from the e
 To see what really arrives, run `arcade keys test` in the terminal you use. A key that shows nothing was taken by the system, the window manager or the terminal before it reached Arcade (for example `Alt+h` under AeroSpace), while `Ctrl+Alt+h` shows its name and the command it runs.
 
 **5.12 Ending the session you are in.** Closing its last pane, `session.close` and `arcade kill-session` on it all follow `[session] on-end` (section 4). Sessions that already have a client of their own are not taken over; the move goes to a session nobody is looking at. Notifications of the ended session are dropped from the counter.
+
+**5.13 Upgrading without ending sessions.** After you install a new `arcade`, type `arcade upgrade`. The daemon writes down everything it holds (sessions, windows, layouts, the screen and history of every pane, titles, notifications), checks that the new program can read it, and then replaces its own program in the same process. The programs in your panes keep running, because their process and terminal are never closed. Every attached screen is told to start the new program and attach to the same session, by itself, in the same terminal; you type nothing. It prints both versions, for example `upgraded 0.1.4 -> 0.1.5: kept 3 sessions, 5 windows, 8 panes`.
+
+- If the new program fails at any point before it says it is ready (an error, a crash, or taking too long), the old program starts again from the same snapshot, keeps everything, and `arcade upgrade` says `the upgrade was undone: <why>`. The old program is kept as a private copy next to the socket until the new one is ready, so an install that replaced or removed the file cannot get in the way.
+- `arcade upgrade` changes nothing and says why when the new program is the same file and version (use `--force` to do it anyway), is not a regular program of yours or of the system, can be written by other users, or cannot read the snapshot. A newer snapshot is refused by an older program, so going back to an older `arcade` is not supported: use `arcade kill-server` for that.
+- A daemon older than this feature cannot do it. `arcade upgrade` says so; the first move to a version that has it still needs `arcade kill-server` once.
+- Known limits: copy mode ends (the screen is shown again as it was); cells below the text that a program cleared with a colour of their own come back with the default colour; copy mode finds prompt marks only from after the upgrade (marks in the history before it are not kept); a screen on a client of an older version that does not know the message prints `bad message from the server` and you attach again by hand.
+- Restoring sessions after a reboot or a crash is not built; this only keeps them across a replacement of the program.
 
 ## 6. Not built yet
 
