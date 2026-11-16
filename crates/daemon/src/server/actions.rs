@@ -1025,6 +1025,9 @@ impl Server {
         }
         self.config = new;
         self.sync_sleep_guard();
+        for s in self.sessions.values_mut() {
+            s.title_inputs = None;
+        }
         let (base_index, renumber) = (self.config.base_index, self.config.renumber);
         let mut resize = Vec::new();
         for s in self.sessions.values_mut() {

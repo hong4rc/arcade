@@ -330,6 +330,9 @@ struct Session {
     names_checked: Option<Instant>,
     /// The title last sent to the attached client's terminal; `None` until one is sent.
     sent_title: Option<String>,
+    /// What the title was made from the last time, so that a title nothing changed for is not
+    /// made again at every turn of the loop.
+    title_inputs: Option<frame::TitleInputs>,
     /// Which progress report the attached client's terminal was last given: the pane and its
     /// count of reports; `None` while it shows none.
     sent_progress: Option<(u64, u64)>,
@@ -447,6 +450,7 @@ impl Session {
             last_frame: None,
             names_checked: None,
             sent_title: None,
+            title_inputs: None,
             sent_progress: None,
             tab_bar: Vec::new(),
             names_due: None,
@@ -1324,6 +1328,7 @@ impl Server {
             }
             session.need_full = true;
             session.sent_title = None;
+            session.title_inputs = None;
             // A terminal that was shown another session's bar must be told what is true here.
             session.sent_progress = Some((u64::MAX, 0));
             session.last_used = self.use_counter;

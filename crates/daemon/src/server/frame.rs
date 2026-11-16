@@ -86,6 +86,48 @@ fn status_info(
 /// A pane narrower than this has no room for the mark of its notification.
 const MARK_MIN_WIDTH: u16 = 12;
 
+/// Everything the title of the host terminal's window is made from, kept to tell whether it has to
+/// be made again.
+#[derive(Default)]
+pub(super) struct TitleInputs {
+    window: u64,
+    focus: u64,
+    number: usize,
+    pane_title: Option<String>,
+    session: String,
+    name: String,
+    program: String,
+    directory: String,
+}
+
+impl TitleInputs {
+    fn matches(&self, s: &Session, pane_title: Option<&str>) -> bool {
+        let w = s.current_window();
+        self.window == w.id
+            && self.focus == w.focus
+            && self.number == w.number
+            && self.pane_title.as_deref() == pane_title
+            && self.session == s.name
+            && self.name == w.name
+            && self.program == w.program
+            && self.directory == w.directory
+    }
+
+    fn of(s: &Session, pane_title: Option<&str>) -> TitleInputs {
+        let w = s.current_window();
+        TitleInputs {
+            window: w.id,
+            focus: w.focus,
+            number: w.number,
+            pane_title: pane_title.map(str::to_string),
+            session: s.name.clone(),
+            name: w.name.clone(),
+            program: w.program.clone(),
+            directory: w.directory.clone(),
+        }
+    }
+}
+
 /// The longest pane title that goes to the host terminal, in characters.
 pub(super) const TITLE_LIMIT: usize = 200;
 
@@ -131,6 +173,7 @@ impl Server {
     /// not the one it was told last.
     pub(super) fn send_titles(&mut self) {
         let mut due = Vec::new();
+        let mut titles_seen = Vec::new();
         for s in self.sessions.values() {
             let Some(client) = s.client else {
                 continue;
@@ -138,9 +181,26 @@ impl Server {
             if !self.clients.get(&client).is_some_and(|c| !c.gone) {
                 continue;
             }
+            let pane_title = self
+                .panes
+                .get(&s.current_window().focus)
+                .and_then(|p| p.title.as_deref());
+            if s.title_inputs
+                .as_ref()
+                .is_some_and(|k| k.matches(s, pane_title))
+            {
+                continue;
+            }
+            let key = TitleInputs::of(s, pane_title);
             let title = self.host_title(s);
+            titles_seen.push((s.id, key));
             if !title.is_empty() && s.sent_title.as_deref() != Some(title.as_str()) {
                 due.push((s.id, client, title));
+            }
+        }
+        for (session_id, key) in titles_seen {
+            if let Some(s) = self.sessions.get_mut(&session_id) {
+                s.title_inputs = Some(key);
             }
         }
         for (session_id, client, title) in due {

@@ -622,7 +622,14 @@ fn round1(x: f64) -> f64 {
 fn workload_files(config: &Config) -> R<Vec<(String, PathBuf, u64)>> {
     fs::create_dir_all(&config.data_dir)?;
     let mut files = Vec::new();
+    // `ARCADE_BENCH_LOADS=a,b` measures only those loads.
+    let only = std::env::var("ARCADE_BENCH_LOADS").ok();
     for workload in Workload::ALL {
+        if let Some(list) = &only
+            && !list.split(',').any(|n| n == workload.name())
+        {
+            continue;
+        }
         let megabytes = if config.quick {
             32
         } else if workload == Workload::Plain {
