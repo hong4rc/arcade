@@ -90,8 +90,11 @@ pub fn style(role: Role) -> Style {
             bold: true,
             ..style(Role::Tab)
         },
+        // The colours of the current tab swapped: blue on the dark of its text, so the number
+        // stands out from the name without a colour the tab does not already use.
         Role::TabNumberCurrent => Style {
-            fg: Color::Indexed(15),
+            fg: style(Role::TabCurrent).bg,
+            bg: style(Role::TabCurrent).fg,
             ..style(Role::TabCurrent)
         },
         Role::TabTitle => Style {
@@ -218,6 +221,18 @@ pub fn notice_symbol(class: crate::notify::Class) -> &'static str {
     }
 }
 
+/// What the tab of a window says about a progress report of one of its panes: the percentage
+/// (`42%`), `x` in front of it for an error, `p` for a pause, `...` when the amount is unknown.
+pub fn progress_mark(report: arcade_term::Progress) -> String {
+    match report.state {
+        1 => format!("{}%", report.value),
+        2 if report.value == 0 => "x".to_string(),
+        2 => format!("x{}%", report.value),
+        3 => "...".to_string(),
+        _ => format!("p{}%", report.value),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Symbol {
     /// The cell of a divider that runs top to bottom.
@@ -297,5 +312,49 @@ pub fn symbol(symbol: Symbol) -> &'static str {
         Symbol::TreeOtherPane => "  ",
         Symbol::TreeLifted => " [lifted]",
         Symbol::TreePathSeparator => " › ",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_number_of_the_current_tab_uses_only_the_colours_of_its_tab_and_stays_readable() {
+        let tab = style(Role::TabCurrent);
+        let number = style(Role::TabNumberCurrent);
+        // The two colours the tab already shows together, either way round.
+        assert!(number.fg == tab.fg || number.fg == tab.bg);
+        assert!(number.bg == tab.fg || number.bg == tab.bg);
+        assert_ne!(number.fg, number.bg);
+        assert_ne!(number.fg, tab.fg, "it must differ from the name next to it");
+        // The name's own lighter text keeps the tab's colours too.
+        let title = style(Role::TabTitleCurrent);
+        assert_eq!((title.fg, title.bg), (tab.fg, tab.bg));
+    }
+
+    #[test]
+    fn no_role_of_the_bar_puts_the_same_colour_on_text_and_background() {
+        for role in [
+            Role::StatusBar,
+            Role::StatusSession,
+            Role::Tab,
+            Role::TabCurrent,
+            Role::TabNumber,
+            Role::TabNumberCurrent,
+            Role::TabTitle,
+            Role::TabTitleCurrent,
+            Role::Indicator,
+            Role::Message,
+            Role::Prompt,
+            Role::PickerSelected,
+            Role::NoticeApproval,
+            Role::NoticeInput,
+            Role::NoticeError,
+            Role::NoticeInfo,
+        ] {
+            let s = style(role);
+            assert_ne!(s.fg, s.bg, "{role:?}");
+        }
     }
 }

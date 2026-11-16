@@ -67,6 +67,8 @@ pub struct Tab {
     pub zoomed: bool,
     /// The most urgent notification among the window's panes.
     pub notice: Option<Class>,
+    /// The progress report of the window's focused pane, or else of another pane of it.
+    pub progress: Option<arcade_term::Progress>,
 }
 
 /// A line the user types into.
@@ -193,6 +195,15 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
                 theme::notice_style(class),
             ));
         }
+        if let Some(report) = tab.progress {
+            cells.extend(text_cells(" ", style));
+            let mark_style = if report.state == 2 {
+                theme::notice_style(Class::Error)
+            } else {
+                number_style
+            };
+            cells.extend(text_cells(&theme::progress_mark(report), mark_style));
+        }
         cells.extend(text_cells(" ", style));
         spans.push((index, tab_from, cells.len()));
     }
@@ -290,6 +301,7 @@ mod tests {
                     current: false,
                     zoomed: false,
                     notice: None,
+                    progress: None,
                 },
                 Tab {
                     number: 2,
@@ -297,6 +309,7 @@ mod tests {
                     current: true,
                     zoomed: true,
                     notice: None,
+                    progress: None,
                 },
             ],
             prefix: false,
@@ -323,12 +336,18 @@ mod tests {
         assert_eq!(at("vim"), theme::style(Role::TabCurrent));
         assert_eq!(at("sh"), theme::style(Role::Tab));
         assert_ne!(at("vim"), at("sh"));
-        // The number of a tab is drawn apart from its name, on the same background.
+        // The number of a tab is drawn apart from its name: on the same background, except in the
+        // current tab, where it is the colours of the tab swapped.
         assert_eq!(at("2 vim"), theme::style(Role::TabNumberCurrent));
         assert_eq!(at("1 sh"), theme::style(Role::TabNumber));
         for (number, name) in [("2 vim", "vim"), ("1 sh", "sh")] {
             assert_ne!(at(number).fg, at(name).fg, "{number}");
-            assert_eq!(at(number).bg, at(name).bg, "{number}");
+            if name == "sh" {
+                assert_eq!(at(number).bg, at(name).bg, "{number}");
+            } else {
+                assert_eq!(at(number).bg, at(name).fg, "{number}");
+                assert_eq!(at(number).fg, at(name).bg, "{number}");
+            }
         }
     }
 
@@ -425,6 +444,34 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_with_a_progress_report_shows_its_mark_after_the_name() {
+        use arcade_term::Progress;
+        let mut i = info();
+        i.tabs[0].progress = Some(Progress {
+            state: 1,
+            value: 42,
+        });
+        i.tabs[1].progress = Some(Progress { state: 2, value: 0 });
+        let (cells, _, spans) = build_with_tabs(80, &i);
+        let line = text(&cells);
+        assert!(line.contains(" 1 sh 42% "), "{line}");
+        assert!(line.contains(" 2 vim [Z] x "), "{line}");
+        let at = |needle: &str| cells[line.find(needle).unwrap()].style;
+        assert_eq!(at("42%"), theme::style(Role::TabNumber));
+        assert_eq!(at("x "), theme::notice_style(Class::Error));
+        // The mark belongs to its tab: a click on it is a click on the tab.
+        assert_eq!(spans[0].to as usize, line.find("42%").unwrap() + 4);
+        for (state, value, want) in [
+            (1, 7, "7%"),
+            (2, 30, "x30%"),
+            (3, 0, "..."),
+            (4, 55, "p55%"),
+        ] {
+            assert_eq!(theme::progress_mark(Progress { state, value }), want);
+        }
+    }
+
+    #[test]
     fn when_the_tabs_do_not_fit_they_give_way_to_the_counters() {
         let mut i = info();
         for n in 3..30 {
@@ -434,6 +481,7 @@ mod tests {
                 current: false,
                 zoomed: false,
                 notice: None,
+                progress: None,
             });
         }
         i.notices = [10, 0, 0, 0];

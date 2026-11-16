@@ -64,6 +64,12 @@ fn status_info(
                 current: w.id == s.current,
                 zoomed: w.zoomed,
                 notice: notices.highest(w.layout.rects().into_iter().map(|(p, _)| p)),
+                progress: panes.get(&w.focus).and_then(|p| p.progress).or_else(|| {
+                    w.layout
+                        .rects()
+                        .into_iter()
+                        .find_map(|(p, _)| panes.get(&p).and_then(|p| p.progress))
+                }),
             })
             .collect(),
         prefix: s.key_state.prefix_active(),

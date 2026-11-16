@@ -525,6 +525,9 @@ pub fn draw_box(spec: &BoxSpec) -> Drawn {
                 // One blank cell was put in front of the text.
                 for cell in cells.iter_mut().skip(1 + from).take(to - from) {
                     cell.style.fg = number.fg;
+                    if Some(index) == spec.selected {
+                        cell.style.bg = number.bg;
+                    }
                     cell.style.bold = number.bold;
                 }
             }
