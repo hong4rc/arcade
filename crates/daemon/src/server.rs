@@ -174,6 +174,10 @@ struct Pane {
     title_owner: Option<i32>,
     /// Titles the program asked to keep (`CSI 22 t`), the newest last.
     title_stack: Vec<TitleSave>,
+    /// The last progress report the program made (`OSC 9;4`), and how many it has made: a report
+    /// that repeats the last one still counts, since programs repeat it to keep it shown.
+    progress: Option<arcade_term::Progress>,
+    progress_seq: u64,
     /// The foreground group as last asked, and when: asking is a system call on the terminal,
     /// costly while a program floods the pane with titles.
     writer_seen: Option<(Option<i32>, Instant)>,
@@ -319,6 +323,9 @@ struct Session {
     names_checked: Option<Instant>,
     /// The title last sent to the attached client's terminal; `None` until one is sent.
     sent_title: Option<String>,
+    /// Which progress report the attached client's terminal was last given: the pane and its
+    /// count of reports; `None` while it shows none.
+    sent_progress: Option<(u64, u64)>,
     /// When the windows' names are to be looked at again because the last look was skipped.
     names_due: Option<Instant>,
     /// The attached client's keyboard bytes that are not complete yet.
@@ -693,6 +700,7 @@ impl Server {
             self.wake_name_checks();
             self.send_frames();
             self.send_titles();
+            self.send_progress();
             self.handle_pending_clipboard(&read_now);
             // (5) Panes that have been quiet shrink their old scrollback, a little at a time.
             self.compress_idle_panes();
@@ -1206,6 +1214,8 @@ impl Server {
             }
             session.need_full = true;
             session.sent_title = None;
+            // A terminal that was shown another session's bar must be told what is true here.
+            session.sent_progress = Some((u64::MAX, 0));
             session.last_used = self.use_counter;
             session.name.clone()
         };
@@ -1344,6 +1354,8 @@ impl Server {
             title: None,
             title_owner: None,
             title_stack: Vec::new(),
+            progress: None,
+            progress_seq: 0,
             writer_seen: None,
         })
     }
@@ -1411,6 +1423,7 @@ impl Server {
                 last_frame: None,
                 names_checked: None,
                 sent_title: None,
+                sent_progress: None,
                 names_due: None,
                 keys: KeyReader::new(),
                 key_state: KeyState::new(),
@@ -1454,14 +1467,17 @@ impl Server {
     }
 
     fn detach_client(&mut self, session_id: u64, reason: DetachReason, message: &str) {
-        let Some(client_id) = self
-            .sessions
-            .get_mut(&session_id)
-            .and_then(|s| s.client.take())
-        else {
+        let Some((client_id, bar_shown)) = self.sessions.get_mut(&session_id).and_then(|s| {
+            let shown = s.sent_progress.take().is_some();
+            s.client.take().map(|c| (c, shown))
+        }) else {
             return;
         };
         self.send_output(client_id, crate::render::MOUSE_OFF);
+        // The bar of a progress report must not stay behind in the terminal.
+        if bar_shown {
+            self.send_output(client_id, frame::PROGRESS_REMOVE);
+        }
         self.send(
             client_id,
             &ServerMessage::Detached {
@@ -1632,6 +1648,10 @@ impl Server {
                             pane.title = saved.title;
                             pane.title_owner = saved.owner;
                         }
+                    }
+                    TermEvent::Progress(report) => {
+                        pane.progress = Some(report).filter(|r| r.state != 0);
+                        pane.progress_seq += 1;
                     }
                     TermEvent::Bell => signals.push(crate::notify::Signal::new(
                         crate::notify::Class::Info,

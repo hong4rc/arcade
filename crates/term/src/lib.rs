@@ -27,7 +27,9 @@ use libghostty_vt::terminal::CompressionMode;
 use libghostty_vt::{Terminal, key::KittyKeyFlags};
 
 mod keys;
+mod progress;
 pub use keys::{Code, Key, Mods, Named, PaneKeyModes, encode as encode_key};
+pub use progress::Progress;
 
 /// Largest clipboard write accepted from a pane, in bytes after decoding.
 pub const CLIPBOARD_WRITE_LIMIT: usize = 1024 * 1024;
@@ -87,6 +89,8 @@ pub enum Event {
         title: String,
         body: String,
     },
+    /// The program reported progress (`OSC 9;4`); state 0 takes the report away.
+    Progress(Progress),
     /// Bytes the terminal sends back to the program (answers to its queries).
     Reply(Vec<u8>),
 }
@@ -302,6 +306,7 @@ pub struct Term {
     anchor: Option<TrackedGridRef>,
     /// Where the bytes so far stand in a `CSI 22 t` / `CSI 23 t`, which the library ignores.
     title_scan: TitleScan,
+    progress_scan: progress::ProgressScan,
     /// Where a title push or pop could start: `ESC [ 2`, with a 2 or a 3 after it.
     start: memchr::memmem::Finder<'static>,
 }
@@ -461,6 +466,7 @@ impl Term {
             stuck_deadline: None,
             anchor: None,
             title_scan: TitleScan::default(),
+            progress_scan: progress::ProgressScan::new(),
             start: memchr::memmem::Finder::new(b"\x1b[2").into_owned(),
         })
     }
@@ -487,6 +493,12 @@ impl Term {
 
     /// Give the terminal bytes the program wrote.
     pub fn feed(&mut self, bytes: &[u8]) {
+        let mut reports = Vec::new();
+        self.progress_scan.scan(bytes, &mut reports);
+        if !reports.is_empty() {
+            let mut events = self.events.borrow_mut();
+            events.extend(reports.into_iter().map(Event::Progress));
+        }
         // The bytes go to the library in pieces cut after each title push or pop, so that the
         // events come in the order the program wrote them.
         let mut start = 0;

@@ -453,6 +453,8 @@ pub struct TestClient {
     /// (title and body) in the order they came.
     pub bells: usize,
     pub host_notifications: Vec<(String, String)>,
+    /// The progress reports the daemon passed to the host terminal, in order.
+    pub host_progress: Vec<arcade_term::Progress>,
     /// The titles the host terminal's window was given (OSC 0 or 2), in order.
     pub titles: Vec<String>,
 }
@@ -472,6 +474,7 @@ impl TestClient {
             clipboard_writes: Vec::new(),
             bells: 0,
             host_notifications: Vec::new(),
+            host_progress: Vec::new(),
             titles: Vec::new(),
         };
         client.send_message(&ClientMessage::Hello {
@@ -641,6 +644,7 @@ impl TestClient {
                                     Event::ClipboardWrite(data) => self.clipboard_writes.push(data),
                                     Event::Title(title) => self.titles.push(title),
                                     Event::Bell => self.bells += 1,
+                                    Event::Progress(report) => self.host_progress.push(report),
                                     Event::Notification { title, body } => {
                                         self.host_notifications.push((title, body));
                                     }

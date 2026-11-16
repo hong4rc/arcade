@@ -52,6 +52,9 @@ fn clean_title(text: &str, limit: usize) -> String {
         .collect()
 }
 
+/// The sequence that takes a progress bar away from the host terminal.
+pub(super) const PROGRESS_REMOVE: &[u8] = b"\x1b]9;4;0\x1b\\";
+
 impl Server {
     /// What the pane's foreground program is called, for the window the pane makes.
     pub(super) fn program_name(&self, pane: u64) -> Option<String> {
@@ -97,6 +100,39 @@ impl Server {
             self.send_output(client, format!("\x1b]2;{title}\x07").as_bytes());
             if let Some(s) = self.sessions.get_mut(&session_id) {
                 s.sent_title = Some(title);
+            }
+        }
+    }
+
+    /// Tell each attached client's terminal the progress of the focused pane of the window it
+    /// shows, when that is not what it was told last: a new report from that pane (also one that
+    /// repeats the last), another pane in focus, or none to show any more.
+    pub(super) fn send_progress(&mut self) {
+        let mut due = Vec::new();
+        for s in self.sessions.values() {
+            let Some(client) = s.client else {
+                continue;
+            };
+            if !self.clients.get(&client).is_some_and(|c| !c.gone) {
+                continue;
+            }
+            let focus = s.current_window().focus;
+            let pane = self.panes.get(&focus);
+            let shown = pane.and_then(|p| p.progress.map(|r| (r, (focus, p.progress_seq))));
+            if shown.map(|(_, key)| key) != s.sent_progress {
+                due.push((s.id, client, shown));
+            }
+        }
+        for (session_id, client, shown) in due {
+            match shown {
+                Some((report, _)) => self.send_output(
+                    client,
+                    format!("\x1b]9;4;{};{}\x1b\\", report.state, report.value).as_bytes(),
+                ),
+                None => self.send_output(client, PROGRESS_REMOVE),
+            }
+            if let Some(s) = self.sessions.get_mut(&session_id) {
+                s.sent_progress = shown.map(|(_, key)| key);
             }
         }
     }
