@@ -28,8 +28,10 @@ use libghostty_vt::{Terminal, key::KittyKeyFlags};
 
 mod keys;
 mod progress;
+mod state;
 pub use keys::{Code, Key, Mods, Named, PaneKeyModes, encode as encode_key};
 pub use progress::Progress;
+pub use state::TerminalState;
 
 /// Largest clipboard write accepted from a pane, in bytes after decoding.
 pub const CLIPBOARD_WRITE_LIMIT: usize = 1024 * 1024;
