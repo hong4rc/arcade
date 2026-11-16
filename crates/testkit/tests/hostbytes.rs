@@ -17,7 +17,7 @@ fn hex_pane(daemon: &TestDaemon, flags: u8) -> TestClient {
         format!("printf '\\033[>{flags}u'; ")
     };
     client.type_line(&format!(
-        "stty raw -echo; echo ready; {ask}perl -e 'binmode STDIN; $|=1; while(sysread(STDIN,$b,1)){{printf \"%02x \",ord($b)}}'"
+        "stty raw -echo; echo ready; {ask}LC_ALL=C perl -e 'binmode STDIN; $|=1; while(sysread(STDIN,$b,1)){{printf \"%02x \",ord($b)}}'"
     ));
     client.wait_for_row("ready").unwrap();
     std::thread::sleep(Duration::from_millis(500));
