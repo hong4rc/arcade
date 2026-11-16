@@ -454,21 +454,58 @@ mod tests {
         i.tabs[1].progress = Some(Progress { state: 2, value: 0 });
         let (cells, _, spans) = build_with_tabs(80, &i);
         let line = text(&cells);
-        assert!(line.contains(" 1 sh 42% "), "{line}");
-        assert!(line.contains(" 2 vim [Z] x "), "{line}");
+        assert!(line.contains(" 1 sh  42% "), "{line}");
+        assert!(line.contains(" 2 vim [Z]  err "), "{line}");
         let at = |needle: &str| cells[line.find(needle).unwrap()].style;
         assert_eq!(at("42%"), theme::style(Role::TabNumber));
-        assert_eq!(at("x "), theme::notice_style(Class::Error));
+        assert_eq!(at("err"), theme::notice_style(Class::Error));
         // The mark belongs to its tab: a click on it is a click on the tab.
         assert_eq!(spans[0].to as usize, line.find("42%").unwrap() + 4);
         for (state, value, want) in [
-            (1, 7, "7%"),
+            (1, 9, "  9%"),
+            (1, 100, "100%"),
             (2, 30, "x30%"),
-            (3, 0, "..."),
+            (2, 100, "x99%"),
+            (3, 0, " ..."),
             (4, 55, "p55%"),
         ] {
             assert_eq!(theme::progress_mark(Progress { state, value }), want);
         }
+    }
+
+    #[test]
+    fn the_tab_has_the_same_width_for_every_value_and_state_so_the_tabs_to_its_right_stay() {
+        use arcade_term::Progress;
+        let spans_with = |report: Option<Progress>| {
+            let mut i = info();
+            i.tabs[0].progress = report;
+            let (_, _, spans) = build_with_tabs(80, &i);
+            spans
+        };
+        let shown = spans_with(Some(Progress { state: 1, value: 9 }));
+        let width = |s: &[TabSpan]| s[0].to - s[0].from;
+        for (state, value) in [
+            (1, 0),
+            (1, 42),
+            (1, 100),
+            (2, 0),
+            (2, 7),
+            (2, 100),
+            (3, 0),
+            (4, 5),
+            (4, 100),
+        ] {
+            let other = spans_with(Some(Progress { state, value }));
+            assert_eq!(width(&other), width(&shown), "{state} {value}");
+            assert_eq!(other[1].from, shown[1].from, "{state} {value}");
+            assert_eq!(other[1].to, shown[1].to, "{state} {value}");
+        }
+        // Only the appearing of a report moves the tabs, by the mark and the blank before it.
+        let none = spans_with(None);
+        assert_eq!(
+            usize::from(shown[1].from - none[1].from),
+            theme::PROGRESS_MARK_WIDTH + 1
+        );
     }
 
     #[test]

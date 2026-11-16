@@ -133,11 +133,41 @@ fn the_tab_of_a_window_shows_the_progress_of_its_panes_until_it_is_removed() {
     client.type_line(&report(1, 42));
     assert!(client.wait_until(WAIT, |c| c.screen_text().contains("42%")));
     client.type_line(&report(2, 0));
-    let bar_ends_in_x = |c: &mut TestClient| c.screen_text().trim_end().ends_with(" x");
+    let bar_ends_in_x = |c: &mut TestClient| c.screen_text().trim_end().ends_with(" err");
     assert!(client.wait_until(WAIT, bar_ends_in_x));
     client.type_line(&report(0, 0));
     assert!(client.wait_until(WAIT, |c| {
         let text = c.screen_text();
-        !text.contains("42%") && !text.trim_end().ends_with(" x")
+        !text.contains("42%") && !text.trim_end().ends_with(" err")
     }));
+}
+
+/// The bytes of screen output, not counting the progress sequences passed on to the host.
+fn screen_bytes(client: &TestClient) -> usize {
+    let raw = String::from_utf8_lossy(&client.raw_output).into_owned();
+    raw.replace("\x1b]9;4;1;42\x1b\\", "").len()
+}
+
+#[test]
+fn a_report_that_says_the_same_again_does_not_redraw_the_bar() {
+    let daemon = TestDaemon::start();
+    let mut client = start(&daemon);
+    client.type_line(&report(1, 42));
+    assert!(client.wait_until(WAIT, |c| c.screen_text().contains("42%")));
+    let lap = |client: &mut TestClient, body: &str, marker: &str| {
+        let before = screen_bytes(client);
+        client.type_line(&format!(
+            "i=0; while [ $i -lt 40 ]; do {body}; sleep 0.02; i=$((i+1)); done; echo {marker}"
+        ));
+        client.wait_for_text(marker).unwrap();
+        client.wait_until(Duration::from_millis(300), |_| false);
+        screen_bytes(client) - before
+    };
+    let with_reports = lap(&mut client, &report(1, 42)[..], "lap-one");
+    let without = lap(&mut client, "true", "lap-two");
+    // The two laps type about the same text; 40 reports must not add a bar's worth of cells each.
+    assert!(
+        with_reports < without + 400,
+        "with {with_reports} bytes, without {without}"
+    );
 }

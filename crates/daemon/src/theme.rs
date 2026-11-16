@@ -221,16 +221,25 @@ pub fn notice_symbol(class: crate::notify::Class) -> &'static str {
     }
 }
 
-/// What the tab of a window says about a progress report of one of its panes: the percentage
-/// (`42%`), `x` in front of it for an error, `p` for a pause, `...` when the amount is unknown.
+/// How many cells the progress mark of a tab takes whenever it shows, so that a tab changes
+/// width only when a report appears or goes.
+pub const PROGRESS_MARK_WIDTH: usize = 4;
+
+/// What the tab of a window says about a progress report of one of its panes, always
+/// [`PROGRESS_MARK_WIDTH`] cells: the percentage right-aligned (`  9%`, ` 42%`, `100%`); `x` and
+/// two digits for an error (`x30%`, ` err` when it has no value); `p` and two digits for a
+/// pause (`p55%`); ` ...` when the amount is unknown. An error or a pause at 100 shows 99.
 pub fn progress_mark(report: arcade_term::Progress) -> String {
-    match report.state {
-        1 => format!("{}%", report.value),
-        2 if report.value == 0 => "x".to_string(),
-        2 => format!("x{}%", report.value),
-        3 => "...".to_string(),
-        _ => format!("p{}%", report.value),
-    }
+    let two = report.value.min(99);
+    let mark = match report.state {
+        1 => format!("{:>3}%", report.value.min(100)),
+        2 if report.value == 0 => " err".to_string(),
+        2 => format!("x{two:>2}%"),
+        3 => " ...".to_string(),
+        _ => format!("p{two:>2}%"),
+    };
+    debug_assert_eq!(mark.chars().count(), PROGRESS_MARK_WIDTH);
+    mark
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
