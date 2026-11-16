@@ -222,6 +222,8 @@ fn an_upgrade_keeps_the_shell_and_the_screen_comes_back_by_itself() {
     let out = env.upgrade_to(&new);
     assert!(out.status.success(), "{}", text(&out));
     assert!(text(&out).contains("upgraded"), "{}", text(&out));
+    // An upgrade that really went ahead says so, before its result.
+    assert!(text(&out).starts_with("upgrading to "), "{}", text(&out));
 
     // The same terminal shows the session again, with what it showed, and the shell answers.
     type_until_row_starting(&mut host, "echo again-$$", "again-");
@@ -312,6 +314,8 @@ fn refusals_change_nothing() {
     let out = env.plain(&["upgrade", ARCADE]);
     assert!(!out.status.success());
     assert!(text(&out).contains("nothing to upgrade"), "{}", text(&out));
+    // Nothing started, so nothing says that an upgrade is under way.
+    assert!(!text(&out).contains("upgrading to"), "{}", text(&out));
     // A file that is not a program.
     let junk = env.dir.join("junk");
     std::fs::write(&junk, "not a program").unwrap();

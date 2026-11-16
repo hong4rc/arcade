@@ -298,6 +298,7 @@ pub fn offer(
     socket: &std::path::Path,
     list_output: &str,
     restart: bool,
+    announce: &dyn Fn(),
 ) -> u8 {
     let sessions = parse_sessions(list_output);
     let panes = old_panes(socket);
@@ -323,6 +324,8 @@ pub fn offer(
             return 1;
         }
     }
+    // The restart is going ahead: now it is said which program it is to.
+    announce();
     // Stop the old daemon (its panes get the hangup signal, then are killed).
     if let Ok(stream) = connect(socket)
         && let Ok(

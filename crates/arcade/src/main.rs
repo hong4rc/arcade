@@ -348,7 +348,9 @@ fn upgrade_command(options: &Options, rest: &[String]) -> u8 {
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map_or_else(|| "(unknown)".to_string(), |v| v.trim().to_string());
-    println!("upgrading to {version} ({})", program.display());
+    // Said only when an upgrade really starts: a refusal ("nothing to upgrade", a file that is
+    // not a program) is just the refusal.
+    let announce = || println!("upgrading to {version} ({})", program.display());
     let mut args = vec![program.display().to_string()];
     if force {
         args.push("--force".to_string());
@@ -360,6 +362,7 @@ fn upgrade_command(options: &Options, rest: &[String]) -> u8 {
     };
     match command_result(&mut connection, "server.upgrade", &args, None) {
         Ok((true, output)) => {
+            announce();
             println!("{}", output.trim_end());
             0
         }
@@ -374,9 +377,13 @@ fn upgrade_command(options: &Options, rest: &[String]) -> u8 {
                 })
                 .map(|(_, text)| text)
                 .unwrap_or_default();
-            restart::offer(&program, &options.socket, &list, restart)
+            restart::offer(&program, &options.socket, &list, restart, &announce)
         }
         Ok((false, output)) => {
+            // An upgrade that was started and taken back did start.
+            if output.starts_with("the upgrade was undone") {
+                announce();
+            }
             eprintln!("arcade: {}", output.trim_end());
             1
         }
