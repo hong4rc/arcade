@@ -842,3 +842,49 @@ fn a_daemon_from_before_the_feature_is_restarted_with_its_sessions_made_again() 
         assert_eq!(dirs[1], "/usr", "{version}: {dirs:?}");
     }
 }
+
+/// An upgrade while a pane is zoomed, in copy mode, and reports progress: the zoom and the
+/// progress mark are kept, copy mode ends (the screen is live again), and the shell answers.
+#[test]
+fn an_upgrade_keeps_a_zoomed_window_and_its_progress_and_ends_copy_mode() {
+    let env = Env::new();
+    let new = env.copy_of_program("arcade-new");
+    let mut host = env.host(Path::new(ARCADE), &["new", "-s", "main"]);
+    host.wait_for_prompt().unwrap();
+    let run = |args: &[&str]| {
+        let mut all = vec!["run"];
+        all.extend_from_slice(args);
+        let out = env.plain(&all);
+        assert!(out.status.success(), "{}", text(&out));
+    };
+    run(&["pane.split-right"]);
+    run(&["pane.zoom"]);
+    host.type_line("printf '\\033]9;4;1;40\\033\\\\'; echo shell-$$");
+    wait_for_row_starting(&mut host, "shell-");
+    assert!(
+        host.wait_until(WAIT, |h| h.screen_text().contains("[Z]")),
+        "{}",
+        host.screen_text()
+    );
+    run(&["copy.enter"]);
+    assert!(
+        host.wait_until(WAIT, |h| h.screen_text().contains("COPY")),
+        "{}",
+        host.screen_text()
+    );
+
+    let out = env.upgrade_to(&new);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("upgraded"), "{}", text(&out));
+
+    type_until_row_starting(&mut host, "echo again-$$", "again-");
+    let after = host.screen_text();
+    assert!(after.contains("[Z]"), "{after}");
+    assert!(after.contains("40%"), "{after}");
+    assert!(!after.contains("COPY"), "{after}");
+    // A drag that was going on when the daemon was replaced is over: the motion and the release
+    // that follow it move nothing and the shell is still answering.
+    host.send(b"\x1b[<32;40;5M\x1b[<0;40;5m");
+    type_until_row_starting(&mut host, "echo still-$$", "still-");
+    assert!(host.screen_text().contains("[Z]"), "{}", host.screen_text());
+}

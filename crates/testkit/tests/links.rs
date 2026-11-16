@@ -705,4 +705,57 @@ mod underline {
         assert!(copied.contains("click-me after"), "{copied:?}");
         assert!(!copied.contains('\x1b'));
     }
+
+    /// The underline of a link stays under the colours of a search match, of a selection and of a
+    /// jump label, and the link itself is not broken by any of them.
+    #[test]
+    fn a_search_match_a_selection_and_a_jump_label_leave_the_link_and_its_underline() {
+        let daemon = TestDaemon::start();
+        let mut client = client(&daemon, (80, 20), None);
+        client.type_line(&printf_link("click-me"));
+        client.wait_for_text("click-me after").unwrap();
+        client.send(PREFIX);
+        client.send(b"[");
+        assert!(client.wait_until(WAIT, |c| format!("{} ", c.status_row()).contains(" COPY ")));
+        let (row, col) = find(&client, "click-me after").unwrap();
+        let whole = |client: &TestClient, what: &str| {
+            for x in col..col + 8 {
+                assert_eq!(
+                    client.screen.hyperlink_at(row, x).as_deref(),
+                    Some(URL),
+                    "{what}: link at {x}"
+                );
+                assert_eq!(
+                    underline_at(client, row, x),
+                    Underline::Dotted,
+                    "{what}: {x}"
+                );
+            }
+        };
+        let plain = client.style_at(row, col);
+        // A search match: the colours change, the link and the underline stay.
+        client.send(b"/click\r");
+        assert!(client.wait_until(WAIT, |c| c.style_at(row, col) != plain));
+        whole(&client, "search");
+        // A selection over the whole link.
+        client.send(b"0v$");
+        assert!(client.wait_until(WAIT, |c| {
+            format!("{} ", c.status_row()).contains(" VISUAL ")
+        }));
+        whole(&client, "selection");
+        client.send(b"\x1b");
+        assert!(client.wait_until(WAIT, |c| {
+            !format!("{} ", c.status_row()).contains(" VISUAL ")
+        }));
+        // A jump label: every cell of the link keeps its address and its underline, whichever
+        // cell the label is drawn on.
+        client.send(b"s");
+        client.send(b"e");
+        assert!(
+            client.wait_until(WAIT, |c| format!("{} ", c.status_row()).contains(" JUMP ")),
+            "{}",
+            client.status_row()
+        );
+        whole(&client, "jump");
+    }
 }
