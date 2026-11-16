@@ -840,6 +840,26 @@ mod tests {
         parse_key(text).unwrap()
     }
 
+    /// Cmd is for the terminal window (Ghostty has its own keys on it): no key Arcade binds by
+    /// default, and not its prefix key, uses it.
+    #[test]
+    fn no_default_key_uses_super() {
+        let config = KeysConfig::default();
+        assert!(!config.prefix.mods.super_key);
+        let map = Keymap::defaults(&config);
+        for (name, table) in [
+            ("direct", &map.direct),
+            ("prefix", &map.prefix),
+            ("copy", &map.copy),
+            ("list", &map.list),
+        ] {
+            assert!(!table.is_empty(), "{name}");
+            for key in table.keys() {
+                assert!(!key.mods.super_key, "{name}: {key:?}");
+            }
+        }
+    }
+
     #[test]
     fn keys_are_read_from_words() {
         assert_eq!(
