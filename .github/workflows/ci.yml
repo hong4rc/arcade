@@ -1,7 +1,8 @@
 name: ci
+# Started by hand only (the Actions quota is limited): the checks run on this machine with
+# scripts/release-local.sh instead.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   check:

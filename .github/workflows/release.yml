@@ -1,7 +1,9 @@
 name: release
+# Started by hand only (the Actions quota is limited): a release is built and published from this
+# machine with scripts/release-local.sh. When started by hand, run it on the tag to release
+# (choose the tag as the ref).
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write

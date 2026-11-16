@@ -22,7 +22,7 @@ fi
 NAME="arcade-$TARGET"
 rm -rf "dist/$NAME" "dist/$NAME.tar.gz"
 mkdir -p "dist/$NAME"
-cp target/release/arcade README.md LICENSE "dist/$NAME/"
+cp "${CARGO_TARGET_DIR:-target}/release/arcade" README.md LICENSE "dist/$NAME/"
 chmod 755 "dist/$NAME/arcade"
 tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
 rm -rf "dist/$NAME"
