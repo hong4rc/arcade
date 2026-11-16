@@ -1,6 +1,16 @@
 # Arcade user guide
 
-This guide describes what the current build does. Every key was checked against `crates/daemon/src/keymap.rs` and every configuration key against `crates/daemon/src/config.rs`. Section 6 lists what is not built yet.
+This guide describes what the current build does. It opens with a tour for a first try; sections 1 to 5 are the reference, and section 6 lists what is not built yet.
+
+| Looking for | Go to |
+|---|---|
+| A first try, and why Arcade works the way it does | [Start here](#start-here-a-ten-minute-tour) |
+| Installing from source, the paths Arcade uses | [1. Building and running](#1-building-and-running) (skip it if you installed with Homebrew) |
+| The `arcade` commands you type in a shell | [2. Commands in the terminal](#2-commands-in-the-terminal) |
+| A key: panes, windows, copy mode, lists, the tree | [3. Default keys](#3-default-keys) |
+| A setting, or changing a key | [4. Configuration file](#4-configuration-file) |
+| Notifications, the mouse, the clipboard, names and titles, upgrading | [5. Good to know](#5-good-to-know) |
+| Something that is missing | [6. Not built yet](#6-not-built-yet) |
 
 ## Start here: a ten-minute tour
 
@@ -16,7 +26,16 @@ arcade new -s try
 
 When you are done: `arcade kill-server`, then delete `~/arcade-try` and close that shell (or `unset ARCADE_SOCKET ARCADE_CONFIG`).
 
-**The prefix.** Almost every command is the prefix `Ctrl+m`, let go, then one key. `Ctrl+m` needs a terminal with the kitty keyboard protocol (Ghostty and kitty have it); elsewhere it is the same as `Enter` (section 5.2). There, put `[keys]` and `prefix = "ctrl+b"` in the configuration file and read "prefix" below as that key.
+**The prefix.** Almost every command is the prefix, let go, then one key. The default prefix is `Ctrl+m`.
+
+> **Inside tmux, or in a terminal other than Ghostty or kitty?** There `Ctrl+m` is the same as `Enter` and cannot open anything (section 5.2). Before `arcade new`, create the file `~/arcade-try/config.toml` with these two lines, and read "prefix" below as `Ctrl+b` (if the tmux you are inside uses `Ctrl+b` itself, write another key, for example `ctrl+g`):
+>
+> ```
+> [keys]
+> prefix = "ctrl+b"
+> ```
+>
+> Arcade will also show one line such as `15 key bindings cannot work here (first: ctrl+alt+,)`. It is harmless: it counts the default keys that such a terminal cannot send (section 5.11), and every key of this tour works without them.
 
 | Step | Do | What you should see |
 |---|---|---|
@@ -35,10 +54,12 @@ When you are done: `arcade kill-server`, then delete `~/arcade-try` and close th
 
 - A session lives in a background process (the daemon), not in the terminal window, so closing the window loses nothing; `arcade upgrade` even changes the daemon to a new version without ending the programs in the panes (section 5.13).
 - A key after the prefix runs once and then your typing goes to the program again, so a letter is never swallowed by Arcade (section 3.1).
-- Arcade never draws over a pane: hints, messages and states (`PREFIX`, `COPY`, `VISUAL`) are words on the status bar.
+- Arcade does not draw over your panes on its own: hints, messages and states (`PREFIX`, `COPY`, `VISUAL`) are words on the status bar. Only a list that you open yourself (keys, commands, sessions, windows, the tree, notifications) is a box over the panes, and it goes away with `Esc`.
 - Copying is always a deliberate key (`y`). `Enter`, a mouse release and `Esc` never copy.
 - A window is named once, after the directory it was made in, and keeps that name until you rename it, so tabs do not change under your eyes; what a tab shows is a setting (section 5.3).
 - A pane that needs you says so with one mark of one cell, wherever it is drawn (section 5.8).
+- The default prefix is `Ctrl+m` because no program in a pane uses that key: to a program it has always been the same as `Enter`. A prefix such as `Ctrl+b` takes a key away from the shell, Vim and `less`. The price is that it needs a terminal with the kitty keyboard protocol; one line of configuration changes it (section 5.2).
+- A notification of the class `info` ("something finished") goes away when you look at its pane, because seeing it is all it asked for. The classes `input`, `approval` and `error` ask you to do something, so they stay until you type into the pane (section 5.8).
 - Nothing in Arcade is specific to one program in a pane. Programs talk to it through standard terminal sequences and through `arcade notify`.
 
 ## 1. Building and running
@@ -91,9 +112,23 @@ The four default movement keys are `h` (left), `j` (down), `k` (up), `l` (right)
 
 ### 3.1 After the prefix (Ctrl+m)
 
-The status bar does not change when you press the prefix: the windows stay where they are, and the `PREFIX` word at the right end shows that the prefix is waiting. If you want a line of hints instead, set `[keys] hint = true` in the configuration file (then reload with the prefix and `r`). With it on, half a second after the prefix, when nothing else was pressed, the bar is replaced by one line of hints taken from the key table in force, for example `| - split  hjkl focus  HJKL size  c new  1-9 win  t tree  a notes  z zoom  [ copy  ? all keys`; a line that is too narrow is cut from the end but always keeps `? all keys`. Pressing a key brings the bar back and the action runs as usual, and while Ctrl is held (see below) the line shows at once and stays. Either way the panes are never drawn over; the full list of keys is always at the prefix and `?` (section 3.4). Rebinding a key changes the hint line; with `[status] position = "off"` there is no bar and so no hint. The line that appears while a pane swap waits for its direction (prefix, then `S`) is not a hint: it stays on whatever `hint` says, because the swap is waiting for that answer.
+**One key, then back to typing.** After the prefix, a key pressed on its own (`h`) runs its command once and the table closes: whatever you type next goes to the program in the pane, so a letter is never eaten. `Esc` right after the prefix closes the table without doing anything. The word `PREFIX` at the right end of the status bar shows that the prefix is waiting; the bar is otherwise unchanged.
 
-**Holding Ctrl to go on.** After the prefix, a key pressed on its own (`h`) runs its command once and the table closes: whatever you type next goes to the program in the pane, so a letter is never eaten. To repeat a command, keep **Ctrl** (the modifier of the prefix) held down after the prefix and press the keys with it: `Ctrl+h` moves focus left as `h` does, `Ctrl+Shift+h` is `H` (resize), and so on, as many times as you like and with no time limit, for any command in the table. With `[keys] hint = true`, the status bar shows the hint line while Ctrl is held. Let go of Ctrl and the next key goes to the pane as ordinary typing (it is not lost); `Esc` right after the prefix closes the table. A key that means nothing is passed over while you hold on. Pressing the prefix key itself still sends it to the program (so with the default prefix, `Ctrl+m` while holding Ctrl sends it on and closes the table). A prefix without a modifier (for example `f12`), and a terminal with old key codes that cannot tell Ctrl keys apart (`arcade config check --host legacy`), run one command for each prefix. Older files with `repeat-window-ms` or `repeat = true` still load; they do nothing, and `arcade config check` says so.
+**Holding Ctrl to repeat.** To run several commands in a row, keep **Ctrl** (the modifier of the prefix) held down after the prefix and press the keys with it:
+
+- `Ctrl+h` moves focus left as `h` does, `Ctrl+Shift+h` is `H` (resize), and so on, for any command in the table, as many times as you like and with no time limit.
+- Let go of Ctrl and the next key goes to the pane as ordinary typing; it is not lost.
+- A key that means nothing is passed over while you hold on.
+- Pressing the prefix key itself sends it to the program (with the default prefix, `Ctrl+m` while holding Ctrl sends it on and closes the table).
+- This needs a prefix with a modifier and a terminal that can tell Ctrl keys apart. With a prefix such as `f12`, or on a terminal with old key codes (section 5.11), each command needs its own prefix.
+
+**A line of hints, if you want one.** Set `[keys] hint = true` in the configuration file and reload (prefix, then `r`):
+
+- Half a second after the prefix, when nothing else was pressed, the status bar is replaced by one line of hints taken from the key table in force, for example `| - split  hjkl focus  HJKL size  c new  1-9 win  t tree  a notes  z zoom  [ copy  ? all keys`. While Ctrl is held the line shows at once and stays.
+- Pressing a key brings the bar back and the action runs as usual.
+- A line that is too narrow is cut from the end but always keeps `? all keys`. Rebinding a key changes the line. With `[status] position = "off"` there is no bar and so no hint.
+- The full list of keys is always at the prefix and `?` (section 3.4), whatever `hint` says.
+- The line that appears while a pane swap waits for its direction (prefix, then `S`) is not a hint: it shows whatever `hint` says, because the swap is waiting for that answer.
 
 | Key | Action |
 |---|---|
@@ -104,7 +139,7 @@ The status bar does not change when you press the prefix: the windows stay where
 | `-` | Split the pane downwards |
 | `;` | Go back to the previous pane |
 | `z` | Zoom or unzoom the pane |
-| `x` | Close the pane |
+| `x` | Close the pane. The status bar asks `Close this pane? (y/n)` first: `y` closes it, any other key leaves it. The question is always asked; no setting turns it off |
 | `Space` | Next layout, in a cycle: panes side by side with equal widths, stacked with equal heights, one main pane on the left (the first pane, 60 percent of the width) with the others stacked on the right |
 | `=` | Make the panes equal in size (the way of splitting stays; panes along the same axis differ by at most one cell) |
 | `!` | Break the current pane out into a window of its own, right after this window; with only one pane, a message shows on the status bar |
@@ -130,7 +165,7 @@ The status bar does not change when you press the prefix: the windows stay where
 | `:` | Command palette: every named command, each line with the keys bound to it; type to filter, `Enter` to run (a command that needs a number or a name asks on the prompt line) |
 | `?` | List of the keys that exist |
 | `d` | Detach from the session |
-| `g` | Lock or unlock Arcade (see 5.1) |
+| `g` | Lock Arcade. Unlocking is `Ctrl+Alt+g`, not this key (see 5.1) |
 | `r` | Reload the configuration file |
 | `R` | Redraw the whole screen |
 
@@ -177,7 +212,7 @@ These keys do not repeat: hold the modifier and press again.
 
 **Jump.** `s` opens a jump (as the flash plugin does in Neovim). Type the characters to go to: every match on the rows you see is highlighted, and each match gets a one-letter label drawn on the character right after it. Type a label to move the cursor to the start of that match; the jump ends. More typing narrows the matches. A label letter is never a character that could continue a match, so a key is either a label or more text to look for, never both. A lower case search matches both cases; an upper case letter makes it exact. With more matches than labels (26 letters), the matches nearest to the cursor get them and the others stay highlighted until you type more. `Enter` goes to the first match after the cursor (wrapping to the first), `Backspace` takes the last character back, `Esc` cancels and puts the cursor and the view back. If a selection is active (`v` or `V`), the jump moves the cursor and the selection stretches to it, with its starting point where it was; with no selection, the jump only moves. Example: to copy from here to the word `deploy` farther down, press `v`, `s`, type `deploy`, type the label shown after it, then `y`.
 
-**Commands and their output.** If the shell tells Arcade where its prompts and the output of each command are (the shell prompt marks, OSC 133, section 5.15), copy mode knows the commands. `[` and `]` move the cursor to the previous and the next prompt. `O` selects, by line, the output of the command the cursor is in: from the first row after the prompt to the row before the next prompt, without the empty rows at the end; with the cursor on a prompt (for example on the last one, where copy mode starts), it selects the output of the command before it, and `O` again goes one command further back. Then `y` copies it. Outside copy mode, the prefix then `Y` copies the output of the last finished command of the pane straight to the clipboard and says how many lines were copied. In a pane with no prompt marks, or showing a full-screen program, these keys only show a message on the status bar. Arcade reads the marks only when you press one of these keys, so nothing is slowed down while output goes by.
+**Commands and their output.** If the shell tells Arcade where its prompts and the output of each command are (the shell prompt marks, section 5.15), copy mode knows the commands. This needs a few lines in your shell's start file, given in section 5.15; until they are there, the keys of this paragraph only answer `no shell prompt marks in this pane`. `[` and `]` move the cursor to the previous and the next prompt. `O` selects, by line, the output of the command the cursor is in: from the first row after the prompt to the row before the next prompt, without the empty rows at the end; with the cursor on a prompt (for example on the last one, where copy mode starts), it selects the output of the command before it, and `O` again goes one command further back. Then `y` copies it. Outside copy mode, the prefix then `Y` copies the output of the last finished command of the pane straight to the clipboard and says how many lines were copied. In a pane with no prompt marks, or showing a full-screen program, these keys only show a message on the status bar. Arcade reads the marks only when you press one of these keys, so nothing is slowed down while output goes by.
 
 **Links.** A program can mark text as a link (the hidden kind, OSC 8, for example what `ls --hyperlink` or many tools print): Arcade passes those links on to the terminal window, so Ghostty can open them (Cmd+click, or Ctrl+Shift+click while Arcade has the mouse). A link whose address holds a control character, a non-ASCII character or a space, or is longer than 2048 bytes, is not passed on and is drawn as plain text. A pane that is scrolled back, or in copy mode, keeps the links of the rows it shows (the same rules apply); the selection and search colours are drawn over a link without breaking it, and the position mark `[above/history]` covers the link under it. So that you can see what can be opened without hovering, the cells of a link that is passed on are drawn with a dotted underline (a cell the program underlined itself keeps the program's underline and its colour; a link that is not passed on is not underlined; the copied text is not changed). `[links] underline = false` turns that off.
 
@@ -197,7 +232,7 @@ Every list has a filter box on its first line: type letters and only the lines t
 | `Backspace` | Delete one character of the filter box |
 | `Ctrl+u` | Clear the whole filter box |
 | `Enter` | Choose the chosen line (the first line of the filtered result) |
-| `Esc` | Close |
+| `Esc` | Close. (When Arcade runs inside tmux, tmux holds `Esc` back for its own `escape-time` before passing it on, so the list closes a moment later; a key typed in that moment still goes to the list) |
 
 The key list (prefix, then `?`) shows one row for each action, in groups with a heading each: Panes, Windows, Sessions, Copy and paste, Notifications, Arcade. A row has the action in words, the keys that run it after the prefix (for example `h, left`), and the keys that run it with no prefix, written without the modifier that the column title names (`With ctrl+alt`: `h, left` there means `ctrl+alt+h` and `ctrl+alt+left`). A column with no key is empty, and an action with no key at all has no row (use the command list, prefix and `:`, for those). The window numbers are one row (`go to window N`, keys `1-9`), and `Enter` on it goes to window 1. The rows show what is bound now, so rebinding, unbinding, adding a key or the `nav` setting changes them. The choice moves from row to row and skips the headings. `Enter` runs the chosen action.
 
@@ -240,7 +275,7 @@ The program in the pane is not restarted and its scrollback stays; only its size
 
 ## 4. Configuration file
 
-TOML format. A misspelled key is reported with a suggestion ("did you mean ..."). Check before use with `arcade config check`. Reload while running: prefix, then `r`. With no file, every default is used.
+TOML format. A misspelled key is reported with a suggestion ("did you mean ..."). Check before use with `arcade config check`: it lists every wrong key and value with its line and a suggestion. A file that is not valid TOML at all (a key written twice in one table, a missing quote) stops at that first mistake, because nothing after it can be read; fix it and check again. Reload while running: prefix, then `r`. With no file, every default is used.
 
 | Key | Meaning | Default |
 |---|---|---|
@@ -313,12 +348,14 @@ With `nav = "hnei"`, copy mode changes as follows: `h n e i` move left, down, up
 
 ## 5. Good to know
 
-**5.1 Lock.** The prefix then `g` (or `Ctrl+Alt+g`) puts Arcade in the locked state: every key goes straight to the program in the pane, and only the lock key unlocks. Use it when running Arcade inside Arcade or inside tmux.
+A word used below: an **OSC sequence** is a short message, invisible on the screen, that a program writes to the terminal to ask for something other than text, and that a terminal passes on in the same way. The number says what is asked: OSC 8 marks text as a link, OSC 52 sets the clipboard, OSC 133 marks where a shell prompt and a command's output begin, OSC 9 and OSC 777 ask for a desktop notification.
+
+**5.1 Lock.** The prefix then `g` (or `Ctrl+Alt+g`) puts Arcade in the locked state: every key goes straight to the program in the pane, the prefix included, and the status bar says `LOCK`. Only `Ctrl+Alt+g` unlocks: the prefix then `g` does not, because the prefix is passed to the program while locked. Use it when running Arcade inside Arcade or inside tmux. The key that unlocks is the one bound to `arcade.lock` in the direct layer (`[keys.direct]`); when that layer is off or has no such key, Arcade refuses to lock and says `no key would unlock`. Before you lock for the first time, check that your terminal sends the key: `arcade keys test` shows what Arcade receives when you press it. A terminal with old key codes sends `Ctrl+Alt+g` too; inside tmux it depends on tmux passing it on, so try it there before you rely on it.
 
 **5.2 The `Ctrl+m` prefix needs the newer keyboard protocol.** On an old-style terminal, `Ctrl+m` is identical to the Enter key, so Arcade can tell them apart only when the outer terminal supports the kitty keyboard protocol (Ghostty does). When Arcade runs inside tmux, `Ctrl+m` cannot be used, because tmux does not pass this protocol to the program inside. To use another prefix, set `prefix = "ctrl+b"` (or any key you like) in `[keys]`.
 
 **5.3 Window names and the window title.**
-- **Window names.** A window made now is called after the last part of the directory its first pane started in (`arcade`; `~` for your home directory), and the name then stays, whatever the shell does. `[window] name-from` changes the source: `"program"` is the program in the foreground of the focused pane (`zsh`, `nvim`), `"title"` is the title that program set (OSC 0 or 2; the directory until it sets one). With `[window] name-follow = true` the name goes on following its source (looked at about once a second, while the screen is drawn anyway). The prefix then `,` gives a window a name of your own, which then stays; renaming it to an empty name gives it back to the rule above at once. A session is first called after the directory it started in (with `-2`, `-3` added when that name is taken); the prefix then `$` renames it.
+- **Window names.** A window made now is called after the last part of the directory its first pane started in (`arcade`; `~` for your home directory), and the name then stays, whatever the shell does. Two windows made in the same directory therefore have the same name: their numbers tell them apart, and the prefix then `,` gives one a name of your own. `[window] name-from` changes the source: `"program"` is the program in the foreground of the focused pane (`zsh`, `nvim`), `"title"` is the title that program set (OSC 0 or 2; the directory until it sets one). With `[window] name-follow = true` the name goes on following its source (looked at about once a second, while the screen is drawn anyway). The prefix then `,` gives a window a name of your own, which then stays; renaming it to an empty name gives it back to the rule above at once. A session is first called after the directory it started in (with `-2`, `-3` added when that name is taken); the prefix then `$` renames it.
 - **Where a new window starts.** A window made by a key, by `arcade run window.new` or by pane break starts its shell in the directory the shell of the pane in focus is in now, and is named after the directory its own shell starts in (with `name-follow` off the name then stays). `arcade run window.new <directory>` starts the shell in that directory instead (a directory that does not exist is ignored). `arcade upgrade --restart` uses this, so each remade window is named after its own directory.
 - **What a tab says.** A tab is the text of `[status] tab-format`, by default just the window's name, and the window number as a badge. `[status] number` puts the badge right of the name (default), left of it, or hides it. `[status] tab-style` draws a tab with round ends (`pill`, the default) or as plain blocks (`flat`); both use the same layout and colours, so a tab is as wide in one as in the other apart from the two end cells of a pill. The colours are the Catppuccin Frappe ones, written as red, green and blue, so they do not follow the 16 colours of your terminal's theme; the current tab has a lighter block and an accent badge. The format may use `{name}`, `{title}` (what the program in the focused pane set, cut to 24 cells with a `…`, drawn in a quieter colour than the name), `{program}` and `{directory}`; for example `"{name} {title}"` shows both. The tree and the window list show the same text after the number. A format with a field that does not exist is a mistake that `arcade config check` and the reload report, and the default is used. A program that changes its title often (a spinner) only makes the status bar draw again, not the panes.
 - **A picture of the bar.** The same three windows (the second is the current one and zoomed, the third has a notification) in each style, with `number = "right"`:
@@ -407,6 +444,16 @@ If you use both ways, the notification from the hook replaces the one from the e
 
 **5.11 Keys that cannot work, and what Arcade receives.** A terminal without the kitty keyboard protocol sends old key codes, and some keys cannot be told apart in them: `Ctrl` with a digit or a symbol, `Ctrl+m` and Enter, `Ctrl+i` and Tab, `Ctrl+Shift` and `Ctrl` with a letter, and anything with Cmd. Arcade asks the terminal when you attach. If it has only old key codes and a binding of your tables needs one of these keys, the status bar shows one line, for example `3 key bindings cannot work here (first: ctrl+m); run arcade keys list`, and again each time you reload the configuration. `arcade config check` and `arcade keys list` name every such binding with the reason, for example `warning: [keys.direct] ctrl+alt+1: the terminal does not send Ctrl with a digit`; run in a terminal they ask it themselves, and `--host legacy` or `--host kitty` says what to assume when there is no terminal to ask (without either, they say the host is not known and do not guess). Two more warnings do not depend on the terminal: a `direct` binding on the prefix key is never reached, and a `prefix` binding on the prefix key stops "prefix twice" from sending it to the program; on macOS, `Ctrl+Space` never reaches the terminal. The warnings never stop Arcade from starting.
 
+What to do about such a key: use a terminal that has the protocol, or give the command another key. In the list of keys (prefix, then `?`) a key the terminal cannot send carries a `!`. For example, `Ctrl+Alt+,` and `Ctrl+Alt+.` (previous and next window) cannot be sent by an old-style terminal; the prefix keys `y` and `u` do the same, or you bind letters instead:
+
+```
+[keys.direct]
+"p" = "window.previous"
+"n" = "window.next"
+```
+
+The direct layer adds its modifier, so these are `Ctrl+Alt+p` and `Ctrl+Alt+n`. Run `arcade config check` afterwards: it says whether the new keys can work.
+
 To see what really arrives, run `arcade keys test` in the terminal you use. A key that shows nothing was taken by the system, the window manager or the terminal before it reached Arcade (for example `Alt+h` under AeroSpace), while `Ctrl+Alt+h` shows its name and the command it runs.
 
 **5.12 Ending the session you are in.** Closing its last pane, `session.close` and `arcade kill-session` on it all follow `[session] on-end` (section 4). Sessions that already have a client of their own are not taken over; the move goes to a session nobody is looking at. Notifications of the ended session are dropped from the counter.
@@ -422,8 +469,6 @@ To see what really arrives, run `arcade keys test` in the terminal you use. A ke
 **5.14 What a pane is sent, and the key capture.** A pane is sent only what a key means: text as UTF-8, the codes of the keys, and the escape sequences the host sends for keys, mouse and paste. Bytes from the host that are no key are dropped: a byte that is not valid UTF-8, a control character of the range `U+0080` to `U+009F`, an escape sequence cut off by such a byte, and a kitty key report with an impossible code (zero, in that range, a surrogate, or past `U+10FFFF`). A key report in the kitty form (`CSI ... u`) is passed on only to a program that asked for that form. A character whose bytes arrive in pieces (an input method may send them one at a time) is waited for, a quarter of a second at most, before it is given up. Bytes pasted without the paste markers are text and pass the same way.
 
 The key capture is a switch for finding out what a pane is really sent, for example when a stray character shows up before your first key. It is **off** for every pane and never turns itself on. The command `pane.capture-keys` (no key is bound to it; run it from the command palette or with `arcade run pane.capture-keys` inside the pane, or bind a key in your file) turns it on for the pane you are in, and the same command turns it off. While it is on, the status bar shows `RECORDING KEYS` in every window that has a pane being captured, and the line that appears when you turn it on names the file. The file is in the private directory of the socket (the one that holds `default.sock`), is named `capture-pane<number>-<seconds>.log`, and only you can read it (mode 600). Every line is the time in seconds since the start, `host` (bytes read from the terminal you type in, while that pane has the focus) or `pane` (bytes written to that pane's program), and the bytes in hexadecimal. **It records everything you type in that pane, passwords included**: use it only for the minute you need, then turn it off and delete the file. It also ends when the pane closes or when the daemon is upgraded or stopped; the file stays until you delete it.
-
-## 6. Not built yet
 
 **5.15 Shell prompt marks (for copy mode's `[`, `]`, `O` and the prefix `Y`).** The keys that work on the output of a command need the shell to say where a prompt starts, where what you type starts, and where the output starts. Shells do it with the OSC 133 marks: `A` at the start of the prompt, `B` at the end of the prompt (where your typing starts), `C` when the command starts running (where its output starts) and, optionally, `D;<exit code>` when it ends. Arcade needs at least `A`, `B` and `C`: without `B` and `C` the text you type and the output cannot be told from the prompt. `D` is sent by the snippets below because other tools expect it, but Arcade does not use it. Arcade writes none of this itself and does not touch your dotfiles; put one of these in the startup file of your shell. They work with a prompt made by starship too (the `B` mark is added after the prompt is built, so keep the line that adds it last).
 
@@ -447,6 +492,8 @@ PS0='\e]133;C\a'
 ```
 
 Check it with `printf` or just try it: run a command, enter copy mode (prefix, then `[`) and press `O`: the output of the command is selected. Both snippets are run by Arcade's own tests (zsh and bash) against a pane, so they are known to give the marks Arcade reads.
+
+## 6. Not built yet
 
 Things that belong to Phase 1 or to the design but are not in the current build:
 
