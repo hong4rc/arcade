@@ -357,6 +357,81 @@ impl Split {
     }
 }
 
+/// Which divider a drag moves: the split it belongs to, named by the way down the tree (false is
+/// the first child, true the second), so it stays the same divider while it moves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DividerHandle {
+    path: Vec<bool>,
+    vertical: bool,
+}
+
+impl DividerHandle {
+    /// A divider between panes side by side (moved along the columns), or one between panes
+    /// above one another.
+    pub fn vertical(&self) -> bool {
+        self.vertical
+    }
+}
+
+fn on_divider(d: &Divider, x: u16, y: u16) -> bool {
+    if d.vertical {
+        d.x == x && y >= d.y && y < d.y + d.len
+    } else {
+        d.y == y && x >= d.x && x < d.x + d.len
+    }
+}
+
+impl Node {
+    /// The divider that runs through the cell (x, y), if one does. A cell where a divider ends
+    /// on another belongs to the one it ends on: the dividers' cells never overlap.
+    fn divider_at(
+        &self,
+        rect: Rect,
+        x: u16,
+        y: u16,
+        path: &mut Vec<bool>,
+    ) -> Option<DividerHandle> {
+        let Node::Split(s) = self else {
+            return None;
+        };
+        let (ra, rb, d) = s.children(rect);
+        if on_divider(&d, x, y) {
+            return Some(DividerHandle {
+                path: path.clone(),
+                vertical: d.vertical,
+            });
+        }
+        path.push(false);
+        let found = s.a.divider_at(ra, x, y, path);
+        path.pop();
+        if found.is_some() {
+            return found;
+        }
+        path.push(true);
+        let found = s.b.divider_at(rb, x, y, path);
+        path.pop();
+        found
+    }
+
+    /// The split at the end of `path` and the room it has.
+    fn split_at(&mut self, rect: Rect, path: &[bool]) -> Option<(&mut Split, Rect)> {
+        let Node::Split(s) = self else {
+            return None;
+        };
+        match path.split_first() {
+            None => Some((s, rect)),
+            Some((&second, rest)) => {
+                let (ra, rb, _) = s.children(rect);
+                if second {
+                    s.b.split_at(rb, rest)
+                } else {
+                    s.a.split_at(ra, rest)
+                }
+            }
+        }
+    }
+}
+
 enum Moved {
     NotFound,
     Done,
@@ -608,6 +683,50 @@ impl Layout {
                 }
             }
         }
+    }
+
+    /// The divider that runs through the cell (x, y) of the window, if there is one.
+    pub fn divider_at(&self, x: u16, y: u16) -> Option<DividerHandle> {
+        self.root.divider_at(self.area(), x, y, &mut Vec::new())
+    }
+
+    /// Move a divider so that it lies under `to`, a column (for a divider between panes side by
+    /// side) or a row of the window, as far as the minimum sizes allow: the same limits as
+    /// [`Layout::resize`], and a pointer that goes further stops the divider at the limit.
+    /// Returns whether anything moved. A divider that no longer exists is an error.
+    pub fn drag_divider(&mut self, handle: &DividerHandle, to: u16) -> Result<bool, LayoutError> {
+        let area = self.area();
+        let (origin, total, now, min) = {
+            let (split, rect) = self
+                .root
+                .split_at(area, &handle.path)
+                .ok_or(LayoutError::NothingThere)?;
+            let (origin, total) = match split.axis {
+                Axis::LeftRight => (rect.x, rect.w),
+                Axis::TopBottom => (rect.y, rect.h),
+            };
+            (origin, total, split.sizes(total).0, split.min())
+        };
+        let avail = total.saturating_sub(1);
+        if avail < 2 * min {
+            return Err(LayoutError::TooSmall);
+        }
+        let mut want =
+            (i32::from(to) - i32::from(origin)).clamp(i32::from(min), i32::from(avail - min));
+        let now = i32::from(now);
+        let before = self.root.clone();
+        while want != now {
+            if let Some((split, _)) = self.root.split_at(area, &handle.path) {
+                split.ratio = f64::from(want as u16) / f64::from(avail);
+                if i32::from(split.sizes(total).0) == want && self.all_big_enough() {
+                    return Ok(true);
+                }
+            }
+            self.root = before.clone();
+            want += (now - want).signum();
+        }
+        self.root = before;
+        Ok(false)
     }
 
     /// The pane next to `from` in the direction. When several touch it, the one that holds
@@ -1106,5 +1225,122 @@ mod tests {
             .max()
             .unwrap();
         assert!(left.abs_diff(right) <= 1, "{left} {right}");
+    }
+
+    // ---- Dragging a divider ----
+
+    fn width_of(layout: &Layout, pane: PaneId) -> u16 {
+        layout.rect_of(pane).unwrap().w
+    }
+
+    #[test]
+    fn a_dragged_divider_lands_under_the_pointer_and_stops_at_the_minimum_sizes() {
+        let mut layout = Layout::new(1, 81, 24);
+        layout.split(1, Axis::LeftRight, 2).unwrap();
+        let divider = layout.dividers()[0];
+        let handle = layout.divider_at(divider.x, 5).unwrap();
+        assert!(handle.vertical());
+        assert_eq!(layout.drag_divider(&handle, 30), Ok(true));
+        assert_eq!(layout.dividers()[0].x, 30);
+        assert_eq!((width_of(&layout, 1), width_of(&layout, 2)), (30, 50));
+        assert_covers(&layout);
+        // The same place again moves nothing.
+        assert_eq!(layout.drag_divider(&handle, 30), Ok(false));
+        // Past the minimum on either side the divider stops at the limit, as the resize
+        // commands refuse to go beyond it.
+        assert_eq!(layout.drag_divider(&handle, 0), Ok(true));
+        assert_eq!(width_of(&layout, 1), MIN_COLS);
+        assert_eq!(layout.drag_divider(&handle, 80), Ok(true));
+        assert_eq!(width_of(&layout, 2), MIN_COLS);
+        assert_covers(&layout);
+    }
+
+    #[test]
+    fn a_horizontal_divider_moves_by_rows_with_the_same_limits() {
+        let mut layout = Layout::new(1, 80, 25);
+        layout.split(1, Axis::TopBottom, 2).unwrap();
+        let divider = layout.dividers()[0];
+        let handle = layout.divider_at(10, divider.y).unwrap();
+        assert!(!handle.vertical());
+        assert_eq!(layout.drag_divider(&handle, 7), Ok(true));
+        assert_eq!(layout.rect_of(1).unwrap().h, 7);
+        assert_eq!(layout.drag_divider(&handle, 0), Ok(true));
+        assert_eq!(layout.rect_of(1).unwrap().h, MIN_ROWS);
+        assert_eq!(layout.drag_divider(&handle, 24), Ok(true));
+        assert_eq!(layout.rect_of(2).unwrap().h, MIN_ROWS);
+        assert_covers(&layout);
+    }
+
+    #[test]
+    fn in_nested_splits_the_divider_that_was_pressed_is_the_one_that_moves() {
+        // 1 | (2 over 3), and 3 split again into 3 | 4.
+        let mut layout = Layout::new(1, 81, 25);
+        layout.split(1, Axis::LeftRight, 2).unwrap();
+        layout.split(2, Axis::TopBottom, 3).unwrap();
+        layout.split(3, Axis::LeftRight, 4).unwrap();
+        let before: Vec<_> = layout.rects();
+        let dividers = layout.dividers();
+        // The inner vertical divider (between 3 and 4) lies in the lower right.
+        let inner = dividers
+            .iter()
+            .find(|d| d.vertical && d.x > dividers[0].x)
+            .copied()
+            .unwrap();
+        let handle = layout.divider_at(inner.x, inner.y).unwrap();
+        assert_eq!(layout.drag_divider(&handle, inner.x + 6), Ok(true));
+        // Pane 1 and pane 2 did not move; 3 and 4 shared the change.
+        assert_eq!(
+            layout.rect_of(1),
+            before.iter().find(|(p, _)| *p == 1).map(|(_, r)| *r)
+        );
+        assert_eq!(
+            layout.rect_of(2),
+            before.iter().find(|(p, _)| *p == 2).map(|(_, r)| *r)
+        );
+        assert_eq!(width_of(&layout, 3), width_of_before(&before, 3) + 6);
+        assert_eq!(width_of(&layout, 4), width_of_before(&before, 4) - 6);
+        // The outer vertical divider moves 1 and the whole right side, not the inner one.
+        let outer = layout.divider_at(dividers[0].x, 0).unwrap();
+        assert_ne!(outer, handle);
+        let inner_ratio_before = layout.rect_of(3).unwrap().w;
+        assert_eq!(layout.drag_divider(&outer, 20), Ok(true));
+        assert_eq!(width_of(&layout, 1), 20);
+        assert_covers(&layout);
+        assert!(layout.rect_of(3).unwrap().w > 0 && inner_ratio_before > 0);
+    }
+
+    fn width_of_before(rects: &[(PaneId, Rect)], pane: PaneId) -> u16 {
+        rects.iter().find(|(p, _)| *p == pane).unwrap().1.w
+    }
+
+    #[test]
+    fn where_one_divider_ends_on_another_the_cell_belongs_to_the_one_it_ends_on() {
+        // 1 | (2 over 3): the horizontal divider ends on the vertical one.
+        let mut layout = Layout::new(1, 81, 25);
+        layout.split(1, Axis::LeftRight, 2).unwrap();
+        layout.split(2, Axis::TopBottom, 3).unwrap();
+        let ds = layout.dividers();
+        let vertical = ds.iter().find(|d| d.vertical).copied().unwrap();
+        let horizontal = ds.iter().find(|d| !d.vertical).copied().unwrap();
+        // The cell of the vertical divider next to where the horizontal one starts is the
+        // vertical divider's; the first cell of the horizontal one is just right of it.
+        let junction = layout.divider_at(vertical.x, horizontal.y).unwrap();
+        assert!(junction.vertical());
+        let first = layout.divider_at(horizontal.x, horizontal.y).unwrap();
+        assert!(!first.vertical());
+        // A cell inside a pane is no divider at all.
+        assert!(layout.divider_at(2, 2).is_none());
+    }
+
+    #[test]
+    fn a_handle_to_a_divider_that_is_gone_is_an_error() {
+        let mut layout = Layout::new(1, 81, 24);
+        layout.split(1, Axis::LeftRight, 2).unwrap();
+        let handle = layout.divider_at(layout.dividers()[0].x, 3).unwrap();
+        layout.close(2).unwrap();
+        assert_eq!(
+            layout.drag_divider(&handle, 10),
+            Err(LayoutError::NothingThere)
+        );
     }
 }

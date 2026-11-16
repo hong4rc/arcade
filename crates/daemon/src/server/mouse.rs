@@ -103,6 +103,25 @@ impl Server {
             return;
         };
         let locked = session.key_state.locked;
+        // A divider held since a press on it: the moves and the release are its, wherever they
+        // are on the screen. A new press means the release was lost, so that one starts over.
+        if let Some((window_id, handle)) = session.divider_drag.clone() {
+            match m.kind {
+                MouseKind::Drag(_) => self.drag_divider(session_id, window_id, &handle, m),
+                MouseKind::Release(_) => {
+                    self.drag_divider(session_id, window_id, &handle, m);
+                    self.end_divider_drag(session_id);
+                }
+                MouseKind::Press(_) => self.end_divider_drag(session_id),
+                _ => {}
+            }
+            if !matches!(m.kind, MouseKind::Press(_)) {
+                return;
+            }
+        }
+        let Some(session) = self.sessions.get(&session_id) else {
+            return;
+        };
         // A left press on a tab of the status bar shows that window. Nothing else on the bar
         // does anything, and none of it goes to a pane or starts a selection.
         // (A drag that began in a pane goes on being that pane's, also over the bar.)
@@ -130,6 +149,22 @@ impl Server {
             .into_iter()
             .map(|(p, r)| (p, Rect::new(r.x, r.y + origin, r.w, r.h)))
             .find(|(_, r)| r.contains(m.x, m.y));
+        // A left press on a divider holds it (the cell where one divider ends on another belongs
+        // to the one it ends on). It is Arcade's even when a program beside it asked for the
+        // mouse: a divider is not part of a pane. Nothing is sent to a pane and no selection
+        // starts; a press that is not followed by a drag changes nothing. A zoomed pane has none.
+        if matches!(m.kind, MouseKind::Press(0))
+            && !locked
+            && !window.zoomed
+            && m.y >= origin
+            && let Some(handle) = window.layout.divider_at(m.x, m.y - origin)
+        {
+            self.set_drag(session_id, None);
+            if let Some(s) = self.sessions.get_mut(&session_id) {
+                s.divider_drag = Some((window_id, handle));
+            }
+            return;
+        }
         match m.kind {
             MouseKind::Press(button) => {
                 let Some((pane, rect)) = hit else {
@@ -188,6 +223,49 @@ impl Server {
                     }
                 }
             }
+        }
+    }
+
+    /// Move the held divider under the pointer. The layout changes at once; the programs are told
+    /// the new sizes when the frame goes out.
+    fn drag_divider(
+        &mut self,
+        session_id: u64,
+        window_id: u64,
+        handle: &crate::layout::DividerHandle,
+        m: Mouse,
+    ) {
+        let status_position = self.config.status_position;
+        let Some(session) = self.sessions.get_mut(&session_id) else {
+            return;
+        };
+        let origin = window_origin(session.rows, status_position);
+        let to = if handle.vertical() {
+            m.x
+        } else {
+            m.y.saturating_sub(origin)
+        };
+        let Some(window) = session.window_mut(window_id) else {
+            session.divider_drag = None;
+            return;
+        };
+        match window.layout.drag_divider(handle, to) {
+            Ok(moved) => {
+                if moved {
+                    session.sizes_stale = Some(window_id);
+                    session.relayout = true;
+                }
+            }
+            // The divider is gone (a pane closed) or the window is too small: the drag is over.
+            Err(_) => session.divider_drag = None,
+        }
+    }
+
+    fn end_divider_drag(&mut self, session_id: u64) {
+        if let Some(s) = self.sessions.get_mut(&session_id) {
+            s.divider_drag = None;
+            // The last frame of the drag is not held back.
+            s.relayout = true;
         }
     }
 

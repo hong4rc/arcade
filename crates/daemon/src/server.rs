@@ -343,6 +343,11 @@ struct Session {
     picker: Option<Picker>,
     /// A mouse button held down since a press in a pane.
     drag: Option<mouse::Drag>,
+    /// A divider held with the mouse since a press on it: the window it is in, and which divider.
+    divider_drag: Option<(u64, crate::layout::DividerHandle)>,
+    /// A window whose layout moved while a divider was dragged: its panes are given their new
+    /// sizes (and the programs told) once per frame, not once per mouse event.
+    sizes_stale: Option<u64>,
     /// The tree of sessions, windows and panes, while it is open.
     tree: Option<crate::tree::Tree>,
     /// The host terminal has the focus, as its focus reports say (it has, when a client attaches).
@@ -1231,6 +1236,7 @@ impl Server {
         }
         if let Some(session) = self.sessions.get_mut(&session_id) {
             session.drag = None;
+            session.divider_drag = None;
         }
         self.send(id, &ServerMessage::Attached { session: name });
         if known_host.is_none() {
@@ -1444,6 +1450,8 @@ impl Server {
                 key_state: KeyState::new(),
                 picker: None,
                 drag: None,
+                divider_drag: None,
+                sizes_stale: None,
                 tree: None,
                 host_focused: true,
                 last_bell: None,

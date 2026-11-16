@@ -203,7 +203,9 @@ impl Server {
         }
         // The 60 per second limit is for floods. A light update (an echoed key) goes out at
         // once, so typing is not delayed by the pacing of the update before it.
-        if !heavy {
+        // While a divider is dragged every update is paced like a flood, so the sizes the
+        // programs are told follow the frame rate and not the rate of the mouse.
+        if !heavy && s.divider_drag.is_none() {
             return Some(now);
         }
         Some(s.last_frame.map_or(now, |t| t + FRAME_INTERVAL))
@@ -237,6 +239,14 @@ impl Server {
         stage_mark!(DaemonFrameStart);
         let status_position = self.config.status_position;
         let unlock_key = self.unlock_key_name();
+        // Panes get the sizes the dragged divider gave them, once per frame.
+        let stale = self
+            .sessions
+            .get_mut(&session_id)
+            .and_then(|s| s.sizes_stale.take());
+        if let Some(window) = stale {
+            self.apply_window_sizes(session_id, window);
+        }
         self.refresh_tree(session_id);
         self.settle_notices(session_id);
         let Some(session) = self.sessions.get_mut(&session_id) else {
