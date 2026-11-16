@@ -85,7 +85,7 @@ fn a_link_that_wraps_stays_one_link_and_stops_at_the_edge_of_its_pane() {
 }
 
 #[test]
-fn a_pane_in_copy_mode_shows_its_text_without_the_link() {
+fn a_pane_in_copy_mode_keeps_the_links_of_its_text() {
     let daemon = TestDaemon::start();
     let mut client = client(&daemon, (80, 20), None);
     client.type_line(&printf_link("click-me"));
@@ -95,9 +95,12 @@ fn a_pane_in_copy_mode_shows_its_text_without_the_link() {
     client.send(PREFIX);
     client.send(b"[");
     assert!(client.wait_until(WAIT, |c| format!("{} ", c.status_row()).contains(" COPY ")));
-    let gone = client.wait_until(WAIT, |c| c.screen.hyperlink_at(row, col).is_none());
-    assert!(gone, "{}", client.screen_text());
     assert!(client.screen_text().contains("click-me after"));
+    let (row, col) = find(&client, "click-me after").unwrap();
+    for x in col..col + 8 {
+        assert_eq!(client.screen.hyperlink_at(row, x).as_deref(), Some(URL));
+    }
+    assert_eq!(client.screen.hyperlink_at(row, col + 8), None);
 }
 
 #[test]
@@ -402,5 +405,213 @@ mod redraws {
             find(c, "click-me").is_some_and(|(r, _)| r == row - 2)
         }));
         whole_link(&client, "after a region scrolled");
+    }
+}
+
+mod scrolled {
+    use super::*;
+
+    fn wheel(client: &mut TestClient, up: bool) {
+        let code = if up { 64 } else { 65 };
+        client.send(format!("\x1b[<{code};11;11M").as_bytes());
+    }
+
+    /// 80 lines; every tenth one is a link `click-NN` (8 cells), then the program waits.
+    fn script() -> String {
+        format!(
+            "i=1; while [ $i -le 80 ]; do \
+               if [ $((i % 10)) -eq 0 ]; then printf '\\033]8;;{URL}\\033\\\\click-%s\\033]8;;\\033\\\\ end\\n' $i; \
+               else echo line-$i; fi; i=$((i+1)); done; sleep 60"
+        )
+    }
+
+    fn start(daemon: &TestDaemon) -> TestClient {
+        let script = script();
+        let mut client = client(daemon, (100, 30), Some(&["sh", "-c", &script]));
+        client.wait_for_text("click-80 end").unwrap();
+        client
+    }
+
+    /// Every `click-NN` on the screen is a link on its 8 cells and on no other cell of its row.
+    fn all_links_whole(client: &TestClient) -> usize {
+        let mut seen = 0;
+        for (y, row) in client.screen_rows().iter().enumerate() {
+            let Some(at) = row.find("click-") else {
+                continue;
+            };
+            let col = row[..at].chars().count();
+            let links = links_of_row(client, y as u16);
+            for (x, link) in links.iter().enumerate() {
+                let inside = (col..col + 8).contains(&x);
+                assert_eq!(link.as_deref(), inside.then_some(URL), "row {y} column {x}");
+            }
+            seen += 1;
+        }
+        seen
+    }
+
+    fn enter_copy(client: &mut TestClient) {
+        client.send(PREFIX);
+        client.send(b"[");
+        assert!(client.wait_until(WAIT, |c| format!("{} ", c.status_row()).contains(" COPY ")));
+    }
+
+    #[test]
+    fn links_stay_on_rows_scrolled_back_by_the_wheel() {
+        let daemon = TestDaemon::start();
+        let mut client = start(&daemon);
+        assert!(all_links_whole(&client) >= 2);
+        for _ in 0..8 {
+            wheel(&mut client, true);
+        }
+        assert!(client.wait_until(WAIT, |c| format!("{} ", c.status_row()).contains(" COPY ")));
+        assert!(client.wait_until(WAIT, |c| !c.screen_text().contains("click-80")));
+        assert!(all_links_whole(&client) >= 2, "{}", client.screen_text());
+        // And back at the bottom the live rows are as before.
+        for _ in 0..12 {
+            wheel(&mut client, false);
+        }
+        assert!(client.wait_until(WAIT, |c| !format!("{} ", c.status_row()).contains(" COPY ")));
+        assert!(client.wait_until(WAIT, |c| c.screen_text().contains("click-80 end")));
+        assert!(all_links_whole(&client) >= 2);
+    }
+
+    #[test]
+    fn links_stay_on_rows_shown_by_page_up_and_page_down() {
+        let daemon = TestDaemon::start();
+        let mut client = start(&daemon);
+        enter_copy(&mut client);
+        client.send(b"\x1b[98;5u");
+        client.send(b"\x1b[98;5u");
+        assert!(client.wait_until(WAIT, |c| !c.screen_text().contains("click-80")));
+        assert!(all_links_whole(&client) >= 1, "{}", client.screen_text());
+        client.send(b"\x1b[98;5u");
+        client.send(b"\x1b[102;5u");
+        assert!(client.wait_until(WAIT, |c| {
+            c.screen_rows().iter().any(|r| r.contains("click-"))
+        }));
+        assert!(all_links_whole(&client) >= 1, "{}", client.screen_text());
+    }
+
+    #[test]
+    fn a_link_that_starts_in_the_scrollback_and_ends_on_the_screen_is_whole() {
+        let daemon = TestDaemon::start();
+        // A link of 150 cells wraps over two rows of a 100-column pane; 28 more lines push the
+        // first row out of the live screen.
+        let text = "w".repeat(150);
+        let script = format!(
+            "{}; i=1; while [ $i -le 27 ]; do echo pad-$i; i=$((i+1)); done; sleep 60",
+            printf_link(&text)
+        );
+        let mut client = client(&daemon, (100, 30), Some(&["sh", "-c", &script]));
+        client.wait_for_text("pad-27").unwrap();
+        enter_copy(&mut client);
+        // The second row of the link is on the first row of the screen; the first row is above.
+        let first = client.screen_rows()[0].clone();
+        assert!(first.starts_with(&"w".repeat(50)), "{first:?}");
+        assert!(client.screen_rows()[0].contains("[0/1]"), "{first:?}");
+        let links = links_of_row(&client, 0);
+        assert!(
+            links[..50].iter().all(|l| l.as_deref() == Some(URL)),
+            "{links:?}"
+        );
+        // Scroll up one row: both parts show, both with the link.
+        wheel(&mut client, true);
+        assert!(
+            client.wait_until(WAIT, |c| c.screen_rows()[0].starts_with("www")
+                && c.screen_rows()[1].starts_with("www"))
+        );
+        let (row, _) = find(&client, "wwww").unwrap();
+        assert_eq!(links_of_row(&client, row)[0].as_deref(), Some(URL));
+        assert_eq!(links_of_row(&client, row + 1)[0].as_deref(), Some(URL));
+    }
+
+    #[test]
+    fn a_selection_over_a_link_leaves_the_link_whole() {
+        let daemon = TestDaemon::start();
+        let mut client = start(&daemon);
+        enter_copy(&mut client);
+        client.send(b"/click-80\r");
+        assert!(client.wait_until(WAIT, |c| c.status_row().contains("COPY")));
+        client.send(b"0");
+        client.send(b"v");
+        client.send(b"llllll");
+        assert!(
+            client.wait_until(WAIT, |c| c.status_row().contains("V-CHAR")
+                || c.status_row().contains("VISUAL"))
+        );
+        // The cells inside the selection and those outside it all carry the link.
+        let (row, col) = find(&client, "click-80").unwrap();
+        let whole = |client: &TestClient| {
+            for x in col..col + 8 {
+                assert_eq!(
+                    client.screen.hyperlink_at(row, x).as_deref(),
+                    Some(URL),
+                    "{x}"
+                );
+            }
+            assert_eq!(client.screen.hyperlink_at(row, col + 8), None);
+        };
+        whole(&client);
+        // The selection is drawn on those cells (their look changed), and the link is still there.
+        assert_ne!(client.style_at(row, col), arcade_term::Style::default());
+    }
+
+    #[test]
+    fn an_address_that_is_not_safe_is_not_passed_on_from_the_scrollback_either() {
+        let daemon = TestDaemon::start();
+        let script = "printf '\\033]8;;https://bad.example/\\303\\251\\033\\\\bad-one\\033]8;;\\033\\\\ end\\n'; \
+                      i=1; while [ $i -le 40 ]; do echo pad-$i; i=$((i+1)); done; sleep 60";
+        let mut client = client(&daemon, (100, 30), Some(&["sh", "-c", script]));
+        client.wait_for_text("pad-40").unwrap();
+        for _ in 0..16 {
+            wheel(&mut client, true);
+        }
+        assert!(client.wait_until(WAIT, |c| c.screen_text().contains("bad-one end")));
+        let (row, col) = find(&client, "bad-one").unwrap();
+        assert!(client.screen.hyperlink_at(row, col).is_none());
+    }
+}
+
+/// A measurement, not a check: a pane with 3000 lines of history, every line a link, scrolled
+/// by the wheel and by page. Run with `--release --ignored --nocapture`; it prints the frames,
+/// the bytes and the time the client needed for the same movements.
+#[test]
+#[ignore]
+fn measure_scrolling_a_pane_full_of_links() {
+    for round in 0..4 {
+        let daemon = TestDaemon::start();
+        let script = format!(
+            "i=1; while [ $i -le 3000 ]; do printf '\\033]8;;{URL}?n=%s\\033\\\\link-number-%s\\033]8;;\\033\\\\ and some words around it\\n' $i $i; i=$((i+1)); done; sleep 120"
+        );
+        let mut client = client(&daemon, (100, 30), Some(&["sh", "-c", &script]));
+        client.wait_for_text("link-number-3000").unwrap();
+        let (m0, b0) = (client.output_messages, client.output_bytes);
+        // 100 wheel turns up, 100 down, then 20 pages up and down: each is sent alone, and the
+        // time until the frame it causes has arrived is added up.
+        let mut moves: Vec<&[u8]> = Vec::new();
+        moves.extend(std::iter::repeat_n(&b"\x1b[<64;11;11M"[..], 100));
+        moves.extend(std::iter::repeat_n(&b"\x1b[<65;11;11M"[..], 100));
+        moves.extend(std::iter::repeat_n(&b"\x1b[98;5u"[..], 20));
+        moves.extend(std::iter::repeat_n(&b"\x1b[102;5u"[..], 20));
+        let mut total = std::time::Duration::ZERO;
+        for key in moves {
+            let before = client.output_messages;
+            let start = std::time::Instant::now();
+            client.send(key);
+            while client.output_messages == before
+                && start.elapsed() < std::time::Duration::from_secs(2)
+            {
+                client.read_more(std::time::Instant::now() + std::time::Duration::from_millis(20));
+            }
+            total += start.elapsed();
+        }
+        let frames = (client.output_messages - m0).max(1);
+        eprintln!(
+            "round {round}: {frames} frames, {} bytes ({} per frame), {:?} per frame",
+            client.output_bytes - b0,
+            (client.output_bytes - b0) / frames,
+            total / frames as u32
+        );
     }
 }

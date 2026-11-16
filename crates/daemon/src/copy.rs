@@ -24,6 +24,10 @@ pub trait Source {
     fn link_at(&self, _row: usize, _col: u16) -> Option<String> {
         None
     }
+    /// The runs of columns of a row that belong to a link the host terminal can take.
+    fn row_links(&self, _row: usize) -> Vec<arcade_term::LinkSpan> {
+        Vec::new()
+    }
     /// A shell prompt began on this row (an OSC 133 `A` mark).
     fn prompt_row(&self, _row: usize) -> bool {
         false
@@ -41,6 +45,10 @@ pub trait Source {
 impl Source for arcade_term::Term {
     fn link_at(&self, row: usize, col: u16) -> Option<String> {
         self.link_at_screen(row, col)
+    }
+
+    fn row_links(&self, row: usize) -> Vec<arcade_term::LinkSpan> {
+        arcade_term::Term::row_links(self, row)
     }
 
     fn prompt_row(&self, row: usize) -> bool {
@@ -1312,7 +1320,29 @@ impl Copy {
     /// What the pane shows now: the rows from `top`, the selection and the matches marked, and
     /// on the first row, at the right, `[above/history]` (as tmux does) when that is wanted and
     /// there is room. The mark is drawn over the view only: the text the rows hold is not touched.
+    #[cfg(test)]
     pub fn view<S: Source>(&self, src: &S) -> Vec<Vec<Cell>> {
+        self.view_with_links(src).0
+    }
+
+    /// The same view, and with it the links of every row of it (read for the rows that are
+    /// drawn, and only when the library says the row holds one). The mark of the place in the
+    /// history takes the link away from the cells it covers.
+    pub fn view_with_links<S: Source>(
+        &self,
+        src: &S,
+    ) -> (Vec<Vec<Cell>>, Vec<Vec<arcade_term::LinkSpan>>) {
+        let cols = self.cols;
+        let mut links: Vec<Vec<arcade_term::LinkSpan>> = (0..usize::from(self.rows))
+            .map(|i| {
+                let mut spans = src.row_links(self.top + i);
+                spans.retain_mut(|s| {
+                    s.to = s.to.min(cols);
+                    s.from < s.to
+                });
+                spans
+            })
+            .collect();
         let mut rows = self.view_rows(src);
         if self.show_position {
             let (above, history) = self.position(src);
@@ -1323,6 +1353,13 @@ impl Copy {
                 && first.len() >= cols
             {
                 let start = cols - text.len();
+                if let Some(spans) = links.first_mut() {
+                    let cut = u16::try_from(start).unwrap_or(u16::MAX);
+                    spans.retain_mut(|s| {
+                        s.to = s.to.min(cut);
+                        s.from < s.to
+                    });
+                }
                 if first[start].width == arcade_term::CellWidth::SpacerTail && start > 0 {
                     first[start - 1] = blank(Style::default());
                 }
@@ -1336,7 +1373,7 @@ impl Copy {
                 }
             }
         }
-        rows
+        (rows, links)
     }
 
     fn view_rows<S: Source>(&self, src: &S) -> Vec<Vec<Cell>> {

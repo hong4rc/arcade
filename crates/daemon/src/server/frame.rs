@@ -356,14 +356,15 @@ impl Server {
                 copy.drawn_position = Some(position);
                 if relayout || copy.dirty {
                     copy.dirty = false;
-                    let rows = copy
-                        .view(&pane.term)
+                    let (view, links) = copy.view_with_links(&pane.term);
+                    let rows = view
                         .into_iter()
+                        .zip(links)
                         .enumerate()
-                        .map(|(y, cells)| arcade_term::RowUpdate {
+                        .map(|(y, (cells, links))| arcade_term::RowUpdate {
                             y: y as u16,
                             cells,
-                            links: Vec::new(),
+                            links,
                         })
                         .collect();
                     session.screen.blit(

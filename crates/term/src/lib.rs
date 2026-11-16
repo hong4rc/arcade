@@ -799,6 +799,51 @@ impl Term {
         raw_link_at(&self.term, Point::Screen(Coordinate { x: col, y }))
     }
 
+    /// The runs of a row of the whole screen (row 0 is the oldest line of the scrollback) that
+    /// belong to a link the host terminal can take (see [`link_is_safe`]). A row the library
+    /// says holds no link costs one flag read.
+    pub fn row_links(&self, row: usize) -> Vec<LinkSpan> {
+        let Ok(y) = u32::try_from(row) else {
+            return Vec::new();
+        };
+        let flagged = self
+            .term
+            .grid_ref(Point::Screen(Coordinate { x: 0, y }))
+            .ok()
+            .and_then(|g| g.row().ok())
+            .and_then(|r| r.has_hyperlink().ok())
+            .unwrap_or(false);
+        if !flagged {
+            return Vec::new();
+        }
+        let mut links: Vec<LinkSpan> = Vec::new();
+        for x in 0..self.cols {
+            let point = Point::Screen(Coordinate { x, y });
+            let Ok(g) = self.term.grid_ref(point) else {
+                break;
+            };
+            if !g
+                .cell()
+                .ok()
+                .and_then(|c| c.has_hyperlink().ok())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            if let Some(uri) = link_at(&self.term, point) {
+                match links.last_mut() {
+                    Some(last) if last.to == x && last.uri == uri => last.to = x + 1,
+                    _ => links.push(LinkSpan {
+                        from: x,
+                        to: x + 1,
+                        uri,
+                    }),
+                }
+            }
+        }
+        links
+    }
+
     /// The address of the link at `point`, if any, and if it is safe to pass on to the host.
     fn link_at(&self, point: Point) -> Option<String> {
         link_at(&self.term, point)
