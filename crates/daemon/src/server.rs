@@ -1114,8 +1114,17 @@ impl Server {
                     }
                 }
             }
+            // A client of another protocol version can still stop the daemon, and can ask it to
+            // continue as that client's program: the daemon becomes the new program, so what the
+            // two protocols share (the first message and the layout of a command) is enough.
             ClientMessage::Command { name, args }
-                if state == ClientState::Mismatched && name == "server.kill" =>
+                if state == ClientState::Mismatched && name == "server.upgrade" =>
+            {
+                self.command_from_client(id, &name, &args, None);
+            }
+            ClientMessage::Command { name, args }
+                if state == ClientState::Mismatched
+                    && (name == "server.kill" || name == "server.version") =>
             {
                 let (ok, output) = self.run_command(&name, &args, None);
                 self.send(id, &ServerMessage::CommandResult { ok, output });

@@ -320,7 +320,7 @@ fn every_way_to_make_a_window_names_it_after_a_directory_by_default() {
             "mkdir -p inner-dir; cd inner-dir; exec /bin/sh",
         ]))
         .unwrap();
-    client.wait_for_text("sh-").unwrap();
+    client.wait_for_text("$").unwrap();
     assert!(
         bar(&client).contains(&format!(" 1 {dir} ")),
         "{:?}",

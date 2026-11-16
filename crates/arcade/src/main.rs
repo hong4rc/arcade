@@ -350,12 +350,9 @@ fn upgrade_command(options: &Options, rest: &[String]) -> u8 {
     if force {
         args.push("--force".to_string());
     }
+    // A daemon of another protocol version takes this too: it becomes this program.
     let mut connection = match open_connection(options, false) {
-        Ok(Handshake::Ok(connection)) => connection,
-        Ok(Handshake::Mismatch { daemon, client, .. }) => {
-            eprintln!("{}", mismatch_message(daemon, client));
-            return 1;
-        }
+        Ok(Handshake::Ok(connection)) | Ok(Handshake::Mismatch { connection, .. }) => connection,
         Err(code) => return code,
     };
     match command_result(&mut connection, "server.upgrade", &args, None) {

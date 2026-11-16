@@ -139,6 +139,20 @@ fn text(out: &Output) -> String {
     )
 }
 
+/// Type a line until a row starting with `prefix` shows: keys typed in the moment between the old
+/// screen leaving and the new one attaching are lost, as they are for a person.
+fn type_until_row_starting(host: &mut PtyHost, line: &str, prefix: &str) {
+    for _ in 0..6 {
+        host.type_line(line);
+        if host.wait_until(Duration::from_secs(2), |h| {
+            h.screen_text().lines().any(|l| l.starts_with(prefix))
+        }) {
+            return;
+        }
+    }
+    panic!("no row starts with {prefix:?}:\n{}", host.screen_text());
+}
+
 /// Wait until a row of the screen starts with `prefix` (a row is matched whole by `wait_for_row`).
 fn wait_for_row_starting(host: &mut PtyHost, prefix: &str) {
     let found = host.wait_until(WAIT, |h| {
@@ -176,8 +190,7 @@ fn an_upgrade_keeps_the_shell_and_the_screen_comes_back_by_itself() {
     assert!(text(&out).contains("upgraded"), "{}", text(&out));
 
     // The same terminal shows the session again, with what it showed, and the shell answers.
-    host.type_line("echo again-$$");
-    wait_for_row_starting(&mut host, "again-");
+    type_until_row_starting(&mut host, "echo again-$$", "again-");
     let after = host.screen_text();
     assert!(after.contains(&format!("shell-{pid_before}")), "{after}");
     assert!(after.contains(&format!("again-{pid_before}")), "{after}");
@@ -308,8 +321,7 @@ fn a_new_program_that_fails_to_come_up_leaves_everything_on_the_old_one() {
             text(&out)
         );
         // The attached screen never left; the shell is the same one.
-        host.type_line("echo still-$$");
-        wait_for_row_starting(&mut host, "still-");
+        type_until_row_starting(&mut host, "echo still-$$", "still-");
         let screen = host.screen_text();
         assert!(screen.contains("shell-"), "{fault}: {screen}");
         assert!(env.sessions().contains("main"), "{fault}");
@@ -463,4 +475,72 @@ fn write_the_snapshot_fixture() {
     let result = env.upgrade_to(&new);
     assert!(result.status.success(), "{}", text(&result));
     std::fs::copy(env.socket.with_extension("snapshot"), &out).unwrap();
+}
+
+/// A client that speaks another protocol version cannot attach, but can still ask the daemon to
+/// continue as its program: the daemon becomes that program, so the two protocols need not agree
+/// for anything but the first message. After it, that program's own client attaches.
+#[test]
+fn a_client_of_another_protocol_can_ask_for_the_upgrade() {
+    use arcade_proto::{ClientMessage, Decoder, PROTOCOL_VERSION, encode};
+    use std::io::{Read, Write};
+    let env = Env::new();
+    let new = env.copy_of_program("arcade-new");
+    assert!(
+        env.plain(&["new", "-d", "-s", "old", "/bin/sh"])
+            .status
+            .success()
+    );
+    let mut stream = std::os::unix::net::UnixStream::connect(&env.socket).unwrap();
+    stream.set_read_timeout(Some(WAIT)).unwrap();
+    let send = |stream: &mut std::os::unix::net::UnixStream, m: &ClientMessage| {
+        let mut buf = Vec::new();
+        encode(m, &mut buf).unwrap();
+        stream.write_all(&buf).unwrap();
+    };
+    send(
+        &mut stream,
+        &ClientMessage::Hello {
+            version: PROTOCOL_VERSION + 7,
+        },
+    );
+    let mut decoder: Decoder<ServerMessage> = Decoder::new();
+    let mut wait_for = |stream: &mut std::os::unix::net::UnixStream,
+                        want: &dyn Fn(&ServerMessage) -> bool|
+     -> ServerMessage {
+        let mut buf = [0u8; 4096];
+        loop {
+            while let Some(m) = decoder.next_message().unwrap() {
+                if want(&m) {
+                    return m;
+                }
+            }
+            let n = stream.read(&mut buf).expect("the daemon answers");
+            assert!(n > 0, "the daemon closed the connection");
+            decoder.push(&buf[..n]);
+        }
+    };
+    wait_for(&mut stream, &|m| {
+        matches!(m, ServerMessage::VersionMismatch { .. })
+    });
+    send(
+        &mut stream,
+        &ClientMessage::Command {
+            name: "server.upgrade".to_string(),
+            args: vec![new.display().to_string(), "--force".to_string()],
+        },
+    );
+    let answer = wait_for(&mut stream, &|m| {
+        matches!(m, ServerMessage::CommandResult { .. })
+    });
+    match answer {
+        ServerMessage::CommandResult { ok, output } => {
+            assert!(ok && output.contains("upgraded"), "{output}");
+        }
+        _ => unreachable!(),
+    }
+    let mut client = env.client("old", 100, 30);
+    client.type_line("echo back-again");
+    client.wait_for_text("back-again").unwrap();
+    assert!(env.log().contains("daemon replaced its program"));
 }
