@@ -222,33 +222,6 @@ fn show(sessions: &[OldSession], panes: &[OldPane], plan: &Plan) -> String {
     text
 }
 
-/// Wait until the shell of a new window has shown its prompt: some output arrives (up to three
-/// seconds for the first) and then a moment of quiet. Input sent before that is thrown away by
-/// shells that flush the terminal as they start.
-fn wait_for_the_prompt(connection: &mut Connection) {
-    let mut wait = Duration::from_secs(3);
-    let mut seen = false;
-    loop {
-        let _ = connection.stream.set_read_timeout(Some(wait));
-        match connection.receive() {
-            Ok(Some(ServerMessage::Output(_))) => {
-                seen = true;
-                wait = Duration::from_millis(300);
-            }
-            Ok(Some(_)) => {}
-            Ok(None) | Err(_) => break,
-        }
-        if !seen && wait.is_zero() {
-            break;
-        }
-    }
-    let _ = connection.stream.set_read_timeout(None);
-}
-
-fn quote(dir: &str) -> String {
-    format!("'{}'", dir.replace('\'', "'\\''"))
-}
-
 fn wait_for_result(connection: &mut Connection) -> Result<(), String> {
     loop {
         match connection.receive()? {
@@ -307,18 +280,13 @@ fn make_session(
         }
     }
     for dir in windows.iter().skip(1) {
+        // The shell of the new window starts in its own directory (and the window is named after
+        // it); a window whose old directory is not known starts where the last one is.
         connection.send(&ClientMessage::Command {
             name: "window.new".to_string(),
-            args: Vec::new(),
+            args: dir.iter().cloned().collect(),
         })?;
         wait_for_result(&mut connection)?;
-        if let Some(dir) = dir {
-            wait_for_the_prompt(&mut connection);
-            // The new window's shell starts where the last one is; it is sent to the directory.
-            connection.send(&ClientMessage::Input(
-                format!("cd -- {}\r", quote(dir)).into_bytes(),
-            ))?;
-        }
     }
     connection.send(&ClientMessage::Detach)?;
     Ok(())

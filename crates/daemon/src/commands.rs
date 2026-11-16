@@ -76,7 +76,8 @@ pub enum Command {
     PaneBreak,
     /// Turn the key capture of the pane on or off (see `capture.rs`).
     PaneCaptureKeys,
-    WindowNew,
+    /// A new window; with a directory, its shell starts there (and the window is named after it).
+    WindowNew(Option<String>),
     WindowSelect(usize),
     WindowNext,
     WindowPrevious,
@@ -140,7 +141,7 @@ const NAMES: &[(&str, Command)] = &[
     ("pane.paste", Command::PanePaste),
     ("pane.break", Command::PaneBreak),
     ("pane.capture-keys", Command::PaneCaptureKeys),
-    ("window.new", Command::WindowNew),
+    ("window.new", Command::WindowNew(None)),
     ("window.next", Command::WindowNext),
     ("window.previous", Command::WindowPrevious),
     ("window.last", Command::WindowLast),
@@ -273,6 +274,7 @@ pub fn parse(name: &str, args: &[String]) -> Result<Command, String> {
             .cloned()
             .map(Command::SessionSwitch)
             .ok_or_else(|| "session.switch needs a session name".to_string()),
+        "window.new" => Ok(Command::WindowNew(optional())),
         "window.rename" => Ok(Command::WindowRename(optional())),
         "window.move-to-session" => Ok(Command::WindowMoveToSession(optional())),
         "session.rename" => Ok(Command::SessionRename(optional())),

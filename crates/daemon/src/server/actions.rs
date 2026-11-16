@@ -309,7 +309,7 @@ impl Server {
                 self.close_pane(ctx.pane);
                 Ok(String::new())
             }
-            Command::WindowNew => self.new_window(ctx),
+            Command::WindowNew(directory) => self.new_window(ctx, directory),
             Command::WindowSelect(number) => {
                 let target = self
                     .sessions
@@ -1453,16 +1453,22 @@ impl Server {
 
     // ---- Windows ----
 
-    fn new_window(&mut self, ctx: Ctx) -> Result<String, String> {
+    /// A new window. Its shell starts in `directory` when one is given and exists, else where the
+    /// shell of the pane that asked is now; the window is named after the directory its own
+    /// shell starts in.
+    fn new_window(&mut self, ctx: Ctx, directory: Option<String>) -> Result<String, String> {
         let session = self
             .sessions
             .get(&ctx.session)
             .ok_or_else(|| "no such session".to_string())?;
         let (cols, rows) = window_area(session.cols, session.rows, self.config.status_position);
-        let cwd = self
-            .panes
-            .get(&ctx.pane)
-            .and_then(|p| pty::process_cwd(p.pid))
+        let cwd = directory
+            .filter(|d| std::path::Path::new(d).is_dir())
+            .or_else(|| {
+                self.panes
+                    .get(&ctx.pane)
+                    .and_then(|p| pty::process_cwd(p.pid))
+            })
             .unwrap_or_else(|| session.cwd.clone());
         let env = session.env.clone();
         let pane = self.spawn_pane(Vec::new(), cwd.clone(), &env, cols, rows)?;

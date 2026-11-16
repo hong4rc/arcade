@@ -343,3 +343,68 @@ fn every_way_to_make_a_window_names_it_after_a_directory_by_default() {
         bar(&client)
     );
 }
+
+/// A window is named after the directory its own first shell starts in, in every way of making
+/// one, and the name stays when the shell moves on (`name-follow` is off by default).
+mod new_windows {
+    use super::*;
+
+    fn named(client: &mut TestClient, name: &str) -> bool {
+        client.wait_until(WAIT, |c| bar(c).contains(&format!(" {name} ")))
+    }
+
+    #[test]
+    fn a_window_made_with_a_directory_is_named_after_it() {
+        let daemon = TestDaemon::start();
+        let mut client = attach(&daemon);
+        let (ok, why) = daemon.command("window.new", &["/usr"]).unwrap();
+        assert!(ok, "{why}");
+        assert!(named(&mut client, "2 usr"), "{:?}", bar(&client));
+        client.type_line("pwd");
+        assert!(client.wait_until(WAIT, |c| c.screen_rows().iter().any(|r| r.trim() == "/usr")));
+        // A directory that does not exist is ignored: the shell starts where the shell in focus
+        // is (here the one in /usr) and is named after that.
+        let (ok, _) = daemon.command("window.new", &["/no/such/place"]).unwrap();
+        assert!(ok);
+        assert!(named(&mut client, "3 usr"), "{:?}", bar(&client));
+    }
+
+    #[test]
+    fn a_window_made_after_the_shell_moved_starts_and_is_named_where_the_shell_is() {
+        let daemon = TestDaemon::start();
+        let mut client = attach(&daemon);
+        let start = start_dir(&daemon);
+        client.type_line("cd /usr; echo moved-$((40 + 2))");
+        client.wait_for_text("moved-42").unwrap();
+        // From a key, and from `arcade run` as a pane does it.
+        client.send(b"\x1b[109;5u");
+        client.send(b"c");
+        assert!(named(&mut client, "2 usr"), "{:?}", bar(&client));
+        client.type_line("pwd");
+        assert!(client.wait_until(WAIT, |c| c.screen_rows().iter().any(|r| r.trim() == "/usr")));
+        let pane = client.focused_pane_id();
+        let (ok, why) = daemon.command_from(Some(pane), "window.new", &[]).unwrap();
+        assert!(ok, "{why}");
+        assert!(named(&mut client, "3 usr"), "{:?}", bar(&client));
+        // The first window keeps the name of where it began, with `name-follow` off.
+        assert!(
+            bar(&client).contains(&format!(" 1 {start} ")),
+            "{:?}",
+            bar(&client)
+        );
+    }
+
+    #[test]
+    fn a_pane_broken_out_names_its_window_after_the_directory_it_is_in() {
+        let daemon = TestDaemon::start();
+        let mut client = attach(&daemon);
+        client.send(b"\x1b[109;5u");
+        client.send(b"|");
+        assert!(client.wait_until(WAIT, |c| c.screen_text().contains('│')));
+        client.type_line("cd /usr; echo moved-$((40 + 2))");
+        client.wait_for_text("moved-42").unwrap();
+        client.send(b"\x1b[109;5u");
+        client.send(b"!");
+        assert!(named(&mut client, "2 usr"), "{:?}", bar(&client));
+    }
+}
