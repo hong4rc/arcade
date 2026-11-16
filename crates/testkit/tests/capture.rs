@@ -40,6 +40,11 @@ fn it_is_off_until_asked_and_records_the_exact_bytes_while_on() {
         .unwrap();
     assert!(ok, "{message}");
     assert!(message.contains("passwords"), "{message}");
+    // The line says which pane and which window it is, not just "this pane".
+    assert!(
+        message.contains(&format!("in pane {pane} (window 1 ")),
+        "{message}"
+    );
     assert!(
         client.wait_until(WAIT, |c| c.status_row().contains("RECORDING KEYS")),
         "{}",
@@ -85,6 +90,10 @@ fn it_is_off_until_asked_and_records_the_exact_bytes_while_on() {
         .command_from(Some(pane), "pane.capture-keys", &[])
         .unwrap();
     assert!(ok && message.contains("stopped"), "{message}");
+    assert!(
+        message.contains(&format!("in pane {pane} (window 1 ")),
+        "{message}"
+    );
     assert!(client.wait_until(WAIT, |c| !c.status_row().contains("RECORDING")));
     let size = std::fs::metadata(&files[0]).unwrap().len();
     client.send(b"zzz");
@@ -117,4 +126,22 @@ fn closing_the_pane_ends_the_capture() {
     // The other pane was not recorded, and the file is still there to read.
     assert_eq!(captures(&daemon).len(), 1);
     let _ = first;
+}
+
+/// Typed outside any pane, the command has no pane of its own: it acts on the focused pane of the
+/// window being looked at, and the line it prints says which one that is.
+#[test]
+fn from_outside_a_pane_it_takes_the_focused_pane_and_says_which() {
+    let daemon = TestDaemon::start();
+    let mut client = daemon.attach_shell();
+    client.wait_for_prompt().unwrap();
+    let pane = client.focused_pane_id();
+    let (ok, message) = daemon.command_from(None, "pane.capture-keys", &[]).unwrap();
+    assert!(ok, "{message}");
+    assert!(
+        message.contains(&format!("in pane {pane} (window 1 ")),
+        "{message}"
+    );
+    let (ok, message) = daemon.command_from(None, "pane.capture-keys", &[]).unwrap();
+    assert!(ok && message.contains("stopped"), "{message}");
 }

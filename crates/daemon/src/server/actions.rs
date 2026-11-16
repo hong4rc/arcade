@@ -1407,17 +1407,29 @@ impl Server {
             .parent()
             .map(std::path::Path::to_path_buf)
             .ok_or_else(|| "no private directory for the capture".to_string())?;
+        let window_label = self
+            .sessions
+            .get(&ctx.session)
+            .and_then(|s| s.windows.iter().find(|w| w.id == ctx.window))
+            .map_or_else(String::new, |w| format!("window {} {}", w.number, w.name));
         let pane = self
             .panes
             .get_mut(&ctx.pane)
             .ok_or_else(|| "no such pane".to_string())?;
         let message = if let Some(capture) = pane.capture.take() {
-            format!("key capture stopped: {}", capture.path().display())
+            format!(
+                "key capture stopped in pane {} ({}): {}",
+                ctx.pane,
+                window_label,
+                capture.path().display()
+            )
         } else {
             let capture = crate::capture::Capture::start(&dir, ctx.pane)
                 .map_err(|e| format!("cannot start the key capture: {e}"))?;
             let message = format!(
-                "RECORDING every key typed in this pane, passwords too: {}",
+                "RECORDING every key typed in pane {} ({}), passwords too: {}",
+                ctx.pane,
+                window_label,
                 capture.path().display()
             );
             pane.capture = Some(capture);
