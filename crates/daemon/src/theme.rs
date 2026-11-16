@@ -78,6 +78,10 @@ mod palette {
     pub const SUBTEXT0: Color = Color::Rgb(0xb5, 0xbf, 0xe2);
     pub const MAUVE: Color = Color::Rgb(0xca, 0x9e, 0xe6);
     pub const GREEN: Color = Color::Rgb(0xa6, 0xd1, 0x89);
+    pub const RED: Color = Color::Rgb(0xe7, 0x82, 0x84);
+    pub const YELLOW: Color = Color::Rgb(0xe5, 0xc8, 0x90);
+    pub const PINK: Color = Color::Rgb(0xf4, 0xb8, 0xe4);
+    pub const TEAL: Color = Color::Rgb(0x81, 0xc8, 0xbe);
 }
 
 fn on(fg: Color, bg: Color) -> Style {
@@ -100,7 +104,6 @@ pub fn cap_style(block: Style) -> Style {
 
 /// The contrast ratio (1 to 21) of the text of a style on its background, for the colours that
 /// are given as red, green and blue.
-#[cfg(test)]
 fn contrast(style: Style) -> f64 {
     fn luminance(c: Color) -> f64 {
         let Color::Rgb(r, g, b) = c else {
@@ -118,6 +121,27 @@ fn contrast(style: Style) -> f64 {
     }
     let (a, b) = (luminance(style.fg), luminance(style.bg));
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// A colour moved toward white, a little at a time, until it reads on `background` at a contrast
+/// of at least 4.5; one that already does is left alone. Both must be given as red, green and blue.
+fn readable_on(colour: Color, background: Color) -> Color {
+    let Color::Rgb(r, g, b) = colour else {
+        return colour;
+    };
+    for step in 0..=100u32 {
+        let mix = |v: u8| (u32::from(v) + (255 - u32::from(v)) * step / 100) as u8;
+        let candidate = Color::Rgb(mix(r), mix(g), mix(b));
+        let probe = Style {
+            fg: candidate,
+            bg: background,
+            ..Style::default()
+        };
+        if contrast(probe) >= 4.5 {
+            return candidate;
+        }
+    }
+    Color::Rgb(255, 255, 255)
 }
 
 fn fg(color: u8) -> Style {
@@ -275,6 +299,25 @@ pub fn notice_style(class: crate::notify::Class) -> Style {
     })
 }
 
+/// The mark of a class on a block of the bar that is not its own chip: the symbol in the class's
+/// colour, as red, green and blue, on the block's own background, so that a pill stays one shape.
+/// The colours are the four of the palette of the tabs (approval red, input yellow, error pink,
+/// info teal), made lighter only as far as it takes to read at a contrast of 4.5 on that block.
+pub fn mark_on(class: crate::notify::Class, block: Style) -> Style {
+    let colour = match class {
+        crate::notify::Class::Approval => palette::RED,
+        crate::notify::Class::Input => palette::YELLOW,
+        crate::notify::Class::Error => palette::PINK,
+        crate::notify::Class::Info => palette::TEAL,
+    };
+    Style {
+        fg: readable_on(colour, block.bg),
+        bg: block.bg,
+        bold: true,
+        ..Style::default()
+    }
+}
+
 /// The mark of a class: one cell wide wherever it is drawn (tab, count, pane, lists), a shape of
 /// its own so that colour is not all that tells the classes apart, and a shape that text does
 /// not use, so that a line of a list can be searched for it.
@@ -328,6 +371,10 @@ pub enum Symbol {
     PillCapLeft,
     PillCapRight,
     SessionIcon,
+    /// At the left (right) end of the bar: tabs are hidden before the first (after the last) one
+    /// that shows.
+    HiddenBefore,
+    HiddenAfter,
     /// The corners and sides of the frame of the floating list.
     PickerTopLeft,
     PickerTopRight,
@@ -375,6 +422,8 @@ pub fn symbol(symbol: Symbol) -> &'static str {
         Symbol::PillCapLeft => "\u{e0b6}",
         Symbol::PillCapRight => "\u{e0b4}",
         Symbol::SessionIcon => "\u{e795} ",
+        Symbol::HiddenBefore => "‹",
+        Symbol::HiddenAfter => "›",
         Symbol::PickerTopLeft => "┌",
         Symbol::PickerTopRight => "┐",
         Symbol::PickerBottomLeft => "└",
@@ -429,6 +478,27 @@ mod tests {
             assert_ne!(mark.bg, plain_tab.bg, "{class:?}");
             for role in [Role::PillName, Role::PillNameCurrent] {
                 assert_ne!(mark.bg, style(role).bg, "{class:?} on {role:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_mark_on_a_block_reads_at_a_contrast_of_four_and_a_half_on_every_block_of_the_bar() {
+        use crate::notify::Class;
+        for class in Class::BY_URGENCY {
+            for role in [
+                Role::StatusBar,
+                Role::PillName,
+                Role::PillNameCurrent,
+                Role::PillBadge,
+            ] {
+                let on_block = mark_on(class, style(role));
+                if role == Role::PillBadge {
+                    continue;
+                }
+                assert_eq!(on_block.bg, style(role).bg);
+                let ratio = contrast(on_block);
+                assert!(ratio >= 4.5, "{class:?} on {role:?}: {ratio:.2}");
             }
         }
     }

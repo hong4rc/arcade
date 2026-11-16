@@ -12,9 +12,12 @@ use crate::theme::{self, Role, Symbol};
 /// end not included, and the index of the tab in `StatusInfo::tabs`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TabSpan {
+    /// The tab, or for a marker the nearest hidden tab on its side, which a click selects.
     pub index: usize,
     pub from: u16,
     pub to: u16,
+    /// This is the marker at an end of the bar that tells tabs are hidden, not a tab.
+    pub marker: bool,
 }
 
 /// A piece of the text of a tab; a quiet piece (the program's own title) is drawn fainter than
@@ -164,6 +167,11 @@ fn session_label(info: &StatusInfo) -> Vec<Cell> {
 /// the flat one as plain blocks. The marks (zoom, notification, progress) are in the name's block
 /// and always have the same width, so the tabs to the right do not move when one appears.
 fn tab_cells(tab: &Tab, info: &StatusInfo) -> Vec<Cell> {
+    tab_cells_with(tab, &tab.text, info)
+}
+
+/// The same with the text of the tab given: the pieces cut short to make room.
+fn tab_cells_with(tab: &Tab, pieces: &[TabPiece], info: &StatusInfo) -> Vec<Cell> {
     let (name_role, quiet_role, badge_role) = if tab.current {
         (
             Role::PillNameCurrent,
@@ -177,7 +185,7 @@ fn tab_cells(tab: &Tab, info: &StatusInfo) -> Vec<Cell> {
     let quiet = theme::style(quiet_role);
     let badge = theme::style(badge_role);
     let mut text = text_cells(" ", name);
-    for piece in &tab.text {
+    for piece in pieces {
         text.extend(text_cells(
             &piece.text,
             if piece.quiet { quiet } else { name },
@@ -193,13 +201,13 @@ fn tab_cells(tab: &Tab, info: &StatusInfo) -> Vec<Cell> {
         text.extend(text_cells(" ", name));
         text.extend(text_cells(
             theme::notice_symbol(class),
-            theme::notice_style(class),
+            mark_style(class, name, info),
         ));
     }
     if let Some(report) = tab.progress {
         text.extend(text_cells(" ", name));
         let style = if report.state == 2 {
-            theme::notice_style(Class::Error)
+            mark_style(Class::Error, name, info)
         } else {
             name
         };
@@ -218,6 +226,170 @@ fn tab_cells(tab: &Tab, info: &StatusInfo) -> Vec<Cell> {
         cap(Symbol::PillCapLeft, first),
         cap(Symbol::PillCapRight, last),
     )
+}
+
+/// The mark of a notification on a tab: in the pill style the symbol in the class's colour on the
+/// pill's own background, so the pill stays one shape; in the flat style a chip of its own.
+fn mark_style(class: Class, block: arcade_term::Style, info: &StatusInfo) -> arcade_term::Style {
+    match info.style {
+        TabStyle::Pill => theme::mark_on(class, block),
+        TabStyle::Flat => theme::notice_style(class),
+    }
+}
+
+/// A laid-out bar: its cells and, for each tab or marker, its index (for a marker the nearest
+/// hidden tab), where it starts and ends, and whether it is a marker.
+type Laid = (Vec<Cell>, Vec<(usize, usize, usize, bool)>);
+
+/// How small a tab's text is made, in cells, before a tab is hidden.
+const TAB_TEXT_MIN: usize = 4;
+
+fn pieces_width(pieces: &[TabPiece]) -> usize {
+    pieces
+        .iter()
+        .flat_map(|p| p.text.chars())
+        .map(crate::compose::char_width)
+        .sum()
+}
+
+/// The pieces of a tab's text cut to `limit` cells, the cut marked with `…` in the piece it falls
+/// in; text that is short enough is left as it is.
+fn shorten_pieces(pieces: &[TabPiece], limit: usize) -> Vec<TabPiece> {
+    if pieces_width(pieces) <= limit {
+        return pieces.to_vec();
+    }
+    let room = limit.saturating_sub(1);
+    let mut out: Vec<TabPiece> = Vec::new();
+    let mut used = 0;
+    'pieces: for piece in pieces {
+        let mut text = String::new();
+        for c in piece.text.chars() {
+            let w = crate::compose::char_width(c);
+            if used + w > room {
+                out.push(TabPiece {
+                    text,
+                    quiet: piece.quiet,
+                });
+                break 'pieces;
+            }
+            used += w;
+            text.push(c);
+        }
+        out.push(TabPiece {
+            text,
+            quiet: piece.quiet,
+        });
+    }
+    // The mark of the cut goes in the last piece that was kept.
+    match out.last_mut() {
+        Some(last) => last.text.push_str(theme::symbol(Symbol::Ellipsis)),
+        None => out.push(TabPiece::plain(theme::symbol(Symbol::Ellipsis))),
+    }
+    out
+}
+
+/// What the bar knows about the tabs it lays out: for each, the cells around its text and how
+/// wide its text is.
+struct Fitting<'a> {
+    info: &'a StatusInfo,
+    /// The cells of tab `i` besides its text, gap after it included.
+    chrome: Vec<usize>,
+    /// The width of its whole text.
+    natural: Vec<usize>,
+}
+
+impl<'a> Fitting<'a> {
+    fn new(info: &'a StatusInfo) -> Fitting<'a> {
+        let natural: Vec<usize> = info.tabs.iter().map(|t| pieces_width(&t.text)).collect();
+        let chrome = info
+            .tabs
+            .iter()
+            .zip(&natural)
+            .map(|(t, n)| tab_cells(t, info).len() - n + 1)
+            .collect();
+        Fitting {
+            info,
+            chrome,
+            natural,
+        }
+    }
+
+    /// The width tab `i` takes (gap included) when its text is cut to `limit`.
+    fn width(&self, i: usize, limit: usize) -> usize {
+        self.chrome[i] + pieces_width(&shorten_pieces(&self.info.tabs[i].text, limit))
+    }
+
+    /// The smallest a tab gets before it is hidden.
+    fn compact(&self, i: usize) -> usize {
+        self.width(i, self.natural[i].min(TAB_TEXT_MIN))
+    }
+
+    /// The text limits of the tabs `from..=to` that make them fit in `budget` cells: the longest
+    /// text gives up a cell at a time, the current tab's text last, none below the smallest.
+    /// `None` when even that is not enough.
+    fn limits(&self, from: usize, to: usize, budget: usize) -> Option<Vec<usize>> {
+        let mut limits: Vec<usize> = (from..=to).map(|i| self.natural[i]).collect();
+        let mut total: usize = (from..=to).map(|i| self.width(i, limits[i - from])).sum();
+        while total > budget {
+            let pick = (from..=to)
+                .filter(|&i| !self.info.tabs[i].current && limits[i - from] > TAB_TEXT_MIN)
+                .max_by_key(|&i| (limits[i - from], i))
+                .or_else(|| {
+                    (from..=to)
+                        .find(|&i| self.info.tabs[i].current && limits[i - from] > TAB_TEXT_MIN)
+                })?;
+            let before = self.width(pick, limits[pick - from]);
+            limits[pick - from] -= 1;
+            total = total - before + self.width(pick, limits[pick - from]);
+        }
+        Some(limits)
+    }
+}
+
+/// How much a marker at an end of the bar says.
+#[derive(Clone, Copy)]
+enum MarkerLevel {
+    /// The arrow, how many tabs are hidden, and the most urgent mark among them.
+    Count,
+    /// The arrow and the mark.
+    Short,
+}
+
+/// The marker for the tabs `hidden` (indexes into the tabs), at the left (`before`) or the right
+/// end, and the tab a click on it selects: the nearest of them.
+fn marker_cells(
+    hidden: std::ops::RangeInclusive<usize>,
+    before: bool,
+    level: MarkerLevel,
+    info: &StatusInfo,
+) -> (Vec<Cell>, usize) {
+    let bar = theme::style(Role::StatusBar);
+    let arrow = theme::symbol(if before {
+        Symbol::HiddenBefore
+    } else {
+        Symbol::HiddenAfter
+    });
+    let text = match level {
+        MarkerLevel::Count => format!("{arrow}{}", hidden.clone().count()),
+        MarkerLevel::Short => arrow.to_string(),
+    };
+    let mut cells = text_cells(&text, bar);
+    let urgent = hidden
+        .clone()
+        .filter_map(|i| info.tabs[i].notice)
+        .min_by_key(|c| Class::BY_URGENCY.iter().position(|b| b == c));
+    if let Some(class) = urgent {
+        cells.extend(text_cells(
+            theme::notice_symbol(class),
+            theme::mark_on(class, bar),
+        ));
+    }
+    let nearest = if before {
+        *hidden.end()
+    } else {
+        *hidden.start()
+    };
+    (cells, nearest)
 }
 
 /// The cells of the bar, where the cursor goes when it is a line to type into, and where each
@@ -244,16 +416,6 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
             None,
             Vec::new(),
         );
-    }
-    let mut cells = session_label(info);
-    cells.push(blank(bar));
-    let mut spans = Vec::new();
-    for (index, tab) in info.tabs.iter().enumerate() {
-        let tab_from = cells.len();
-        cells.extend(tab_cells(tab, info));
-        spans.push((index, tab_from, cells.len()));
-        // One cell of the bar's own background between two tabs, so that they read as items.
-        cells.push(blank(bar));
     }
     let mut words: Vec<String> = Vec::new();
     if info.prefix {
@@ -309,45 +471,166 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
     } else {
         width
     };
-    let current_span = spans
-        .iter()
-        .find(|(i, _, _)| info.tabs[*i].current)
-        .copied();
-    // The tab of the window you are in always shows: when it would be cut away, the tabs before
-    // it give way from the left (the first one may show in part, and clicks follow what shows);
-    // when that is not enough, the session's name gives way too.
-    if let Some(&(_, tab_from, tab_to)) = current_span.as_ref().filter(|(_, _, to)| *to > room) {
-        let first = spans.first().map_or(0, |s| s.1);
-        let want = tab_to - room;
-        let (from, shift) = if want > tab_from.saturating_sub(first) {
-            (0, want.max(first).min(tab_from))
-        } else {
-            (first, want)
-        };
-        if shift > 0 {
-            cells.drain(from..from + shift);
-            let cut = from + shift;
-            let moved = |p: usize| if p >= cut { p - shift } else { from };
-            spans = spans
-                .into_iter()
-                .filter(|&(_, f, t)| moved(t) > moved(f))
-                .map(|(i, f, t)| (i, moved(f), moved(t)))
-                .collect();
-        }
-    }
+    let (mut cells, spans) = lay_out_tabs(room, info);
     cells = fit(cells, room, bar);
     cells.extend(right.into_iter().take(width - room));
     // What was cut away cannot be clicked, and a tab cut in two is clickable where it shows.
     let spans = spans
         .into_iter()
-        .filter(|(_, from, _)| *from < room)
-        .map(|(index, from, to)| TabSpan {
+        .filter(|(_, from, _, _)| *from < room)
+        .map(|(index, from, to, marker)| TabSpan {
             index,
             from: from as u16,
             to: to.min(room) as u16,
+            marker,
         })
         .collect();
     (cells, None, spans)
+}
+
+/// The session's label and the tabs in `room` cells: as they are when they fit; with the longest
+/// names cut short (to no less than about four cells, the current tab's last) when they do not;
+/// and only when that is not enough with tabs hidden, a marker at the end where they are. The
+/// current tab always shows. Returns the cells and, for each tab or marker, its index (for a
+/// marker the nearest hidden tab), where it starts and ends, and whether it is a marker.
+fn lay_out_tabs(room: usize, info: &StatusInfo) -> Laid {
+    let bar = theme::style(Role::StatusBar);
+    let label = session_label(info);
+    let label_width = label.len() + 1;
+    let tabs = info.tabs.len();
+    if tabs == 0 {
+        let mut cells = label;
+        cells.push(blank(bar));
+        return (cells, Vec::new());
+    }
+    let fitting = Fitting::new(info);
+    let current = info.tabs.iter().position(|t| t.current).unwrap_or(0);
+    // A marker and the gap after it (at the left) or before it (at the right).
+    let marker_room = |range: Option<std::ops::RangeInclusive<usize>>, before: bool, level| {
+        range.map_or(0, |r| {
+            marker_cells(r, before, level, info).0.len() + usize::from(before)
+        })
+    };
+    // Everything shows, its names cut short only as far as they have to be.
+    if let Some(limits) = fitting.limits(0, tabs - 1, room.saturating_sub(label_width)) {
+        return assemble(&fitting, label, 0, tabs - 1, &limits, MarkerLevel::Count);
+    }
+    // Tabs are hidden: the label stays while the current tab and the markers fit beside it, then
+    // goes; a marker that says less goes before the tab is cut.
+    for (with_label, level) in [
+        (true, MarkerLevel::Count),
+        (true, MarkerLevel::Short),
+        (false, MarkerLevel::Count),
+        (false, MarkerLevel::Short),
+    ] {
+        let base = if with_label { label_width } else { 0 };
+        let used = |lo: usize, hi: usize| {
+            let before = (lo > 0).then(|| 0..=lo - 1);
+            let after = (hi + 1 < tabs).then(|| hi + 1..=tabs - 1);
+            base + marker_room(before, true, level)
+                + marker_room(after, false, level)
+                + (lo..=hi).map(|i| fitting.compact(i)).sum::<usize>()
+        };
+        if used(current, current) > room {
+            continue;
+        }
+        let (mut lo, mut hi) = (current, current);
+        loop {
+            let mut grew = false;
+            if hi + 1 < tabs && used(lo, hi + 1) <= room {
+                hi += 1;
+                grew = true;
+            }
+            if lo > 0 && used(lo - 1, hi) <= room {
+                lo -= 1;
+                grew = true;
+            }
+            if !grew {
+                break;
+            }
+        }
+        let before = (lo > 0).then(|| 0..=lo - 1);
+        let after = (hi + 1 < tabs).then(|| hi + 1..=tabs - 1);
+        let budget =
+            room - base - marker_room(before, true, level) - marker_room(after, false, level);
+        // The tabs that show grow back as far as the room goes.
+        let limits = fitting.limits(lo, hi, budget).unwrap_or_else(|| {
+            (lo..=hi)
+                .map(|i| fitting.natural[i].min(TAB_TEXT_MIN))
+                .collect()
+        });
+        let label = if with_label { label } else { Vec::new() };
+        return assemble(&fitting, label, lo, hi, &limits, level);
+    }
+    // Not even the current tab and the markers fit: the tab is cut at its right end.
+    let level = MarkerLevel::Short;
+    let before = (current > 0).then(|| 0..=current - 1);
+    let after = (current + 1 < tabs).then(|| current + 1..=tabs - 1);
+    let left = marker_room(before, true, level);
+    let right = marker_room(after, false, level);
+    let own = room.saturating_sub(left + right).max(1);
+    let limit = fitting.natural[current].min(TAB_TEXT_MIN);
+    let (mut cells, mut spans) = assemble(&fitting, Vec::new(), current, current, &[limit], level);
+    // The pieces of `assemble` in order: the left marker (and its gap), the tab, the gap, the right
+    // marker. The tab is cut to what is left and the right marker follows it.
+    let tab_from = left;
+    let tab_to = cells.len().saturating_sub(right).min(tab_from + own);
+    let tail: Vec<Cell> = cells.split_off(cells.len() - right);
+    cells.truncate(tab_to);
+    let end = cells.len();
+    cells.extend(tail);
+    for span in spans.iter_mut() {
+        if !span.3 && span.0 == current {
+            span.2 = end;
+        } else if span.3 && span.1 > tab_from {
+            let shift = span.1 - end;
+            span.1 -= shift;
+            span.2 -= shift;
+        }
+    }
+    (cells, spans)
+}
+
+/// The cells of the label, the left marker, the tabs `lo..=hi` with their text limits, and the
+/// right marker, with where each starts and ends.
+fn assemble(
+    fitting: &Fitting,
+    label: Vec<Cell>,
+    lo: usize,
+    hi: usize,
+    limits: &[usize],
+    level: MarkerLevel,
+) -> Laid {
+    let info = fitting.info;
+    let bar = theme::style(Role::StatusBar);
+    let tabs = info.tabs.len();
+    let mut cells = label;
+    if !cells.is_empty() {
+        cells.push(blank(bar));
+    }
+    let mut spans = Vec::new();
+    if lo > 0 {
+        let (marker, nearest) = marker_cells(0..=lo - 1, true, level, info);
+        let from = cells.len();
+        cells.extend(marker);
+        spans.push((nearest, from, cells.len(), true));
+        cells.push(blank(bar));
+    }
+    for i in lo..=hi {
+        let from = cells.len();
+        let pieces = shorten_pieces(&info.tabs[i].text, limits[i - lo]);
+        cells.extend(tab_cells_with(&info.tabs[i], &pieces, info));
+        spans.push((i, from, cells.len(), false));
+        // One cell of the bar's own background between two tabs, so that they read as items.
+        cells.push(blank(bar));
+    }
+    if hi + 1 < tabs {
+        let (marker, nearest) = marker_cells(hi + 1..=tabs - 1, false, level, info);
+        let from = cells.len();
+        cells.extend(marker);
+        spans.push((nearest, from, cells.len(), true));
+    }
+    (cells, spans)
 }
 
 #[cfg(test)]
@@ -436,10 +719,12 @@ mod tests {
         // One cell of the bar between two tabs, which belongs to neither.
         assert_eq!(spans[1].from, spans[0].to + 1);
         assert_eq!(spans[1].to, spans[1].from + " vim [Z]  2 ".len() as u16);
-        // Cut short: the tab that is cut in two covers what shows, the one cut away is gone.
+        // Too narrow for both: the first tab is hidden, a marker at the left stands for it (a
+        // click on the marker selects it) and the tab of the window you are in shows whole.
         let (_, _, narrow) = build_with_tabs(18, &info());
-        assert_eq!(narrow.last().map(|t| (t.index, t.to)), Some((1, 18)));
-        // The tab of the window you are in (the second) shows, and the first gives way to it.
+        assert_eq!(narrow.first().map(|t| (t.index, t.marker)), Some((0, true)));
+        assert_eq!(narrow.last().map(|t| (t.index, t.marker)), Some((1, false)));
+        // Narrower still: the tab of the window you are in shows, and the first gives way to it.
         let (_, _, narrower) = build_with_tabs(12, &info());
         assert_eq!(narrower.last().map(|t| t.index), Some(1));
         assert!(narrower.iter().all(|t| t.to <= 12));
@@ -775,6 +1060,214 @@ mod tests {
         }
     }
 
+    /// The four windows of the author's bar: three quiet, one with a notification that needs them.
+    fn four_windows() -> StatusInfo {
+        let tab = |number: usize, name: &str, current: bool, notice: Option<Class>| Tab {
+            number,
+            text: vec![TabPiece::plain(name)],
+            current,
+            zoomed: false,
+            notice,
+            progress: None,
+        };
+        let mut i = info();
+        i.session = "work".into();
+        i.tabs = vec![
+            tab(1, "everfit-microservices", false, None),
+            tab(2, "everfit-api", false, None),
+            tab(3, "arcade", true, None),
+            tab(4, "foundry", false, Some(Class::Input)),
+        ];
+        i
+    }
+
+    /// The cells of the tab `span` covers, as text.
+    fn shown_text(cells: &[Cell], span: &TabSpan) -> String {
+        text(&cells[usize::from(span.from)..usize::from(span.to)])
+    }
+
+    /// Long names give up cells before any tab is hidden: every tab keeps its number and marks,
+    /// and the current tab's name is the last one to be shortened.
+    #[test]
+    fn names_are_shortened_before_any_tab_is_hidden() {
+        let mut i = four_windows();
+        i.style = TabStyle::Flat;
+        let (_, _, whole) = build_with_tabs(400, &i);
+        assert_eq!(whole.len(), 4);
+        // Room for everything once the longest names are cut: nothing is hidden.
+        let natural = usize::from(whole.last().unwrap().to) + 1;
+        let (cells, _, spans) = build_with_tabs((natural - 12) as u16, &i);
+        assert_eq!(spans.len(), 4, "{}", text(&cells));
+        assert!(spans.iter().all(|s| !s.marker));
+        let line = text(&cells);
+        assert!(line.contains('…'), "{line}");
+        // The numbers and the notification mark are all there, and the current name is whole.
+        for number in 1..=4 {
+            assert!(line.contains(&format!(" {number} ")), "{line}");
+        }
+        assert!(line.contains(theme::notice_symbol(Class::Input)), "{line}");
+        assert!(line.contains("arcade"), "{line}");
+    }
+
+    /// Hidden tabs are told by a marker at their end of the bar, with the count, and a hidden
+    /// notification shows on it in its colour.
+    #[test]
+    fn hidden_tabs_leave_a_marker_that_shows_the_count_and_the_most_urgent_mark() {
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            // The notifications are on the tabs that are hidden: an input one on the first
+            // window, an approval one (more urgent) on the second.
+            let mut i = four_windows();
+            i.style = style;
+            i.tabs[0].notice = Some(Class::Input);
+            i.tabs[1].notice = Some(Class::Approval);
+            i.tabs[3].notice = None;
+            // The widest bar on which the first two tabs are both hidden.
+            let width = (20..=80u16)
+                .rev()
+                .find(|&w| {
+                    let (_, _, spans) = build_with_tabs(w, &i);
+                    spans.iter().filter(|s| !s.marker).all(|s| s.index >= 2)
+                        && spans.iter().any(|s| s.marker && s.index == 1)
+                })
+                .expect("a width with two tabs hidden");
+            let (cells, _, spans) = build_with_tabs(width, &i);
+            let line = text(&cells);
+            let left = spans.iter().find(|s| s.marker).expect(&line);
+            // A click on the marker goes to the hidden tab nearest to the ones that show.
+            assert_eq!(left.index, 1, "{line}");
+            let shown = shown_text(&cells, left);
+            let arrow = theme::symbol(Symbol::HiddenBefore);
+            let approval = theme::notice_symbol(Class::Approval);
+            assert_eq!(shown, format!("{arrow}2{approval}"), "{style:?}: {line}");
+            // The mark is in its colour, on the bar's own background.
+            let mark = cells[usize::from(left.to) - 1].style;
+            let want = theme::mark_on(Class::Approval, theme::style(Role::StatusBar));
+            assert_eq!(mark, want, "{style:?}");
+            // At the right end, tabs hidden after the last one that shows.
+            let (cells, _, spans) = build_with_tabs(30, &i);
+            let line = text(&cells);
+            let right = spans
+                .iter()
+                .rev()
+                .find(|s| s.marker)
+                .unwrap_or_else(|| panic!("{style:?}: {line}"));
+            assert!(right.index > 2, "{style:?}: {line}");
+            assert!(
+                shown_text(&cells, right).starts_with(theme::symbol(Symbol::HiddenAfter)),
+                "{style:?}: {line}"
+            );
+        }
+    }
+
+    /// The four windows at 150, 80 and 50 columns, as the author's bar would draw them.
+    #[test]
+    fn the_four_windows_at_150_80_and_50_columns() {
+        let mut i = four_windows();
+        i.style = TabStyle::Pill;
+        // Everything fits at 150.
+        let (cells, _, spans) = build_with_tabs(150, &i);
+        assert_eq!(spans.len(), 4, "{}", text(&cells));
+        assert!(!text(&cells).contains('…'));
+        // At 80 the names are cut and the fourth tab, with its mark, is still there.
+        let (cells, _, spans) = build_with_tabs(80, &i);
+        let line = text(&cells);
+        assert_eq!(spans.len(), 4, "{line}");
+        assert!(line.contains('…'), "{line}");
+        assert!(line.contains(theme::notice_symbol(Class::Input)), "{line}");
+        // At 50 tabs are hidden, and the marker for the fourth carries its mark.
+        let (cells, _, spans) = build_with_tabs(50, &i);
+        let line = text(&cells);
+        assert!(spans.iter().any(|s| s.marker), "{line}");
+        assert!(line.contains(theme::notice_symbol(Class::Input)), "{line}");
+        assert!(spans.iter().any(|s| !s.marker && s.index == 2), "{line}");
+    }
+
+    /// At every width from 8 to 120, in both styles and with the number in each of its places: a
+    /// tab is never gone without a marker on its side, the notification of a hidden tab always
+    /// shows on a marker, tabs are hidden only when the names cut as short as they go still do not
+    /// fit, and the tab of the current window always shows.
+    #[test]
+    fn at_every_width_no_tab_disappears_without_a_marker() {
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            for number in [
+                NumberPosition::Right,
+                NumberPosition::Left,
+                NumberPosition::Off,
+            ] {
+                for notice_on in 0..4usize {
+                    let mut i = four_windows();
+                    i.style = style;
+                    i.number = number;
+                    for (n, tab) in i.tabs.iter_mut().enumerate() {
+                        tab.notice = (n == notice_on).then_some(Class::Approval);
+                    }
+                    let fitting = Fitting::new(&i);
+                    let compact_all: usize = session_label(&i).len()
+                        + 1
+                        + (0..i.tabs.len()).map(|t| fitting.compact(t)).sum::<usize>();
+                    for width in 8..=120u16 {
+                        let ctx =
+                            format!("width {width} {style:?} {number:?} notice on {notice_on}");
+                        let (cells, _, spans) = build_with_tabs(width, &i);
+                        assert_eq!(cells.len(), usize::from(width), "{ctx}");
+                        let tabs: Vec<&TabSpan> = spans.iter().filter(|s| !s.marker).collect();
+                        let markers: Vec<&TabSpan> = spans.iter().filter(|s| s.marker).collect();
+                        // The current tab always shows.
+                        assert!(tabs.iter().any(|s| s.index == 2), "{ctx}: {}", text(&cells));
+                        let first = tabs.first().unwrap().index;
+                        let last = tabs.last().unwrap().index;
+                        // Hidden before the first shown one: a marker at the left of it.
+                        if first > 0 {
+                            let m = markers
+                                .iter()
+                                .find(|m| m.to <= tabs[0].from)
+                                .unwrap_or_else(|| {
+                                    panic!("{ctx}: no left marker: {}", text(&cells))
+                                });
+                            assert_eq!(m.index, first - 1, "{ctx}");
+                            assert!(
+                                shown_text(&cells, m)
+                                    .starts_with(theme::symbol(Symbol::HiddenBefore)),
+                                "{ctx}"
+                            );
+                        }
+                        if last + 1 < i.tabs.len() {
+                            let m = markers
+                                .iter()
+                                .find(|m| m.from >= tabs.last().unwrap().to)
+                                .unwrap_or_else(|| {
+                                    panic!("{ctx}: no right marker: {}", text(&cells))
+                                });
+                            assert_eq!(m.index, last + 1, "{ctx}");
+                            assert!(
+                                shown_text(&cells, m)
+                                    .starts_with(theme::symbol(Symbol::HiddenAfter)),
+                                "{ctx}"
+                            );
+                        }
+                        // A hidden notification shows on the marker of its side.
+                        if notice_on < first || notice_on > last {
+                            let side = markers
+                                .iter()
+                                .find(|m| (notice_on < first) == (m.to <= tabs[0].from))
+                                .unwrap();
+                            assert!(
+                                shown_text(&cells, side)
+                                    .contains(theme::notice_symbol(Class::Approval)),
+                                "{ctx}: {}",
+                                text(&cells)
+                            );
+                        }
+                        // Tabs are hidden only when the names cut as short as they go do not fit.
+                        if first > 0 || last + 1 < i.tabs.len() {
+                            assert!(compact_all > usize::from(width), "{ctx}: {}", text(&cells));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Writes the bar as the host terminal receives it, in both styles, to the folder named by
     /// `ARCADE_SAMPLE_DIR` (nothing happens when it is not set), so it can be looked at with `cat`.
     #[test]
@@ -804,6 +1297,22 @@ mod tests {
                 crate::render::push_row(&mut bytes, 0, &cells, &[]);
                 bytes.extend_from_slice(b"\x1b[0m\n");
                 std::fs::write(format!("{dir}/bar-{name}-{place}.bin"), bytes).unwrap();
+            }
+            // The four windows of the narrow-bar case at three widths, as the host receives them
+            // (`.bin`, with the colours) and as plain text (`.txt`).
+            for width in [150u16, 80, 50] {
+                let mut i = four_windows();
+                i.style = style;
+                let (cells, _) = build(width, &i);
+                let mut bytes = Vec::new();
+                crate::render::push_row(&mut bytes, 0, &cells, &[]);
+                bytes.extend_from_slice(b"\x1b[0m\n");
+                std::fs::write(format!("{dir}/four-windows-{name}-{width}.bin"), bytes).unwrap();
+                std::fs::write(
+                    format!("{dir}/four-windows-{name}-{width}.txt"),
+                    format!("{}\n", text(&cells)),
+                )
+                .unwrap();
             }
         }
     }

@@ -170,3 +170,19 @@ fn the_tabs_are_where_they_are_drawn_with_the_number_on_the_right_or_not_shown()
         assert!(shows(&mut client, "B"), "{position:?} {bar:?}");
     }
 }
+
+/// On a bar too narrow for its tabs, a marker stands for the hidden ones; a click on it shows the
+/// nearest hidden window on its side.
+#[test]
+fn a_click_on_the_marker_of_hidden_tabs_shows_the_nearest_hidden_window() {
+    let daemon = TestDaemon::start_with(|c| c.config.status_position = StatusPosition::Top);
+    // Three windows are the current one and two to its left only after the last is chosen; at
+    // 24 columns the tabs cannot all show.
+    let mut client = three_windows(&daemon, 24);
+    let (y, bar) = bar_row(&client, true);
+    assert!(bar.contains('‹'), "{bar:?}");
+    assert!(!bar.contains("A  1"), "window A should be hidden: {bar:?}");
+    // The marker at the left selects window B, the nearest one that is hidden.
+    click(&mut client, column_of(&bar, "‹"), y);
+    assert!(shows(&mut client, "B"), "{}", client.screen_text());
+}
