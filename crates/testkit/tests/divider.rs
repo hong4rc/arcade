@@ -274,19 +274,19 @@ fn the_programs_are_told_new_sizes_at_the_frame_rate_not_once_per_mouse_event() 
     let dir = std::env::temp_dir().join(format!("arc-div-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let log = dir.join("winch");
-    // The right pane's shell logs one line for each window size change it is told about.
+    // The right pane's shell looks at its own size every 10 ms and logs each new size it sees.
     client.type_line(&format!(
-        "trap 'echo w >> {}' WINCH; echo trap''ped",
+        "(prev=; while :; do s=$(stty size); [ \"$s\" != \"$prev\" ] && echo \"$s\" >> {}; prev=$s; sleep 0.01; done) & echo loop''ed",
         log.display()
     ));
     assert!(client.wait_until(WAIT, |c| {
-        c.screen_rows().iter().any(|r| r.ends_with("trapped"))
+        c.screen_rows().iter().any(|r| r.ends_with("looped"))
     }));
     let frames_before = client.output_messages;
     press(&mut client, 50, 5);
-    // 40 moves, 5 ms apart: 200 ms, about 12 frames at 60 per second.
+    // 40 moves of one cell, 5 ms apart: 200 ms, about 12 frames at 60 per second.
     for i in 0..40u16 {
-        motion(&mut client, 50 - i / 2, 5);
+        motion(&mut client, 49 - i, 5);
         std::thread::sleep(Duration::from_millis(5));
     }
     release(&mut client, 30, 5);
@@ -297,10 +297,14 @@ fn the_programs_are_told_new_sizes_at_the_frame_rate_not_once_per_mouse_event() 
     );
     settle(&mut client);
     let frames = client.output_messages - frames_before;
-    assert!(frames <= 20, "{frames} screen updates for 40 mouse moves");
+    assert!(frames <= 14, "{frames} screen updates for 40 mouse moves");
     let winches = std::fs::read_to_string(&log).map_or(0, |t| t.lines().count());
-    assert!(winches >= 1, "the program was never told");
-    assert!(winches <= 20, "told {winches} times for 40 mouse moves");
+    // The first line is the size it had before the drag.
+    assert!(winches >= 3, "the program saw too few sizes: {winches}");
+    assert!(
+        winches <= 14,
+        "the program saw {winches} sizes for 40 mouse moves"
+    );
     let _ = std::fs::remove_dir_all(&dir);
     let _ = PREFIX;
 }
