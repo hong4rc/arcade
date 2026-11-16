@@ -29,6 +29,11 @@ impl Clipboard {
         self.buffer.as_deref()
     }
 
+    /// Put back what the last copy held.
+    pub fn restore(&mut self, text: Option<String>) {
+        self.buffer = text;
+    }
+
     /// Keep `text` and send it the way the settings say.
     pub fn copy(&mut self, text: &str, config: &ClipboardConfig) -> Sent {
         self.buffer = Some(text.to_string());

@@ -36,6 +36,26 @@ fn env_value<'a>(env: &'a [String], name: &str) -> Option<&'a str> {
     })
 }
 
+/// Whether a program started by exec keeps this descriptor open.
+pub fn set_inheritable(fd: i32, inheritable: bool) -> io::Result<()> {
+    // SAFETY: fcntl on a descriptor with plain integer arguments.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let wanted = if inheritable {
+            flags & !libc::FD_CLOEXEC
+        } else {
+            flags | libc::FD_CLOEXEC
+        };
+        if libc::fcntl(fd, libc::F_SETFD, wanted) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 fn set_cloexec(fd: i32) -> io::Result<()> {
     // SAFETY: fcntl on a descriptor we own, with plain integer arguments.
     unsafe {

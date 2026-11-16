@@ -24,6 +24,9 @@ commands:
                                   (inside a pane: switch this screen to it)
   ls                              list sessions
   kill-session [-t <session>]     close a session
+  upgrade [--force] [<program>]   make the running daemon continue as a newer arcade
+                                  (default: the arcade found on PATH) without ending any
+                                  session; attached screens reattach by themselves
   kill-server                     stop the daemon and every session
   run <command> [<argument>...]   run a command, for scripts (for example session.detach)
   config check [--host kitty|legacy] [<file>]
@@ -85,7 +88,9 @@ fn run(mut args: Vec<String>) -> u8 {
     };
     let rest = &args[1..];
     match command.as_str() {
-        "__daemon" => daemon_command(&options),
+        "__daemon" => daemon_command(&options, rest),
+        "__rehearse" => rehearse_command(&options, rest),
+        "upgrade" => upgrade_command(&options, rest),
         "new" => {
             let mut name = None;
             let mut detached = false;
@@ -245,17 +250,144 @@ fn config_check(file: Option<PathBuf>, host: Option<arcade_daemon::keytools::Hos
     }
 }
 
-fn daemon_command(options: &Options) -> u8 {
+fn daemon_command(options: &Options, rest: &[String]) -> u8 {
     let mut config = arcade_daemon::DaemonConfig::new(&options.socket);
     config.log_path = Some(options.socket.with_extension("log"));
     config.config_path = default_config_path();
-    match arcade_daemon::run(config) {
+    // Started by a daemon that replaces its program (or goes back to the one it replaced): the
+    // snapshot to build the sessions from comes with it.
+    let mut resume = None;
+    let mut index = 0;
+    while index < rest.len() {
+        match (rest[index].as_str(), rest.get(index + 1)) {
+            ("--resume", Some(fd)) => {
+                let Ok(fd) = fd.parse::<i32>() else {
+                    return usage_error("--resume needs a descriptor number");
+                };
+                resume = Some(arcade_daemon::Resume {
+                    fd,
+                    rollback: None,
+                    rolled_back: None,
+                });
+            }
+            ("--rollback", Some(path)) => {
+                if let Some(r) = resume.as_mut() {
+                    r.rollback = Some(PathBuf::from(path));
+                }
+            }
+            ("--rolled-back", Some(why)) => {
+                if let Some(r) = resume.as_mut() {
+                    r.rolled_back = Some(why.clone());
+                }
+            }
+            _ => return usage_error("bad arguments for the daemon"),
+        }
+        index += 2;
+    }
+    let result = match resume {
+        Some(resume) => arcade_daemon::resume(config, resume),
+        None => arcade_daemon::run(config),
+    };
+    match result {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("arcade: daemon: {e}");
             1
         }
     }
+}
+
+/// Part of an upgrade: read the snapshot on this descriptor, build every session from it
+/// without touching anything real, and print whether that worked.
+fn rehearse_command(options: &Options, rest: &[String]) -> u8 {
+    let Some(fd) = rest.first().and_then(|a| a.parse::<i32>().ok()) else {
+        return usage_error("__rehearse needs a descriptor number");
+    };
+    let config = arcade_daemon::DaemonConfig::new(&options.socket);
+    println!("{}", arcade_daemon::rehearse(&config, fd));
+    0
+}
+
+/// Ask the running daemon to continue as another program, which keeps its sessions.
+fn upgrade_command(options: &Options, rest: &[String]) -> u8 {
+    let mut force = false;
+    let mut program = None;
+    for arg in rest {
+        match arg.as_str() {
+            "--force" => force = true,
+            a if a.starts_with("--") => return usage_error("upgrade: unknown option"),
+            a if program.is_none() => program = Some(PathBuf::from(a)),
+            _ => return usage_error("upgrade takes one program"),
+        }
+    }
+    let program = match program {
+        Some(p) => p,
+        None => match find_on_path("arcade") {
+            Some(p) => p,
+            None => {
+                eprintln!(
+                    "arcade: no `arcade` on PATH to upgrade to; give the program: `arcade upgrade <program>`"
+                );
+                return 1;
+            }
+        },
+    };
+    let program = match program.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("arcade: {}: {e}", program.display());
+            return 1;
+        }
+    };
+    let version = std::process::Command::new(&program)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map_or_else(|| "(unknown)".to_string(), |v| v.trim().to_string());
+    println!("upgrading to {version} ({})", program.display());
+    let mut args = vec![program.display().to_string()];
+    if force {
+        args.push("--force".to_string());
+    }
+    let mut connection = match open_connection(options, false) {
+        Ok(Handshake::Ok(connection)) => connection,
+        Ok(Handshake::Mismatch { daemon, client, .. }) => {
+            eprintln!("{}", mismatch_message(daemon, client));
+            return 1;
+        }
+        Err(code) => return code,
+    };
+    match command_result(&mut connection, "server.upgrade", &args, None) {
+        Ok((true, output)) => {
+            println!("{}", output.trim_end());
+            0
+        }
+        Ok((false, output)) if output.starts_with("unknown command") => {
+            eprintln!(
+                "arcade: the running daemon is older than this feature and cannot replace its program. \
+                 `arcade kill-server` ends it (and every session it holds); the next arcade starts the new one."
+            );
+            1
+        }
+        Ok((false, output)) => {
+            eprintln!("arcade: {}", output.trim_end());
+            1
+        }
+        Err(e) => {
+            eprintln!(
+                "arcade: the daemon closed the connection without an answer ({e}); `arcade ls` shows whether the sessions are still there"
+            );
+            1
+        }
+    }
+}
+
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Connect, starting the daemon first when asked to and none is running.
@@ -333,7 +465,7 @@ fn attach_command(
         cols: 0,
         rows: 0,
     };
-    client::attach(connection, request) as u8
+    client::attach(connection, request, &options.socket) as u8
 }
 
 /// Running in a pane of the very daemon this command talks to: attaching here would draw an

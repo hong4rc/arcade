@@ -138,6 +138,23 @@ pub enum Arrangement {
 const MAIN_PANE_SHARE: f64 = 0.6;
 
 impl Arrangement {
+    pub fn to_number(self) -> u8 {
+        match self {
+            Arrangement::EvenHorizontal => 0,
+            Arrangement::EvenVertical => 1,
+            Arrangement::MainPane => 2,
+        }
+    }
+
+    pub fn from_number(n: u8) -> Option<Arrangement> {
+        match n {
+            0 => Some(Arrangement::EvenHorizontal),
+            1 => Some(Arrangement::EvenVertical),
+            2 => Some(Arrangement::MainPane),
+            _ => None,
+        }
+    }
+
     /// The layout after the one applied last (the first when none was).
     pub fn after(last: Option<Arrangement>) -> Arrangement {
         match last {
@@ -490,6 +507,68 @@ fn resize_node(
     Moved::Done
 }
 
+/// A layout written out as plain data, to be saved and read back.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Shape {
+    Leaf(PaneId),
+    Split {
+        /// Panes side by side (`true`) or one above the other.
+        side_by_side: bool,
+        ratio: f64,
+        first: Box<Shape>,
+        second: Box<Shape>,
+    },
+}
+
+impl Shape {
+    /// The panes, first to last.
+    pub fn leaves(&self) -> Vec<PaneId> {
+        match self {
+            Shape::Leaf(pane) => vec![*pane],
+            Shape::Split { first, second, .. } => {
+                let mut all = first.leaves();
+                all.extend(second.leaves());
+                all
+            }
+        }
+    }
+}
+
+impl Node {
+    fn shape(&self) -> Shape {
+        match self {
+            Node::Leaf(pane) => Shape::Leaf(*pane),
+            Node::Split(split) => Shape::Split {
+                side_by_side: split.axis == Axis::LeftRight,
+                ratio: split.ratio,
+                first: Box::new(split.a.shape()),
+                second: Box::new(split.b.shape()),
+            },
+        }
+    }
+
+    fn from_shape(shape: &Shape) -> Node {
+        match shape {
+            Shape::Leaf(pane) => Node::Leaf(*pane),
+            Shape::Split {
+                side_by_side,
+                ratio,
+                first,
+                second,
+            } => Node::Split(Box::new(Split {
+                axis: if *side_by_side {
+                    Axis::LeftRight
+                } else {
+                    Axis::TopBottom
+                },
+                ratio: *ratio,
+                a: Node::from_shape(first),
+                b: Node::from_shape(second),
+            })),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Layout {
     root: Node,
@@ -502,6 +581,20 @@ impl Layout {
     pub fn new(pane: PaneId, cols: u16, rows: u16) -> Layout {
         Layout {
             root: Node::Leaf(pane),
+            cols,
+            rows,
+        }
+    }
+
+    /// The tree of splits as plain data.
+    pub fn shape(&self) -> Shape {
+        self.root.shape()
+    }
+
+    /// A layout read back from [`Layout::shape`], for a window of this size.
+    pub fn from_shape(shape: &Shape, cols: u16, rows: u16) -> Layout {
+        Layout {
+            root: Node::from_shape(shape),
             cols,
             rows,
         }

@@ -145,6 +145,11 @@ pub enum DetachReason {
     Replaced,
     /// The daemon is stopping.
     ServerStopping,
+    /// The daemon replaced its own program and keeps its sessions. The message of the
+    /// [`ServerMessage::Detached`] is the path of the new program, a NUL byte, and the name of
+    /// the session the client was attached to: the client runs the new program's `attach` for
+    /// that session in the same terminal.
+    Upgraded,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -408,6 +413,7 @@ impl Message for ServerMessage {
                     DetachReason::Requested => 0,
                     DetachReason::Replaced => 1,
                     DetachReason::ServerStopping => 2,
+                    DetachReason::Upgraded => 3,
                 });
                 w.str(message);
                 5
@@ -445,6 +451,7 @@ impl Message for ServerMessage {
                     0 => DetachReason::Requested,
                     1 => DetachReason::Replaced,
                     2 => DetachReason::ServerStopping,
+                    3 => DetachReason::Upgraded,
                     _ => return Err(ProtoError::InvalidValue),
                 },
                 message: r.str()?,

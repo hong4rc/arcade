@@ -105,7 +105,8 @@ pub fn mismatch_message(daemon: u32, client: u32) -> String {
         "arcade: version mismatch: this client speaks protocol version {client}, \
          the running daemon speaks {daemon}.\n\
          The daemon was started by another version of arcade. To use this version, stop the old \
-         daemon with `arcade kill-server` (this ends every session it holds), then run arcade again."
+         daemon with `arcade kill-server` (this ends every session it holds), then run arcade again. \
+         (`arcade upgrade` keeps the sessions, but only between versions with the same protocol.)"
     )
 }
 

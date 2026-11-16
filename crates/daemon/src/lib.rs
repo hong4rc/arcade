@@ -43,6 +43,7 @@ mod power;
 pub mod pty;
 mod render;
 mod server;
+mod snapshot;
 #[cfg(feature = "stage-timing")]
 pub mod stage;
 mod status;
@@ -55,4 +56,4 @@ pub use paths::{
     check_socket_path_length, default_socket_path, default_socket_path_from, prepare_socket_dir,
     resolve_socket_path,
 };
-pub use server::{DaemonConfig, run};
+pub use server::{DaemonConfig, Resume, rehearse, resume, run};

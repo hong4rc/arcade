@@ -90,6 +90,23 @@ pub fn start(on_exit: impl FnOnce(u32, String) + Send + 'static) -> Result<Sleep
     Ok(SleepGuard { pid })
 }
 
+/// Take over the process that a daemon this one replaced had started: it holds the machine
+/// awake for as long as the daemon's process number lives, and that number did not change.
+/// `on_exit` is called as for [`start`].
+pub fn adopt(pid: u32, on_exit: impl FnOnce(u32, String) + Send + 'static) -> SleepGuard {
+    std::thread::spawn(move || {
+        let how = match i32::try_from(pid) {
+            Ok(p) => match crate::pty::wait_ended(p) {
+                Ok(()) => crate::pty::reap(p).map_or_else(|| "lost".to_string(), |s| s.to_string()),
+                Err(e) => format!("lost: {e}"),
+            },
+            Err(_) => "lost".to_string(),
+        };
+        on_exit(pid, how);
+    });
+    SleepGuard { pid }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

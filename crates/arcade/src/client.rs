@@ -21,10 +21,17 @@ pub enum Outcome {
     Lost(String),
     /// The daemon refused the request.
     Refused(String),
+    /// The daemon replaced its program and keeps the session: run this program's `attach` for
+    /// that session in this terminal.
+    Upgrade { program: String, session: String },
 }
 
 /// Ask the daemon to attach, then run until we are detached. Returns the exit code.
-pub fn attach(mut connection: Connection, mut request: AttachRequest) -> i32 {
+pub fn attach(
+    mut connection: Connection,
+    mut request: AttachRequest,
+    socket: &std::path::Path,
+) -> i32 {
     let stdin_fd = 0;
     let stdout_fd = 1;
     let (cols, rows) = window_size(stdout_fd);
@@ -93,6 +100,31 @@ pub fn attach(mut connection: Connection, mut request: AttachRequest) -> i32 {
             eprintln!("arcade: {line}");
             1
         }
+        Outcome::Upgrade { program, session } => reattach_with(&program, &session, socket),
+    }
+}
+
+/// Become the new program's `attach` for the session, in this terminal. A program that cannot be
+/// started yet (an install may be finishing) is tried again for a few seconds.
+fn reattach_with(program: &str, session: &str, socket: &std::path::Path) -> i32 {
+    use std::os::unix::process::CommandExt;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let error = std::process::Command::new(program)
+            .arg("--socket")
+            .arg(socket)
+            .arg("attach")
+            .arg("-t")
+            .arg(session)
+            .exec();
+        if std::time::Instant::now() >= deadline {
+            eprintln!(
+                "arcade: the daemon now runs a newer arcade and keeps your session, but this screen could not start it ({error}); type: {program} --socket {} attach -t {session}",
+                socket.display()
+            );
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 }
 
@@ -260,6 +292,18 @@ fn handle_messages(connection: &mut Connection, stdout_fd: i32) -> Option<Outcom
                     return Some(Outcome::Left("[detached: terminal closed]".to_string()));
                 }
                 stage_mark!(ClientStdoutWritten);
+            }
+            Ok(Some(ServerMessage::Detached {
+                reason: arcade_proto::DetachReason::Upgraded,
+                message,
+            })) => {
+                return Some(match message.split_once('\0') {
+                    Some((program, session)) => Outcome::Upgrade {
+                        program: program.to_string(),
+                        session: session.to_string(),
+                    },
+                    None => Outcome::Left(format!("[{message}]")),
+                });
             }
             Ok(Some(ServerMessage::Detached { message, .. })) => {
                 return Some(Outcome::Left(format!("[{message}]")));

@@ -47,6 +47,9 @@ mod keys;
 mod mouse;
 mod notices;
 mod treeview;
+mod upgrade;
+
+pub use upgrade::{Resume, rehearse, resume};
 
 const LISTENER: Token = Token(0);
 const WAKER: Token = Token(1);
@@ -412,6 +415,58 @@ fn summarize_config_errors(errors: &[String]) -> String {
 }
 
 impl Session {
+    /// A session with no client, whose screen is to be drawn in full.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        id: u64,
+        name: String,
+        env: Vec<String>,
+        cwd: String,
+        windows: Vec<Window>,
+        current: u64,
+        (cols, rows): (u16, u16),
+        last_used: u64,
+    ) -> Session {
+        Session {
+            id,
+            name,
+            env,
+            cwd,
+            windows,
+            current,
+            last_window: None,
+            cols,
+            rows,
+            client: None,
+            last_used,
+            need_full: true,
+            relayout: true,
+            chrome_dirty: true,
+            screen: Screen::new(),
+            renderer: Renderer::new(),
+            last_frame: None,
+            names_checked: None,
+            sent_title: None,
+            sent_progress: None,
+            tab_bar: Vec::new(),
+            names_due: None,
+            keys: KeyReader::new(),
+            key_state: KeyState::new(),
+            picker: None,
+            drag: None,
+            divider_drag: None,
+            sizes_stale: None,
+            tree: None,
+            host_focused: true,
+            last_bell: None,
+            bell_due: None,
+            jump_candidate: None,
+            return_to: None,
+            host_keyboard: None,
+            host_probe: None,
+        }
+    }
+
     fn window(&self, id: u64) -> Option<&Window> {
         self.windows.iter().find(|w| w.id == id)
     }
@@ -483,6 +538,9 @@ struct Server {
     exits_tx: Sender<(u64, String)>,
     /// The process of each pane whose end is being waited for, until its status is taken.
     watched: HashMap<u64, i32>,
+    /// This program's own file, held open since the start (see `upgrade`), and where it is.
+    program_file: Option<File>,
+    program_path: Option<PathBuf>,
     waker: Arc<Waker>,
     /// Panes whose process ended, waiting to be drained and closed.
     exited: Vec<u64>,
@@ -519,11 +577,17 @@ const SLEEP_GUARD_EXIT: u64 = u64::MAX;
 pub fn run(config: DaemonConfig) -> io::Result<()> {
     prepare_socket_dir(&config.socket_path)?;
     claim_socket_path(&config.socket_path)?;
-    let mut listener = UnixListener::bind(&config.socket_path)?;
+    let listener = UnixListener::bind(&config.socket_path)?;
     std::fs::set_permissions(
         &config.socket_path,
         std::os::unix::fs::PermissionsExt::from_mode(0o600),
     )?;
+    let server = new_server(&config, listener)?;
+    serve(server, &config, "daemon started")
+}
+
+/// A server with no sessions that listens on `listener`.
+fn new_server(config: &DaemonConfig, mut listener: UnixListener) -> io::Result<Server> {
     let poll = Poll::new()?;
     poll.registry()
         .register(&mut listener, LISTENER, Interest::READABLE)?;
@@ -543,6 +607,7 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         None => config.config.clone(),
     };
     let scrollback_lines = settings.scrollback_lines.unwrap_or(config.scrollback_lines);
+    let program_path = std::env::current_exe().ok();
     let mut server = Server {
         poll,
         listener,
@@ -575,6 +640,10 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
         startup_message,
         clipboard: Clipboard::default(),
         sleep_guard: None,
+        // Held open from the start: an install may replace or remove the file later, and the
+        // copy that an upgrade keeps for going back is made from this descriptor.
+        program_file: program_path.as_deref().and_then(|p| File::open(p).ok()),
+        program_path,
         log: config
             .log_path
             .as_deref()
@@ -585,9 +654,15 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
     for e in &startup_log {
         server.log.line(&format!("configuration: {e}"));
     }
+    Ok(server)
+}
+
+/// Run a server until it is done, then clean up.
+fn serve(mut server: Server, config: &DaemonConfig, started: &str) -> io::Result<()> {
     server.log.line(&format!(
-        "daemon started, process {}, protocol {}",
+        "{started}, process {}, version {}, protocol {}",
         std::process::id(),
+        env!("CARGO_PKG_VERSION"),
         arcade_proto::PROTOCOL_VERSION
     ));
     server.sync_sleep_guard();
@@ -599,6 +674,8 @@ pub fn run(config: DaemonConfig) -> io::Result<()> {
     server.shutdown_cleanup();
     #[cfg(feature = "stage-timing")]
     crate::stage::dump(&config.socket_path.with_extension("stages-daemon"));
+    #[cfg(not(feature = "stage-timing"))]
+    let _ = config;
     result
 }
 
@@ -1089,6 +1166,15 @@ impl Server {
     }
 
     fn command_from_client(&mut self, id: u64, name: &str, args: &[String], pane: Option<u64>) {
+        if name == "server.upgrade" {
+            // Does not come back when it works: the program is replaced.
+            let (ok, output) = self.upgrade(id, args);
+            self.send(id, &ServerMessage::CommandResult { ok, output });
+            if let Some(c) = self.clients.get_mut(&id) {
+                c.close_after_flush = true;
+            }
+            return;
+        }
         let (ok, output) = self.run_command(name, args, pane);
         self.send(id, &ServerMessage::CommandResult { ok, output });
         if let Some(c) = self.clients.get_mut(&id)
@@ -1408,12 +1494,12 @@ impl Server {
         );
         self.sessions.insert(
             session_id,
-            Session {
-                id: session_id,
+            Session::new(
+                session_id,
                 name,
-                env: request.env.clone(),
-                cwd: request.cwd.clone(),
-                windows: vec![Window {
+                request.env.clone(),
+                request.cwd.clone(),
+                vec![Window {
                     id: window_id,
                     name: first_name,
                     number: self.config.base_index,
@@ -1426,38 +1512,10 @@ impl Server {
                     zoomed: false,
                     arrangement: None,
                 }],
-                current: window_id,
-                last_window: None,
-                cols,
-                rows,
-                client: None,
-                last_used: self.use_counter,
-                need_full: true,
-                relayout: true,
-                chrome_dirty: true,
-                screen: Screen::new(),
-                renderer: Renderer::new(),
-                last_frame: None,
-                names_checked: None,
-                sent_title: None,
-                sent_progress: None,
-                tab_bar: Vec::new(),
-                names_due: None,
-                keys: KeyReader::new(),
-                key_state: KeyState::new(),
-                picker: None,
-                drag: None,
-                divider_drag: None,
-                sizes_stale: None,
-                tree: None,
-                host_focused: true,
-                last_bell: None,
-                bell_due: None,
-                jump_candidate: None,
-                return_to: None,
-                host_keyboard: None,
-                host_probe: None,
-            },
+                window_id,
+                (cols, rows),
+                self.use_counter,
+            ),
         );
         Ok(session_id)
     }

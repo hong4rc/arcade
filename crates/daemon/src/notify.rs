@@ -16,6 +16,25 @@ pub enum Class {
 }
 
 impl Class {
+    pub fn to_number(self) -> u8 {
+        match self {
+            Class::Info => 0,
+            Class::Error => 1,
+            Class::Input => 2,
+            Class::Approval => 3,
+        }
+    }
+
+    pub fn from_number(n: u8) -> Option<Class> {
+        match n {
+            0 => Some(Class::Info),
+            1 => Some(Class::Error),
+            2 => Some(Class::Input),
+            3 => Some(Class::Approval),
+            _ => None,
+        }
+    }
+
     /// Every class, the most urgent first.
     pub const BY_URGENCY: [Class; 4] = [Class::Approval, Class::Input, Class::Error, Class::Info];
 
@@ -170,6 +189,18 @@ pub struct Store {
 impl Store {
     pub fn get(&self, pane: u64) -> Option<&Notification> {
         self.standing.get(&pane)
+    }
+
+    /// Every standing notification with its pane, for saving.
+    pub fn standing(&self) -> Vec<(u64, &Notification)> {
+        let mut all: Vec<_> = self.standing.iter().map(|(p, n)| (*p, n)).collect();
+        all.sort_by_key(|(p, _)| *p);
+        all
+    }
+
+    /// Put a notification back as it stood (the rates and held signals start afresh).
+    pub fn restore(&mut self, pane: u64, notification: Notification) {
+        self.standing.insert(pane, notification);
     }
 
     pub fn is_empty(&self) -> bool {
