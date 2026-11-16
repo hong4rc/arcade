@@ -19,7 +19,7 @@ a tap outside the official ones until you trust the tap.
 
 After an upgrade, run `arcade upgrade`: the background process continues as the new version and
 keeps your sessions and the programs in them. A daemon from before that command existed still needs
-`arcade kill-server` once, which ends its sessions.
+`arcade upgrade --restart` once, which restarts it keeping the session names, window counts and directories (the programs in the panes end).
 
 ## First run
 

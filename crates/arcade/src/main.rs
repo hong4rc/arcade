@@ -5,6 +5,7 @@ mod connection;
 mod host;
 mod keytool;
 mod notify;
+mod restart;
 mod wait;
 
 use std::path::PathBuf;
@@ -24,7 +25,8 @@ commands:
                                   (inside a pane: switch this screen to it)
   ls                              list sessions
   kill-session [-t <session>]     close a session
-  upgrade [--force] [<program>]   make the running daemon continue as a newer arcade
+  upgrade [--force] [--restart] [<program>]
+                                  make the running daemon continue as a newer arcade
                                   (default: the arcade found on PATH) without ending any
                                   session; attached screens reattach by themselves
   kill-server                     stop the daemon and every session
@@ -311,10 +313,12 @@ fn rehearse_command(options: &Options, rest: &[String]) -> u8 {
 /// Ask the running daemon to continue as another program, which keeps its sessions.
 fn upgrade_command(options: &Options, rest: &[String]) -> u8 {
     let mut force = false;
+    let mut restart = false;
     let mut program = None;
     for arg in rest {
         match arg.as_str() {
             "--force" => force = true,
+            "--restart" => restart = true,
             a if a.starts_with("--") => return usage_error("upgrade: unknown option"),
             a if program.is_none() => program = Some(PathBuf::from(a)),
             _ => return usage_error("upgrade takes one program"),
@@ -361,11 +365,17 @@ fn upgrade_command(options: &Options, rest: &[String]) -> u8 {
             0
         }
         Ok((false, output)) if output.starts_with("unknown command") => {
-            eprintln!(
-                "arcade: the running daemon is older than this feature and cannot replace its program. \
-                 `arcade kill-server` ends it (and every session it holds); the next arcade starts the new one."
-            );
-            1
+            // A daemon from before this command: all that is left is a restart that keeps the
+            // sessions' names, their number of windows and the directories (see `restart`).
+            let list = open_connection(options, false)
+                .ok()
+                .and_then(|h| match h {
+                    Handshake::Ok(mut c) => command_result(&mut c, "session.list", &[], None).ok(),
+                    Handshake::Mismatch { .. } => None,
+                })
+                .map(|(_, text)| text)
+                .unwrap_or_default();
+            restart::offer(&options.socket, &list, restart)
         }
         Ok((false, output)) => {
             eprintln!("arcade: {}", output.trim_end());

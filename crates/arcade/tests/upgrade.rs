@@ -707,3 +707,108 @@ fn an_older_program_never_replaces_a_newer_daemon() {
     type_until_row_starting(&mut host, "echo here-$$", "here-");
     assert!(!env.replaced(), "{}", env.log());
 }
+
+/// A daemon of a release from before `arcade upgrade` cannot hand its sessions over. The restart it
+/// is offered keeps the session's name, its number of windows and the directories of its panes,
+/// and runs against the real released programs (`scripts/fetch-old-releases.sh` puts them under
+/// `.tools/old/`; without them the test says so and passes).
+#[test]
+fn a_daemon_from_before_the_feature_is_restarted_with_its_sessions_made_again() {
+    for version in ["0.1.3", "0.1.4"] {
+        let old = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.tools/old")
+            .join(format!("arcade-{version}"));
+        if !old.exists() {
+            eprintln!(
+                "skipped {version}: run scripts/fetch-old-releases.sh to fetch {}",
+                old.display()
+            );
+            continue;
+        }
+        let env = Env::new();
+        let start = env.dir.join("start-here");
+        std::fs::create_dir_all(&start).unwrap();
+        let mut command = Command::new(&old);
+        command
+            .args(["new", "-d", "-s", "work", "/bin/sh"])
+            .env_clear()
+            .current_dir(&start)
+            .stdin(Stdio::null());
+        for entry in env.env() {
+            let (k, v) = entry.split_once('=').unwrap();
+            command.env(k, v);
+        }
+        assert!(command.output().unwrap().status.success(), "{version}");
+        // A second window, with its shell sent to another directory.
+        let mut client = env.client("work", 100, 30);
+        client
+            .send_message(&arcade_proto::ClientMessage::Command {
+                name: "window.new".to_string(),
+                args: Vec::new(),
+            })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        client.type_line("cd /usr");
+        std::thread::sleep(Duration::from_millis(500));
+        drop(client);
+        // Without a yes (not a terminal, no --restart) nothing changes.
+        let out = env.plain(&["upgrade"]);
+        assert!(!out.status.success(), "{version}: {}", text(&out));
+        assert!(
+            text(&out).contains("2 window(s)"),
+            "{version}: {}",
+            text(&out)
+        );
+        assert!(text(&out).contains("/usr"), "{version}: {}", text(&out));
+        assert!(
+            env.sessions().contains("work: 2 windows"),
+            "{version}: {}",
+            env.sessions()
+        );
+        // With --restart the old daemon ends and the session is made again.
+        let out = env.plain(&["upgrade", "--restart"]);
+        assert!(out.status.success(), "{version}: {}", text(&out));
+        assert!(
+            text(&out).contains("made again with 2 window(s)"),
+            "{version}: {}",
+            text(&out)
+        );
+        assert!(
+            env.sessions().contains("work: 2 windows"),
+            "{version}: {}",
+            env.sessions()
+        );
+        assert!(
+            env.log().contains(env!("CARGO_PKG_VERSION")),
+            "{version}: {}",
+            env.log()
+        );
+        // The shells of the new daemon: one in each directory the old panes had.
+        let daemon = *env.daemon_pids().last().unwrap();
+        let children = Command::new("pgrep")
+            .args(["-P", &daemon.to_string()])
+            .output()
+            .unwrap();
+        let mut pids: Vec<i32> = String::from_utf8_lossy(&children.stdout)
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect();
+        pids.sort_unstable();
+        let dirs: Vec<String> = pids
+            .iter()
+            .map(|pid| {
+                let out = Command::new("lsof")
+                    .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+                    .output()
+                    .unwrap();
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .find_map(|l| l.strip_prefix('n').map(str::to_string))
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(dirs.len(), 2, "{version}: {dirs:?}");
+        assert!(dirs[0].ends_with("start-here"), "{version}: {dirs:?}");
+        assert_eq!(dirs[1], "/usr", "{version}: {dirs:?}");
+    }
+}
