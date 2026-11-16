@@ -67,9 +67,15 @@ fn a_report_in_the_focused_pane_reaches_the_host_and_a_repeat_does_too() {
 fn a_report_in_another_pane_is_held_back_until_that_pane_has_the_focus() {
     let daemon = TestDaemon::start();
     let mut client = start(&daemon);
-    client.type_line(&format!("(sleep 1; {}) &", report(1, 30)));
+    // The job says when it has sent the report (the sum is computed, so that the typed line
+    // itself does not show the word): the pane is then known to have had it, however slow the
+    // machine is, and the check below is not made before the report exists.
+    client.type_line(&format!(
+        "(sleep 1; {}; echo SENT-$((40+2))) &",
+        report(1, 30)
+    ));
     split(&mut client);
-    std::thread::sleep(Duration::from_millis(2000));
+    client.wait_for_text("SENT-42").unwrap();
     client.wait_until(Duration::from_millis(200), |_| false);
     assert!(
         !client.host_progress.contains(&p(1, 30)),
