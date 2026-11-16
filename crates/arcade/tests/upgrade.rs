@@ -60,6 +60,40 @@ impl Env {
         PtyHost::spawn(program, args, self.env(), &self.dir, 80, 24)
     }
 
+    fn host_with(&self, program: &Path, args: &[&str], extra: &[&str]) -> PtyHost {
+        let mut env = self.env();
+        env.extend(extra.iter().map(|e| e.to_string()));
+        PtyHost::spawn(program, args, env, &self.dir, 80, 24)
+    }
+
+    /// Run a command with no terminal and extra environment (a test version, for one).
+    fn plain_env(&self, program: &Path, args: &[&str], extra: &[&str]) -> Output {
+        let mut command = Command::new(program);
+        command.args(args).env_clear().stdin(Stdio::null());
+        for entry in self
+            .env()
+            .iter()
+            .map(String::as_str)
+            .chain(extra.iter().copied())
+        {
+            let (k, v) = entry.split_once('=').unwrap();
+            command.env(k, v);
+        }
+        command.output().expect("run arcade")
+    }
+
+    fn set_config(&self, text: &str) {
+        std::fs::write(
+            self.dir.join(".config/arcade/config.toml"),
+            format!("[power]\nprevent-sleep = false\n{text}"),
+        )
+        .unwrap();
+    }
+
+    fn replaced(&self) -> bool {
+        self.log().contains("daemon replaced its program")
+    }
+
     fn plain_with(&self, program: &Path, args: &[&str]) -> Output {
         let mut command = Command::new(program);
         command.args(args).env_clear().stdin(Stdio::null());
@@ -543,4 +577,133 @@ fn a_client_of_another_protocol_can_ask_for_the_upgrade() {
     client.type_line("echo back-again");
     client.wait_for_text("back-again").unwrap();
     assert!(env.log().contains("daemon replaced its program"));
+}
+
+/// Installing a newer arcade and attaching is all it takes: the attach finds the daemon older than
+/// itself, asks it to continue as this program, and attaches to the same session.
+#[test]
+fn attaching_with_a_newer_program_upgrades_the_daemon_first() {
+    let env = Env::new();
+    let new = env.copy_of_program("arcade-new");
+    // The daemon says it is 0.0.1; the program that attaches says 9.9.9.
+    assert!(
+        env.plain_env(
+            Path::new(ARCADE),
+            &["new", "-d", "-s", "main", "/bin/sh"],
+            &["ARCADE_FAKE_VERSION=0.0.1"]
+        )
+        .status
+        .success()
+    );
+    assert!(!env.replaced());
+    let mut host = env.host_with(
+        &new,
+        &["attach", "-t", "main"],
+        &["ARCADE_FAKE_VERSION=9.9.9"],
+    );
+    host.type_line("echo here-$$");
+    type_until_row_starting(&mut host, "echo here-$$", "here-");
+    assert!(env.replaced(), "{}", env.log());
+    assert!(env.log().contains("upgrade to"), "{}", env.log());
+}
+
+#[test]
+fn with_the_setting_off_the_attach_does_not_upgrade() {
+    let env = Env::new();
+    env.set_config("[upgrade]\nauto = false\n");
+    let new = env.copy_of_program("arcade-new");
+    assert!(
+        env.plain_env(
+            Path::new(ARCADE),
+            &["new", "-d", "-s", "main", "/bin/sh"],
+            &["ARCADE_FAKE_VERSION=0.0.1"]
+        )
+        .status
+        .success()
+    );
+    let mut host = env.host_with(
+        &new,
+        &["attach", "-t", "main"],
+        &["ARCADE_FAKE_VERSION=9.9.9"],
+    );
+    type_until_row_starting(&mut host, "echo here-$$", "here-");
+    assert!(!env.replaced(), "{}", env.log());
+}
+
+#[test]
+fn the_same_version_does_nothing() {
+    let env = Env::new();
+    assert!(
+        env.plain(&["new", "-d", "-s", "main", "/bin/sh"])
+            .status
+            .success()
+    );
+    let mut host = env.host(Path::new(ARCADE), &["attach", "-t", "main"]);
+    type_until_row_starting(&mut host, "echo here-$$", "here-");
+    assert!(!env.replaced());
+    assert!(!env.log().contains("upgrade to"), "{}", env.log());
+}
+
+/// When the daemon cannot take the program over, the attach goes on to the old daemon, and the
+/// same program is not tried again on every attach.
+#[test]
+fn a_failed_rehearsal_attaches_to_the_old_daemon_and_is_not_tried_again() {
+    let env = Env::new();
+    let new = env.copy_of_program("arcade-new");
+    assert!(
+        env.plain_env(
+            Path::new(ARCADE),
+            &["new", "-d", "-s", "main", "/bin/sh"],
+            &["ARCADE_FAKE_VERSION=0.0.1"]
+        )
+        .status
+        .success()
+    );
+    // The rehearsal fails once (the file is used up by it); a second try would work.
+    std::fs::write(env.socket.with_extension("fault"), "rehearsal-error").unwrap();
+    let mut host = env.host_with(
+        &new,
+        &["attach", "-t", "main"],
+        &["ARCADE_FAKE_VERSION=9.9.9"],
+    );
+    type_until_row_starting(&mut host, "echo one-$$", "one-");
+    assert!(!env.replaced(), "{}", env.log());
+    assert!(
+        env.log().contains("upgrade to"),
+        "it was tried: {}",
+        env.log()
+    );
+    host.type_line("arcade run session.detach");
+    assert_eq!(host.wait_exit(WAIT), Some(0));
+    let mut host = env.host_with(
+        &new,
+        &["attach", "-t", "main"],
+        &["ARCADE_FAKE_VERSION=9.9.9"],
+    );
+    type_until_row_starting(&mut host, "echo two-$$", "two-");
+    assert!(!env.replaced(), "tried again: {}", env.log());
+    assert_eq!(env.log().matches("upgrade to").count(), 1, "{}", env.log());
+}
+
+/// An older program never replaces a newer daemon.
+#[test]
+fn an_older_program_never_replaces_a_newer_daemon() {
+    let env = Env::new();
+    let old = env.copy_of_program("arcade-old");
+    assert!(
+        env.plain_env(
+            Path::new(ARCADE),
+            &["new", "-d", "-s", "main", "/bin/sh"],
+            &["ARCADE_FAKE_VERSION=9.9.9"]
+        )
+        .status
+        .success()
+    );
+    let mut host = env.host_with(
+        &old,
+        &["attach", "-t", "main"],
+        &["ARCADE_FAKE_VERSION=0.0.1"],
+    );
+    type_until_row_starting(&mut host, "echo here-$$", "here-");
+    assert!(!env.replaced(), "{}", env.log());
 }

@@ -795,6 +795,11 @@ fn fake_old_daemon(socket: &Path, daemon_version: u32) -> std::thread::JoinHandl
                             )
                             .unwrap();
                         }
+                        // What a real daemon does with any other command in this state:
+                        // it closes the connection.
+                        ClientMessage::Command { name, .. } if name != "server.kill" => {
+                            break 'conn;
+                        }
                         ClientMessage::Command { name, .. } => {
                             commands.push(name);
                             encode(

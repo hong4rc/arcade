@@ -439,6 +439,7 @@ fn attach_command(
         eprintln!("arcade: the keyboard and screen must be a terminal");
         return 1;
     }
+    auto_upgrade(options);
     // Only a command that may create a session starts a daemon that is not running.
     let connection = match open_connection(options, create != CreateMode::Never) {
         Ok(Handshake::Ok(connection)) => connection,
@@ -463,6 +464,122 @@ fn attach_command(
         rows: 0,
     };
     client::attach(connection, request, &options.socket) as u8
+}
+
+/// What identifies a program for remembering that it was tried: where it is, how big and when it
+/// was written. A new install of the same path is a new program.
+fn program_identity(path: &std::path::Path) -> String {
+    let (len, modified) = std::fs::metadata(path).map_or((0, 0), |m| {
+        let secs = m
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_nanos());
+        (m.len(), secs)
+    });
+    format!("{}|{len}|{modified}", path.display())
+}
+
+/// The little file next to the socket that remembers what was tried: one `kind identity` per line.
+fn remembered(options: &Options, kind: &str, identity: &str) -> bool {
+    let text = std::fs::read_to_string(options.socket.with_extension("upgrade-memory"))
+        .unwrap_or_default();
+    text.lines()
+        .any(|l| l.strip_prefix(kind).and_then(|r| r.strip_prefix(' ')) == Some(identity))
+}
+
+fn remember(options: &Options, kind: &str, identity: &str) {
+    let path = options.socket.with_extension("upgrade-memory");
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut lines: Vec<String> = text
+        .lines()
+        .filter(|l| !l.starts_with(&format!("{kind} ")))
+        .map(str::to_string)
+        .collect();
+    lines.push(format!("{kind} {identity}"));
+    let _ = std::fs::write(path, lines.join("\n") + "\n");
+}
+
+fn version_numbers(text: &str) -> Option<Vec<u64>> {
+    text.trim()
+        .split('.')
+        .map(|part| part.parse().ok())
+        .collect()
+}
+
+/// An `arcade` that attaches and finds the daemon older than itself asks the daemon to continue as
+/// this program first, so that installing a new version and attaching again is all it takes. It
+/// never goes the other way (an older program does not replace a newer daemon), says in one line
+/// what it did or why it did not, and does not try a program again that the daemon could not take
+/// over until that program changes.
+fn auto_upgrade(options: &Options) {
+    let Ok(stream) = connect(&options.socket) else {
+        return;
+    };
+    let Ok(Handshake::Ok(mut connection) | Handshake::Mismatch { mut connection, .. }) =
+        handshake(stream)
+    else {
+        return;
+    };
+    let own = arcade_daemon::program_version();
+    let Ok(program) = std::env::current_exe().and_then(|p| p.canonicalize()) else {
+        return;
+    };
+    let identity = program_identity(&program);
+    let daemon = match command_result(&mut connection, "server.version", &[], None) {
+        Ok((true, version)) => version.trim().to_string(),
+        // A daemon from before the command cannot continue as another program.
+        Ok((false, _)) => {
+            if !remembered(options, "hint", &identity) {
+                remember(options, "hint", &identity);
+                eprintln!(
+                    "arcade: the running daemon is older than this arcade and cannot take it over by itself; `arcade upgrade --restart` restarts it (the programs in its panes end)"
+                );
+            }
+            return;
+        }
+        Err(_) => return,
+    };
+    let (Some(d), Some(o)) = (version_numbers(&daemon), version_numbers(&own)) else {
+        return;
+    };
+    if d >= o {
+        return;
+    }
+    let auto = default_config_path()
+        .and_then(|path| arcade_daemon::config::load(&path).ok())
+        .is_none_or(|c| c.upgrade_auto);
+    if !auto {
+        eprintln!(
+            "arcade: the running daemon is {daemon}, this arcade is {own}; `arcade upgrade` moves it over and keeps the sessions"
+        );
+        return;
+    }
+    if remembered(options, "failed", &identity) {
+        return;
+    }
+    let mut connection = match connect(&options.socket)
+        .map_err(|_| ())
+        .and_then(|s| handshake(s).map_err(|_| ()))
+    {
+        Ok(Handshake::Ok(c) | Handshake::Mismatch { connection: c, .. }) => c,
+        Err(()) => return,
+    };
+    let args = vec![program.display().to_string()];
+    match command_result(&mut connection, "server.upgrade", &args, None) {
+        Ok((true, _)) => eprintln!("arcade: upgraded {daemon} to {own}, sessions kept"),
+        Ok((false, why)) => {
+            remember(options, "failed", &identity);
+            eprintln!(
+                "arcade: could not upgrade the running daemon ({}); using the old one",
+                why.trim_end()
+            );
+        }
+        Err(e) => {
+            remember(options, "failed", &identity);
+            eprintln!("arcade: could not upgrade the running daemon ({e}); using the old one");
+        }
+    }
 }
 
 /// Running in a pane of the very daemon this command talks to: attaching here would draw an

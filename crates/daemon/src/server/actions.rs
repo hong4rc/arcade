@@ -193,7 +193,7 @@ impl Server {
     ) -> (bool, String) {
         match name {
             "server.ping" => return (true, "pong".to_string()),
-            "server.version" => return (true, env!("CARGO_PKG_VERSION").to_string()),
+            "server.version" => return (true, crate::program_version()),
             "server.check" => return self.check_consistency(),
             "notify.send" => return self.notify_send(args),
             "notify.clear" => return self.notify_clear(args),

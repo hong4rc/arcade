@@ -236,6 +236,9 @@ pub struct Config {
     pub links: LinksConfig,
     /// Whether the daemon keeps the machine from sleeping because it sat idle.
     pub prevent_sleep: bool,
+    /// Whether an `arcade` that attaches and finds the daemon older than itself asks it to
+    /// continue as that arcade first (`[upgrade] auto`).
+    pub upgrade_auto: bool,
     pub on_session_end: OnSessionEnd,
     pub notification: NotificationConfig,
     /// The file sets `repeat-window-ms` or a binding with `repeat = true`: both are accepted
@@ -260,6 +263,7 @@ impl Default for Config {
             scrollback_lines: None,
             scroll_position: true,
             prevent_sleep: true,
+            upgrade_auto: true,
             on_session_end: OnSessionEnd::Switch,
             notification: NotificationConfig::default(),
             timed_repeat_ignored: false,
@@ -935,6 +939,20 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                     }
                 }
             }
+            "upgrade" => {
+                for (n, v) in table.iter() {
+                    match n.get_ref().as_ref() {
+                        "auto" => {
+                            if let Some(b) = r.boolean("auto", v) {
+                                config.upgrade_auto = b;
+                            }
+                        }
+                        other => {
+                            r.error(n.span().start, unknown_key("upgrade", other, &["auto"]));
+                        }
+                    }
+                }
+            }
             "session" => {
                 for (n, v) in table.iter() {
                     match n.get_ref().as_ref() {
@@ -1063,6 +1081,7 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                         "scrollback",
                         "clipboard",
                         "power",
+                        "upgrade",
                         "session",
                         "notification",
                     ],
@@ -1211,6 +1230,10 @@ position = "top"
 
     #[test]
     fn the_machine_is_kept_awake_unless_the_file_says_not() {
+        assert!(Config::default().upgrade_auto);
+        assert!(parse("[upgrade]\nauto = true\n").unwrap().upgrade_auto);
+        assert!(!parse("[upgrade]\nauto = false\n").unwrap().upgrade_auto);
+        assert!(!lines("[upgrade]\nauto = 3\n").is_empty());
         assert!(Config::default().prevent_sleep);
         assert!(parse("").unwrap().prevent_sleep);
         assert!(parse("[power]\n").unwrap().prevent_sleep);

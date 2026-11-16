@@ -57,3 +57,13 @@ pub use paths::{
     resolve_socket_path,
 };
 pub use server::{DaemonConfig, Resume, rehearse, resume, run};
+
+/// The version of this program. Debug builds let a test say another one with the environment
+/// variable `ARCADE_FAKE_VERSION`, to stand for a newer or older release.
+pub fn program_version() -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("ARCADE_FAKE_VERSION") {
+        return v;
+    }
+    env!("CARGO_PKG_VERSION").to_string()
+}
