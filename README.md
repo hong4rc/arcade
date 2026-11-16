@@ -43,6 +43,11 @@ cargo build --release -p arcade
 ./target/release/arcade --version
 ```
 
+To build and install the binary in one step, run `./scripts/install-local.sh`. It puts `arcade` in
+`~/.local/bin` (set `ARCADE_INSTALL_DIR` to choose another folder) and does not touch a daemon that
+is already running; run `arcade kill-server` when you want the new code. To go back, delete that
+file.
+
 To check your changes: `cargo fmt --all --check`, `cargo lint` and `cargo test --workspace`.
 
 ## License
