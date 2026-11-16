@@ -1536,6 +1536,10 @@ fn find_root() -> PathBuf {
 }
 
 fn ensure_arcade(root: &Path) -> R<PathBuf> {
+    // A given program is measured as it is (to compare releases), nothing is built.
+    if let Some(given) = std::env::var_os("ARCADE_BENCH_EXE") {
+        return Ok(PathBuf::from(given));
+    }
     let status = Command::new("cargo")
         .args(["build", "--release", "-q", "-p", "arcade"])
         .current_dir(root)
@@ -1588,7 +1592,10 @@ fn run() -> R<()> {
 
     let root = find_root();
     let out_dir = root.join("bench-results");
+    let results_dir =
+        std::env::var_os("ARCADE_BENCH_OUT").map_or_else(|| out_dir.clone(), PathBuf::from);
     fs::create_dir_all(&out_dir)?;
+    fs::create_dir_all(&results_dir)?;
     let dir = std::env::temp_dir().join(format!("arcade-bench-{}", std::process::id()));
     fs::DirBuilder::new()
         .recursive(true)
@@ -1607,7 +1614,7 @@ fn run() -> R<()> {
         arcade_exe,
         dir,
         data_dir: out_dir.join("workloads"),
-        out_dir,
+        out_dir: results_dir,
     };
 
     let mut result = serde_json::Map::new();
