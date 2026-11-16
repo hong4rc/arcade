@@ -500,7 +500,15 @@ fn an_echoed_key_is_drawn_without_waiting_for_the_frame_interval() {
     let median = waits[waits.len() / 2];
     let p99 = waits[waits.len() - 2];
     eprintln!("echo drawn after: median {median:?}, p99 {p99:?}");
-    assert!(median < Duration::from_millis(3), "median {median:?}");
+    // A key whose echo waited for the frame interval (16.7 ms) would be drawn after about half of
+    // it or more at the median; a quarter of it is well under that and has room for a slow
+    // machine.
+    let frame = Duration::from_micros(16_667);
+    assert!(
+        median < frame / 4,
+        "median {median:?}, limit {:?}",
+        frame / 4
+    );
     assert!(p99 < Duration::from_millis(15), "p99 {p99:?}");
 }
 
