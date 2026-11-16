@@ -95,10 +95,14 @@ pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
             Role::Tab
         };
         let style = theme::style(role);
-        cells.extend(text_cells(
-            &format!(" {} {}{zoom}", tab.number, tab.name),
-            style,
-        ));
+        let number_style = theme::style(if tab.current {
+            Role::TabNumberCurrent
+        } else {
+            Role::TabNumber
+        });
+        cells.extend(text_cells(" ", style));
+        cells.extend(text_cells(&tab.number.to_string(), number_style));
+        cells.extend(text_cells(&format!(" {}{zoom}", tab.name), style));
         if let Some(class) = tab.notice {
             cells.extend(text_cells(" ", style));
             cells.extend(text_cells(
@@ -220,9 +224,16 @@ mod tests {
         assert!(line.contains(" 1 sh "), "{line}");
         assert!(line.contains(" 2 vim [Z] "), "{line}");
         let at = |needle: &str| cells[line.find(needle).unwrap()].style;
-        assert_eq!(at("2 vim"), theme::style(Role::TabCurrent));
-        assert_eq!(at("1 sh"), theme::style(Role::Tab));
-        assert_ne!(at("2 vim"), at("1 sh"));
+        assert_eq!(at("vim"), theme::style(Role::TabCurrent));
+        assert_eq!(at("sh"), theme::style(Role::Tab));
+        assert_ne!(at("vim"), at("sh"));
+        // The number of a tab is drawn apart from its name, on the same background.
+        assert_eq!(at("2 vim"), theme::style(Role::TabNumberCurrent));
+        assert_eq!(at("1 sh"), theme::style(Role::TabNumber));
+        for (number, name) in [("2 vim", "vim"), ("1 sh", "sh")] {
+            assert_ne!(at(number).fg, at(name).fg, "{number}");
+            assert_eq!(at(number).bg, at(name).bg, "{number}");
+        }
     }
 
     #[test]

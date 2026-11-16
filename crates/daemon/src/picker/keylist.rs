@@ -452,6 +452,7 @@ fn probe_spec<'a>(
         title: &picker.title,
         filter: &picker.filter,
         lines: &[],
+        numbers: &[],
         selected: None,
         footers,
         widest,

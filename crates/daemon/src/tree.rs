@@ -517,6 +517,38 @@ impl Tree {
 
     // ---- Drawing ----
 
+    /// Where the window number stands in the line of an entry, in characters: in the label of a
+    /// window, and, in a filtered (flat) list, in the window a pane's path goes through.
+    fn number_span(&self, index: usize, flat: bool) -> Option<(usize, usize)> {
+        let window = self.window_of(index)?;
+        if !flat && window != index {
+            return None;
+        }
+        let digits = self.entries[window]
+            .label
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .count();
+        if digits == 0 {
+            return None;
+        }
+        let mark = theme::symbol(Symbol::PickerOtherMark).chars().count();
+        let at = if flat {
+            let path = self.path(index);
+            let session = path.first()?.chars().count();
+            let separator = theme::symbol(Symbol::TreePathSeparator).chars().count();
+            (path.len() > 1).then_some(mark + session + separator)?
+        } else {
+            let opener = if self.open.contains(&self.entries[index].key) {
+                Symbol::TreeOpen
+            } else {
+                Symbol::TreeClosed
+            };
+            mark + 4 * self.depth(index) + theme::symbol(opener).chars().count()
+        };
+        Some((at, at + digits))
+    }
+
     fn line(&self, index: usize, selected: bool, flat: bool) -> String {
         let e = &self.entries[index];
         let mark = theme::symbol(if selected {
@@ -573,6 +605,10 @@ impl Tree {
             .enumerate()
             .map(|(row, index)| self.line(*index, Some(row) == selected, flat))
             .collect();
+        let numbers: Vec<Option<(usize, usize)>> = shown
+            .iter()
+            .map(|index| self.number_span(*index, flat))
+            .collect();
         if shown.is_empty() {
             lines.push(format!("  {}", theme::symbol(Symbol::PickerNoMatch)));
         }
@@ -581,6 +617,7 @@ impl Tree {
             title: &self.title_for(lifted),
             filter: &self.filter,
             lines: &lines,
+            numbers: &numbers,
             selected,
             footers: &[self.enter_line(), self.key_line(keys)],
             widest: self.widest(keys),
@@ -677,6 +714,28 @@ mod tests {
             .enumerate()
             .map(|(row, i)| tree.line(*i, Some(row) == selected, flat))
             .collect()
+    }
+
+    #[test]
+    fn the_number_span_of_a_window_covers_its_digits_in_the_line() {
+        let mut t = tree();
+        let check = |t: &Tree| {
+            let flat = !t.filter.is_empty();
+            let shown = t.rows();
+            let mut found = 0;
+            for (row, line) in lines(t).iter().enumerate() {
+                if let Some((from, to)) = t.number_span(shown[row], flat) {
+                    let got: String = line.chars().skip(from).take(to - from).collect();
+                    assert!(got.chars().all(|c| c.is_ascii_digit()), "{line:?} {got:?}");
+                    assert!(!got.is_empty());
+                    found += 1;
+                }
+            }
+            assert!(found > 0);
+        };
+        check(&t);
+        t.filter = "e".into();
+        check(&t);
     }
 
     #[test]

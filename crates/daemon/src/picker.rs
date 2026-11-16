@@ -261,6 +261,7 @@ impl Picker {
             title: &self.title,
             filter: &self.filter,
             lines: &lines,
+            numbers: &[],
             selected,
             footers: &[self.key_line(keys, filtered)],
             widest,
@@ -348,6 +349,9 @@ pub struct BoxSpec<'a> {
     pub filter: &'a str,
     /// The lines that show now.
     pub lines: &'a [String],
+    /// For each line, the characters (from, to) of a window number that is drawn apart from the
+    /// text around it.
+    pub numbers: &'a [Option<(usize, usize)>],
     pub selected: Option<usize>,
     /// Lines of their own under the list; they never widen the box, and what does not fit is cut.
     pub footers: &'a [String],
@@ -512,6 +516,18 @@ pub fn draw_box(spec: &BoxSpec) -> Drawn {
             };
             let mut cells = vec![blank(style)];
             cells.extend(text_cells(line, style));
+            if let Some(Some((from, to))) = spec.numbers.get(index) {
+                let number = theme::style(if Some(index) == spec.selected {
+                    Role::TabNumberCurrent
+                } else {
+                    Role::TabNumber
+                });
+                // One blank cell was put in front of the text.
+                for cell in cells.iter_mut().skip(1 + from).take(to - from) {
+                    cell.style.fg = number.fg;
+                    cell.style.bold = number.bold;
+                }
+            }
             color_notice_marks(&mut cells);
             body.push((cells, style));
         }

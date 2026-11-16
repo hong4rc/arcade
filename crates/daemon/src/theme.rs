@@ -16,6 +16,10 @@ pub enum Role {
     Tab,
     /// The tab of the current window.
     TabCurrent,
+    /// The number in front of the name in the tab of a window that is not the current one, and in
+    /// the tab of the current window.
+    TabNumber,
+    TabNumberCurrent,
     /// The words at the right end of the status bar (`PREFIX`, `LOCK`, `COPY`).
     Indicator,
     /// A line of text that replaces the status bar for a moment (an error, a result).
@@ -72,6 +76,15 @@ pub fn style(role: Role) -> Style {
             bg: Color::Indexed(4),
             bold: true,
             ..Style::default()
+        },
+        Role::TabNumber => Style {
+            fg: Color::Indexed(3),
+            bold: true,
+            ..style(Role::Tab)
+        },
+        Role::TabNumberCurrent => Style {
+            fg: Color::Indexed(15),
+            ..style(Role::TabCurrent)
         },
         Role::Indicator => Style {
             fg: Color::Indexed(0),
