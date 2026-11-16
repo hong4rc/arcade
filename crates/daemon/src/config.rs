@@ -45,6 +45,14 @@ pub enum NumberPosition {
     Off,
 }
 
+/// How the tabs and the session label of the status bar are drawn: with round ends (the
+/// powerline half circles, which need a font that has them) or as plain blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabStyle {
+    Pill,
+    Flat,
+}
+
 /// Where the automatic name of a window comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NameFrom {
@@ -235,6 +243,7 @@ pub struct Config {
     pub status_position: StatusPosition,
     /// Where a window's number stands in its tab, or that it is not shown.
     pub tab_number: NumberPosition,
+    pub tab_style: TabStyle,
     /// What a tab says besides the number (fields: name, title, program, directory).
     pub tab_format: Template,
     /// The title Arcade sets on the host terminal's window (fields: session, number, name,
@@ -271,7 +280,8 @@ impl Default for Config {
             keys: KeysConfig::default(),
             overrides: Vec::new(),
             status_position: StatusPosition::Bottom,
-            tab_number: NumberPosition::Left,
+            tab_number: NumberPosition::Right,
+            tab_style: TabStyle::Pill,
             tab_format: Template::parse(DEFAULT_TAB_FORMAT, TAB_FIELDS).expect("a valid default"),
             title_format: Template::parse(DEFAULT_TITLE_FORMAT, TITLE_FIELDS)
                 .expect("a valid default"),
@@ -898,6 +908,15 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                             ),
                             None => {}
                         },
+                        "tab-style" => match r.string("tab-style", v) {
+                            Some("pill") => config.tab_style = TabStyle::Pill,
+                            Some("flat") => config.tab_style = TabStyle::Flat,
+                            Some(other) => r.error(
+                                v.span().start,
+                                format!("tab-style is pill or flat, not \"{other}\""),
+                            ),
+                            None => {}
+                        },
                         "tab-format" => {
                             if let Some(text) = r.string("tab-format", v) {
                                 match Template::parse(text, TAB_FIELDS) {
@@ -919,7 +938,13 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                             unknown_key(
                                 "status",
                                 other,
-                                &["position", "number", "tab-format", "title-format"],
+                                &[
+                                    "position",
+                                    "number",
+                                    "tab-style",
+                                    "tab-format",
+                                    "title-format",
+                                ],
                             ),
                         ),
                     }
@@ -1456,5 +1481,17 @@ position = "top"
         assert!(got[0].starts_with("line 2: osc is"), "{got:?}");
         let got = lines("[notification]\nmute-sources = \"a\"\n");
         assert!(got[0].contains("list of source names"), "{got:?}");
+    }
+
+    #[test]
+    fn the_tab_style_and_the_number_place_have_defaults_and_a_clear_error() {
+        let config = parse("").unwrap();
+        assert_eq!(config.tab_style, TabStyle::Pill);
+        assert_eq!(config.tab_number, NumberPosition::Right);
+        let flat = parse("[status]\ntab-style = \"flat\"\nnumber = \"left\"\n").unwrap();
+        assert_eq!(flat.tab_style, TabStyle::Flat);
+        assert_eq!(flat.tab_number, NumberPosition::Left);
+        let errors = parse("[status]\ntab-style = \"round\"\n").unwrap_err();
+        assert!(errors[0].message.contains("pill or flat"), "{errors:?}");
     }
 }

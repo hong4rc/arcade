@@ -55,6 +55,7 @@ fn status_info(
     StatusInfo {
         session: s.name.clone(),
         number: config.tab_number,
+        style: config.tab_style,
         tabs: s
             .windows
             .iter()

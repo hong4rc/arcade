@@ -4,7 +4,7 @@
 use arcade_term::Cell;
 
 use crate::compose::{blank, fit, text_cells};
-use crate::config::NumberPosition;
+use crate::config::{NumberPosition, TabStyle};
 use crate::notify::Class;
 use crate::theme::{self, Role, Symbol};
 
@@ -94,6 +94,8 @@ pub struct StatusInfo {
     pub session: String,
     /// Where the number stands in a tab.
     pub number: NumberPosition,
+    /// Round ends or plain blocks.
+    pub style: TabStyle,
     pub tabs: Vec<Tab>,
     /// Waiting for the key after the prefix key.
     pub prefix: bool,
@@ -121,6 +123,103 @@ pub fn build(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>) {
     (cells, cursor)
 }
 
+/// A block of the bar with its ends: round ends in the pill style, nothing more in the flat one
+/// (a block has a cell of padding at each end of its own).
+fn capped(style: TabStyle, blocks: Vec<Cell>, left: Cell, right: Cell) -> Vec<Cell> {
+    match style {
+        TabStyle::Pill => [vec![left], blocks, vec![right]].concat(),
+        TabStyle::Flat => blocks,
+    }
+}
+
+fn cap(symbol: Symbol, block: arcade_term::Style) -> Cell {
+    text_cells(theme::symbol(symbol), theme::cap_style(block))
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| blank(block))
+}
+
+/// The session's name at the left: in the pill style a green badge with an icon and the name on a
+/// surface, each end round; in the flat style the name on a green block.
+fn session_label(info: &StatusInfo) -> Vec<Cell> {
+    let badge = theme::style(Role::SessionBadge);
+    let name = theme::style(Role::SessionName);
+    match info.style {
+        TabStyle::Pill => {
+            let mut blocks = text_cells(theme::symbol(Symbol::SessionIcon), badge);
+            blocks.extend(text_cells(&format!(" {} ", info.session), name));
+            capped(
+                info.style,
+                blocks,
+                cap(Symbol::PillCapLeft, badge),
+                cap(Symbol::PillCapRight, name),
+            )
+        }
+        TabStyle::Flat => text_cells(&format!(" {} ", info.session), badge),
+    }
+}
+
+/// One tab: the name on a surface and the number as a badge at the end `info.number` says, the
+/// current one in brighter colours with the accent badge; in the pill style with round ends, in
+/// the flat one as plain blocks. The marks (zoom, notification, progress) are in the name's block
+/// and always have the same width, so the tabs to the right do not move when one appears.
+fn tab_cells(tab: &Tab, info: &StatusInfo) -> Vec<Cell> {
+    let (name_role, quiet_role, badge_role) = if tab.current {
+        (
+            Role::PillNameCurrent,
+            Role::PillQuietCurrent,
+            Role::PillBadgeCurrent,
+        )
+    } else {
+        (Role::PillName, Role::PillQuiet, Role::PillBadge)
+    };
+    let name = theme::style(name_role);
+    let quiet = theme::style(quiet_role);
+    let badge = theme::style(badge_role);
+    let mut text = text_cells(" ", name);
+    for piece in &tab.text {
+        text.extend(text_cells(
+            &piece.text,
+            if piece.quiet { quiet } else { name },
+        ));
+    }
+    if tab.zoomed {
+        text.extend(text_cells(
+            &format!(" {}", theme::symbol(Symbol::Zoomed)),
+            name,
+        ));
+    }
+    if let Some(class) = tab.notice {
+        text.extend(text_cells(" ", name));
+        text.extend(text_cells(
+            theme::notice_symbol(class),
+            theme::notice_style(class),
+        ));
+    }
+    if let Some(report) = tab.progress {
+        text.extend(text_cells(" ", name));
+        let style = if report.state == 2 {
+            theme::notice_style(Class::Error)
+        } else {
+            name
+        };
+        text.extend(text_cells(&theme::progress_mark(report), style));
+    }
+    text.extend(text_cells(" ", name));
+    let number = text_cells(&format!(" {} ", tab.number), badge);
+    let (first, last, blocks) = match info.number {
+        NumberPosition::Left => (badge, name, [number, text].concat()),
+        NumberPosition::Right => (name, badge, [text, number].concat()),
+        NumberPosition::Off => (name, name, text),
+    };
+    capped(
+        info.style,
+        blocks,
+        cap(Symbol::PillCapLeft, first),
+        cap(Symbol::PillCapRight, last),
+    )
+}
+
 /// The cells of the bar, where the cursor goes when it is a line to type into, and where each
 /// tab that shows (whole or in part) is. A bar that a prompt, a hint or a message replaces has
 /// no tabs.
@@ -146,68 +245,15 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
             Vec::new(),
         );
     }
-    let mut cells = text_cells(
-        &format!(" {} ", info.session),
-        theme::style(Role::StatusSession),
-    );
+    let mut cells = session_label(info);
     cells.push(blank(bar));
     let mut spans = Vec::new();
     for (index, tab) in info.tabs.iter().enumerate() {
         let tab_from = cells.len();
-        let zoom = if tab.zoomed {
-            format!(" {}", theme::symbol(Symbol::Zoomed))
-        } else {
-            String::new()
-        };
-        let role = if tab.current {
-            Role::TabCurrent
-        } else {
-            Role::Tab
-        };
-        let style = theme::style(role);
-        let number_style = theme::style(if tab.current {
-            Role::TabNumberCurrent
-        } else {
-            Role::TabNumber
-        });
-        let quiet_style = theme::style(if tab.current {
-            Role::TabTitleCurrent
-        } else {
-            Role::TabTitle
-        });
-        let number = tab.number.to_string();
-        cells.extend(text_cells(" ", style));
-        if info.number == NumberPosition::Left {
-            cells.extend(text_cells(&number, number_style));
-            cells.extend(text_cells(" ", style));
-        }
-        for piece in &tab.text {
-            let piece_style = if piece.quiet { quiet_style } else { style };
-            cells.extend(text_cells(&piece.text, piece_style));
-        }
-        cells.extend(text_cells(&zoom, style));
-        if info.number == NumberPosition::Right {
-            cells.extend(text_cells(" ", style));
-            cells.extend(text_cells(&number, number_style));
-        }
-        if let Some(class) = tab.notice {
-            cells.extend(text_cells(" ", style));
-            cells.extend(text_cells(
-                theme::notice_symbol(class),
-                theme::notice_style(class),
-            ));
-        }
-        if let Some(report) = tab.progress {
-            cells.extend(text_cells(" ", style));
-            let mark_style = if report.state == 2 {
-                theme::notice_style(Class::Error)
-            } else {
-                number_style
-            };
-            cells.extend(text_cells(&theme::progress_mark(report), mark_style));
-        }
-        cells.extend(text_cells(" ", style));
+        cells.extend(tab_cells(tab, info));
         spans.push((index, tab_from, cells.len()));
+        // One cell of the bar's own background between two tabs, so that they read as items.
+        cells.push(blank(bar));
     }
     let mut words: Vec<String> = Vec::new();
     if info.prefix {
@@ -268,14 +314,20 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
         .find(|(i, _, _)| info.tabs[*i].current)
         .copied();
     // The tab of the window you are in always shows: when it would be cut away, the tabs before
-    // it give way from the left (the first one may show in part, and clicks follow what shows).
+    // it give way from the left (the first one may show in part, and clicks follow what shows);
+    // when that is not enough, the session's name gives way too.
     if let Some(&(_, tab_from, tab_to)) = current_span.as_ref().filter(|(_, _, to)| *to > room) {
         let first = spans.first().map_or(0, |s| s.1);
-        let shift = (tab_to - room).min(tab_from.saturating_sub(first));
+        let want = tab_to - room;
+        let (from, shift) = if want > tab_from.saturating_sub(first) {
+            (0, want.max(first).min(tab_from))
+        } else {
+            (first, want)
+        };
         if shift > 0 {
-            cells.drain(first..first + shift);
-            let cut = first + shift;
-            let moved = |p: usize| if p >= cut { p - shift } else { first };
+            cells.drain(from..from + shift);
+            let cut = from + shift;
+            let moved = |p: usize| if p >= cut { p - shift } else { from };
             spans = spans
                 .into_iter()
                 .filter(|&(_, f, t)| moved(t) > moved(f))
@@ -318,7 +370,8 @@ mod tests {
     fn info() -> StatusInfo {
         StatusInfo {
             session: "work".into(),
-            number: NumberPosition::Left,
+            number: NumberPosition::Right,
+            style: TabStyle::Flat,
             tabs: vec![
                 Tab {
                     number: 1,
@@ -356,25 +409,15 @@ mod tests {
         assert!(cursor.is_none());
         let line = text(&cells);
         assert!(line.contains(" work "), "{line}");
-        assert!(line.contains(" 1 sh "), "{line}");
-        assert!(line.contains(" 2 vim [Z] "), "{line}");
+        assert!(line.contains(" sh  1 "), "{line}");
+        assert!(line.contains(" vim [Z]  2 "), "{line}");
         let at = |needle: &str| cells[line[..line.find(needle).unwrap()].chars().count()].style;
-        assert_eq!(at("vim"), theme::style(Role::TabCurrent));
-        assert_eq!(at("sh"), theme::style(Role::Tab));
+        assert_eq!(at("vim"), theme::style(Role::PillNameCurrent));
+        assert_eq!(at("sh"), theme::style(Role::PillName));
         assert_ne!(at("vim"), at("sh"));
-        // The number of a tab is drawn apart from its name: on the same background, except in the
-        // current tab, where it is the colours of the tab swapped.
-        assert_eq!(at("2 vim"), theme::style(Role::TabNumberCurrent));
-        assert_eq!(at("1 sh"), theme::style(Role::TabNumber));
-        for (number, name) in [("2 vim", "vim"), ("1 sh", "sh")] {
-            assert_ne!(at(number).fg, at(name).fg, "{number}");
-            if name == "sh" {
-                assert_eq!(at(number).bg, at(name).bg, "{number}");
-            } else {
-                assert_eq!(at(number).bg, at(name).fg, "{number}");
-                assert_eq!(at(number).fg, at(name).bg, "{number}");
-            }
-        }
+        // The number is a badge of its own at the end, in the accent colours in the current tab.
+        assert_eq!(at("2 "), theme::style(Role::PillBadgeCurrent));
+        assert_eq!(at("1 "), theme::style(Role::PillBadge));
     }
 
     #[test]
@@ -387,15 +430,15 @@ mod tests {
         assert_eq!(spans[0].index, 0);
         assert_eq!(
             (spans[0].from, spans[0].to),
-            (col(" 1 sh "), col(" 1 sh ") + 6)
+            (col(" sh  1 "), col(" sh  1 ") + 7)
         );
         assert_eq!(spans[1].index, 1);
-        assert_eq!(spans[1].from, spans[0].to);
-        assert_eq!(spans[1].to, spans[1].from + " 2 vim [Z] ".len() as u16);
+        // One cell of the bar between two tabs, which belongs to neither.
+        assert_eq!(spans[1].from, spans[0].to + 1);
+        assert_eq!(spans[1].to, spans[1].from + " vim [Z]  2 ".len() as u16);
         // Cut short: the tab that is cut in two covers what shows, the one cut away is gone.
         let (_, _, narrow) = build_with_tabs(18, &info());
-        assert_eq!(narrow.len(), 1);
-        assert_eq!((narrow[0].index, narrow[0].to), (1, 18));
+        assert_eq!(narrow.last().map(|t| (t.index, t.to)), Some((1, 18)));
         // The tab of the window you are in (the second) shows, and the first gives way to it.
         let (_, _, narrower) = build_with_tabs(12, &info());
         assert_eq!(narrower.last().map(|t| t.index), Some(1));
@@ -490,13 +533,13 @@ mod tests {
         i.tabs[1].progress = Some(Progress { state: 2, value: 0 });
         let (cells, _, spans) = build_with_tabs(80, &i);
         let line = text(&cells);
-        assert!(line.contains(" 1 sh  42% "), "{line}");
-        assert!(line.contains(" 2 vim [Z]  err "), "{line}");
+        assert!(line.contains(" sh  42%  1 "), "{line}");
+        assert!(line.contains(" vim [Z]  err  2 "), "{line}");
         let at = |needle: &str| cells[line[..line.find(needle).unwrap()].chars().count()].style;
-        assert_eq!(at("42%"), theme::style(Role::TabNumber));
+        assert_eq!(at("42%"), theme::style(Role::PillName));
         assert_eq!(at("err"), theme::notice_style(Class::Error));
         // The mark belongs to its tab: a click on it is a click on the tab.
-        assert_eq!(spans[0].to as usize, line.find("42%").unwrap() + 4);
+        assert_eq!(spans[0].to as usize, line.find("42%").unwrap() + 7);
         for (state, value, want) in [
             (1, 9, "  9%"),
             (1, 100, "100%"),
@@ -575,7 +618,7 @@ mod tests {
         let line = text(&cells);
         let [approval, error, dot] =
             [Class::Approval, Class::Error, Class::Info].map(theme::notice_symbol);
-        assert!(line.contains(&format!("1 sh {approval} ")), "{line}");
+        assert!(line.contains(&format!("sh {approval} ")), "{line}");
         assert!(
             line.trim_end()
                 .ends_with(&format!("{approval}2 {error}1 {dot}3")),
@@ -632,33 +675,135 @@ mod tests {
                 value: 40,
             }),
         };
-        let mut i = info();
-        i.tabs = vec![loaded(1, false), loaded(2, true), loaded(3, false)];
-        let (_, _, whole) = build_with_tabs(400, &i);
-        let full: Vec<u16> = whole.iter().map(|t| t.to - t.from).collect();
-        let mark = theme::notice_symbol(Class::Input);
-        for width in 8..=120u16 {
-            let (cells, _, spans) = build_with_tabs(width, &i);
-            assert_eq!(cells.len(), usize::from(width), "width {width}");
-            let mut last_end = 0;
-            for span in &spans {
-                assert!(
-                    span.from < span.to && span.to <= width,
-                    "width {width}: {span:?}"
+        for (style, number) in [
+            (TabStyle::Pill, NumberPosition::Right),
+            (TabStyle::Pill, NumberPosition::Left),
+            (TabStyle::Pill, NumberPosition::Off),
+            (TabStyle::Flat, NumberPosition::Right),
+            (TabStyle::Flat, NumberPosition::Left),
+            (TabStyle::Flat, NumberPosition::Off),
+        ] {
+            let mut i = info();
+            i.style = style;
+            i.number = number;
+            i.tabs = vec![loaded(1, false), loaded(2, true), loaded(3, false)];
+            let (_, _, whole) = build_with_tabs(400, &i);
+            let full: Vec<u16> = whole.iter().map(|t| t.to - t.from).collect();
+            let mark = theme::notice_symbol(Class::Input);
+            for width in 8..=120u16 {
+                let (cells, _, spans) = build_with_tabs(width, &i);
+                assert_eq!(
+                    cells.len(),
+                    usize::from(width),
+                    "width {width} {style:?} {number:?}"
                 );
-                assert!(span.from >= last_end, "width {width}: {spans:?}");
-                last_end = span.to;
-                let shown: String = text(&cells[usize::from(span.from)..usize::from(span.to)]);
-                if span.to - span.from == full[span.index] {
-                    assert!(shown.contains(mark), "width {width}: {shown:?}");
-                    assert!(shown.contains("40%"), "width {width}: {shown:?}");
+                let mut last_end = 0;
+                for span in &spans {
+                    assert!(
+                        span.from < span.to && span.to <= width,
+                        "width {width} {style:?} {number:?}: {span:?}"
+                    );
+                    assert!(
+                        span.from >= last_end,
+                        "width {width} {style:?} {number:?}: {spans:?}"
+                    );
+                    last_end = span.to;
+                    let shown: String = text(&cells[usize::from(span.from)..usize::from(span.to)]);
+                    if span.to - span.from == full[span.index] {
+                        assert!(
+                            shown.contains(mark),
+                            "width {width} {style:?} {number:?}: {shown:?}"
+                        );
+                        assert!(
+                            shown.contains("40%"),
+                            "width {width} {style:?} {number:?}: {shown:?}"
+                        );
+                    }
+                }
+                if width >= 40 {
+                    assert!(
+                        spans.iter().any(|t| t.index == 1),
+                        "width {width} {style:?} {number:?}: {spans:?}"
+                    );
                 }
             }
-            if width >= 40 {
-                assert!(
-                    spans.iter().any(|t| t.index == 1),
-                    "width {width}: {spans:?}"
-                );
+        }
+    }
+
+    /// The flat style draws plain characters only: no cap glyph and no icon, so any font shows it.
+    #[test]
+    fn the_flat_style_uses_plain_characters_only_and_the_pill_style_adds_caps() {
+        let mut i = info();
+        i.style = TabStyle::Flat;
+        let flat = text(&build(60, &i).0);
+        assert!(
+            flat.chars()
+                .all(|c| !('\u{e000}'..='\u{f8ff}').contains(&c)),
+            "{flat:?}"
+        );
+        i.style = TabStyle::Pill;
+        let pill = text(&build(60, &i).0);
+        assert!(
+            pill.contains(theme::symbol(Symbol::PillCapLeft)),
+            "{pill:?}"
+        );
+        assert!(
+            pill.contains(theme::symbol(Symbol::PillCapRight)),
+            "{pill:?}"
+        );
+        assert!(
+            pill.contains(theme::symbol(Symbol::SessionIcon).trim()),
+            "{pill:?}"
+        );
+    }
+
+    /// Where the number goes: after the name (right), before it (left), or nowhere (off).
+    #[test]
+    fn the_number_goes_right_left_or_nowhere() {
+        for (position, want) in [
+            (NumberPosition::Right, " sh  1 "),
+            (NumberPosition::Left, " 1  sh "),
+            (NumberPosition::Off, " sh "),
+        ] {
+            let mut i = info();
+            i.number = position;
+            let line = text(&build(60, &i).0);
+            assert!(line.contains(want), "{position:?}: {line}");
+            if position == NumberPosition::Off {
+                assert!(!line.contains(" 1 "), "{line}");
+            }
+        }
+    }
+
+    /// Writes the bar as the host terminal receives it, in both styles, to the folder named by
+    /// `ARCADE_SAMPLE_DIR` (nothing happens when it is not set), so it can be looked at with `cat`.
+    #[test]
+    fn sample_bars_for_looking_at() {
+        let Ok(dir) = std::env::var("ARCADE_SAMPLE_DIR") else {
+            return;
+        };
+        for (style, name) in [(TabStyle::Pill, "pill"), (TabStyle::Flat, "flat")] {
+            for (number, place) in [
+                (NumberPosition::Right, "right"),
+                (NumberPosition::Left, "left"),
+                (NumberPosition::Off, "off"),
+            ] {
+                let mut i = info();
+                i.style = style;
+                i.number = number;
+                i.tabs.push(Tab {
+                    number: 3,
+                    text: vec![TabPiece::plain("logs")],
+                    current: false,
+                    zoomed: false,
+                    notice: Some(Class::Input),
+                    progress: None,
+                });
+                let (cells, _) = build(60, &i);
+                let mut bytes = Vec::new();
+                crate::render::push_row(&mut bytes, 0, &cells, &[]);
+                bytes.extend_from_slice(b"\x1b[0m\n");
+                std::fs::write(format!("{dir}/bar-{name}-{place}.bin"), bytes).unwrap();
             }
         }
     }

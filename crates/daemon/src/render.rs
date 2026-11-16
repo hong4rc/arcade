@@ -71,6 +71,44 @@ fn push_style(out: &mut Vec<u8>, style: &Style) {
     out.push(b'm');
 }
 
+/// Make `to` current when `from` is: when only the colors differ, say only the colors that do
+/// (a tab bar of true colors changes them at every block, and a whole reset and both colors each
+/// time costs several times more bytes).
+fn push_style_change(out: &mut Vec<u8>, from: &Style, to: &Style) {
+    let same_apart_from_colors = Style {
+        fg: to.fg,
+        bg: to.bg,
+        ..*from
+    } == *to;
+    if !same_apart_from_colors {
+        push_style(out, to);
+        return;
+    }
+    out.extend_from_slice(b"\x1b[");
+    let mut first = true;
+    let mut part = |out: &mut Vec<u8>, from: Color, to: Color, base: u8| {
+        if from == to {
+            return;
+        }
+        if !first {
+            out.push(b';');
+        }
+        first = false;
+        match to {
+            Color::Default => out.extend_from_slice((base + 9).to_string().as_bytes()),
+            _ => {
+                let mut one = Vec::new();
+                push_color(&mut one, to, base);
+                // `push_color` leads with a separator.
+                out.extend_from_slice(&one[1..]);
+            }
+        }
+    };
+    part(out, from.fg, to.fg, 30);
+    part(out, from.bg, to.bg, 40);
+    out.push(b'm');
+}
+
 fn is_plain_blank(cell: &Cell) -> bool {
     cell.text.is_empty() && cell.style == Style::default()
 }
@@ -90,7 +128,7 @@ const LINK_CLOSE: &[u8] = b"\x1b]8;;\x1b\\";
 
 /// Draw one row: move to it, then write every column (or erase the plain tail). The cells in
 /// `links` are written inside a link, which is closed again before anything else.
-fn push_row(out: &mut Vec<u8>, y: u16, cells: &[Cell], links: &[LinkSpan]) {
+pub(crate) fn push_row(out: &mut Vec<u8>, y: u16, cells: &[Cell], links: &[LinkSpan]) {
     out.extend_from_slice(format!("\x1b[{};1H", y + 1).as_bytes());
     // Leave out a tail of plain blank cells and erase it instead.
     let mut end = cells.len();
@@ -117,7 +155,7 @@ fn push_row(out: &mut Vec<u8>, y: u16, cells: &[Cell], links: &[LinkSpan]) {
             continue;
         }
         if cell.style != current {
-            push_style(out, &cell.style);
+            push_style_change(out, &current, &cell.style);
             current = cell.style;
         }
         if cell.text.is_empty() {

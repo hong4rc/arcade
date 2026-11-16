@@ -133,12 +133,12 @@ fn the_tab_of_a_window_shows_the_progress_of_its_panes_until_it_is_removed() {
     client.type_line(&report(1, 42));
     assert!(client.wait_until(WAIT, |c| c.screen_text().contains("42%")));
     client.type_line(&report(2, 0));
-    let bar_ends_in_x = |c: &mut TestClient| c.screen_text().trim_end().ends_with(" err");
+    let bar_ends_in_x = |c: &mut TestClient| c.status_row().contains(" err");
     assert!(client.wait_until(WAIT, bar_ends_in_x));
     client.type_line(&report(0, 0));
     assert!(client.wait_until(WAIT, |c| {
         let text = c.screen_text();
-        !text.contains("42%") && !text.trim_end().ends_with(" err")
+        !text.contains("42%") && !c.status_row().contains(" err")
     }));
 }
 

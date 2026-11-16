@@ -11,7 +11,6 @@ pub enum Role {
     /// The status bar's background and its plain text.
     StatusBar,
     /// The session's name at the left end of the status bar.
-    StatusSession,
     /// The tab of a window that is not the current one.
     Tab,
     /// The tab of the current window.
@@ -21,8 +20,6 @@ pub enum Role {
     TabNumber,
     TabNumberCurrent,
     /// The program's own title in a tab, fainter than the name.
-    TabTitle,
-    TabTitleCurrent,
     /// The words at the right end of the status bar (`PREFIX`, `LOCK`, `COPY`).
     Indicator,
     /// A line of text that replaces the status bar for a moment (an error, a result).
@@ -51,11 +48,76 @@ pub enum Role {
     /// The cells that match what was typed in a jump, and the one-letter label of a match.
     JumpMatch,
     JumpLabel,
+    /// The tabs and the session label of the bar (both styles share these colours): the name on
+    /// a surface, the number as a lighter badge; the current tab's badge is the accent and its
+    /// name is brighter. The session label has a green badge and the name on a surface.
+    PillName,
+    PillNameCurrent,
+    PillQuiet,
+    PillQuietCurrent,
+    PillBadge,
+    PillBadgeCurrent,
+    SessionBadge,
+    SessionName,
     /// The mark of a notification, one role for each class.
     NoticeApproval,
     NoticeInput,
     NoticeError,
     NoticeInfo,
+}
+
+/// The palette of the bar's tabs (Catppuccin Frappe, as the author's tmux bar has it).
+mod palette {
+    use arcade_term::Color;
+    pub const MANTLE: Color = Color::Rgb(0x29, 0x2c, 0x3c);
+    pub const CRUST: Color = Color::Rgb(0x23, 0x26, 0x34);
+    pub const SURFACE0: Color = Color::Rgb(0x41, 0x45, 0x59);
+    pub const SURFACE1: Color = Color::Rgb(0x51, 0x57, 0x6d);
+    pub const OVERLAY2: Color = Color::Rgb(0x94, 0x9c, 0xbb);
+    pub const TEXT: Color = Color::Rgb(0xc6, 0xd0, 0xf5);
+    pub const SUBTEXT0: Color = Color::Rgb(0xb5, 0xbf, 0xe2);
+    pub const MAUVE: Color = Color::Rgb(0xca, 0x9e, 0xe6);
+    pub const GREEN: Color = Color::Rgb(0xa6, 0xd1, 0x89);
+}
+
+fn on(fg: Color, bg: Color) -> Style {
+    Style {
+        fg,
+        bg,
+        ..Style::default()
+    }
+}
+
+/// The round (or plain) end of a block that stands on the bar: the colour of the block as text on
+/// the bar's background.
+pub fn cap_style(block: Style) -> Style {
+    Style {
+        fg: block.bg,
+        bg: style(Role::StatusBar).bg,
+        ..Style::default()
+    }
+}
+
+/// The contrast ratio (1 to 21) of the text of a style on its background, for the colours that
+/// are given as red, green and blue.
+#[cfg(test)]
+fn contrast(style: Style) -> f64 {
+    fn luminance(c: Color) -> f64 {
+        let Color::Rgb(r, g, b) = c else {
+            panic!("not an RGB colour: {c:?}")
+        };
+        let lin = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+    }
+    let (a, b) = (luminance(style.fg), luminance(style.bg));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 fn fg(color: u8) -> Style {
@@ -67,17 +129,27 @@ fn fg(color: u8) -> Style {
 
 pub fn style(role: Role) -> Style {
     match role {
-        Role::StatusBar => Style {
-            fg: Color::Indexed(7),
-            bg: Color::Indexed(8),
-            ..Style::default()
-        },
-        Role::StatusSession => Style {
-            fg: Color::Indexed(0),
-            bg: Color::Indexed(2),
+        Role::StatusBar => on(palette::SUBTEXT0, palette::MANTLE),
+        Role::PillName => on(palette::TEXT, palette::SURFACE0),
+        Role::PillNameCurrent => Style {
             bold: true,
-            ..Style::default()
+            ..on(palette::TEXT, palette::SURFACE1)
         },
+        Role::PillQuiet => on(palette::SUBTEXT0, palette::SURFACE0),
+        Role::PillQuietCurrent => on(palette::TEXT, palette::SURFACE1),
+        Role::PillBadge => Style {
+            bold: true,
+            ..on(palette::CRUST, palette::OVERLAY2)
+        },
+        Role::PillBadgeCurrent => Style {
+            bold: true,
+            ..on(palette::CRUST, palette::MAUVE)
+        },
+        Role::SessionBadge => Style {
+            bold: true,
+            ..on(palette::CRUST, palette::GREEN)
+        },
+        Role::SessionName => on(palette::TEXT, palette::SURFACE0),
         Role::Tab => style(Role::StatusBar),
         Role::TabCurrent => Style {
             fg: Color::Indexed(0),
@@ -95,15 +167,6 @@ pub fn style(role: Role) -> Style {
         Role::TabNumberCurrent => Style {
             fg: style(Role::TabCurrent).bg,
             bg: style(Role::TabCurrent).fg,
-            ..style(Role::TabCurrent)
-        },
-        Role::TabTitle => Style {
-            faint: true,
-            ..style(Role::Tab)
-        },
-        Role::TabTitleCurrent => Style {
-            faint: true,
-            bold: false,
             ..style(Role::TabCurrent)
         },
         Role::Indicator => Style {
@@ -260,6 +323,11 @@ pub enum Symbol {
     DividerCross,
     /// Marks the tab of a window whose pane is zoomed.
     Zoomed,
+    /// The round ends of a block on the bar (the powerline half circles, which need a font that
+    /// has them) and the icon in front of the session's name.
+    PillCapLeft,
+    PillCapRight,
+    SessionIcon,
     /// The corners and sides of the frame of the floating list.
     PickerTopLeft,
     PickerTopRight,
@@ -304,6 +372,9 @@ pub fn symbol(symbol: Symbol) -> &'static str {
         Symbol::DividerJoinUp => "┴",
         Symbol::DividerCross => "┼",
         Symbol::Zoomed => "[Z]",
+        Symbol::PillCapLeft => "\u{e0b6}",
+        Symbol::PillCapRight => "\u{e0b4}",
+        Symbol::SessionIcon => "\u{e795} ",
         Symbol::PickerTopLeft => "┌",
         Symbol::PickerTopRight => "┐",
         Symbol::PickerBottomLeft => "└",
@@ -340,9 +411,6 @@ mod tests {
         assert!(number.bg == tab.fg || number.bg == tab.bg);
         assert_ne!(number.fg, number.bg);
         assert_ne!(number.fg, tab.fg, "it must differ from the name next to it");
-        // The name's own lighter text keeps the tab's colours too.
-        let title = style(Role::TabTitleCurrent);
-        assert_eq!((title.fg, title.bg), (tab.fg, tab.bg));
     }
 
     #[test]
@@ -359,6 +427,9 @@ mod tests {
             assert_ne!(mark.fg, mark.bg, "{class:?}");
             assert_ne!(mark.bg, tab.bg, "{class:?}");
             assert_ne!(mark.bg, plain_tab.bg, "{class:?}");
+            for role in [Role::PillName, Role::PillNameCurrent] {
+                assert_ne!(mark.bg, style(role).bg, "{class:?} on {role:?}");
+            }
         }
     }
 
@@ -366,13 +437,18 @@ mod tests {
     fn no_role_of_the_bar_puts_the_same_colour_on_text_and_background() {
         for role in [
             Role::StatusBar,
-            Role::StatusSession,
+            Role::PillName,
+            Role::PillNameCurrent,
+            Role::PillQuiet,
+            Role::PillQuietCurrent,
+            Role::PillBadge,
+            Role::PillBadgeCurrent,
+            Role::SessionBadge,
+            Role::SessionName,
             Role::Tab,
             Role::TabCurrent,
             Role::TabNumber,
             Role::TabNumberCurrent,
-            Role::TabTitle,
-            Role::TabTitleCurrent,
             Role::Indicator,
             Role::Message,
             Role::Prompt,
@@ -384,6 +460,43 @@ mod tests {
         ] {
             let s = style(role);
             assert_ne!(s.fg, s.bg, "{role:?}");
+        }
+    }
+
+    /// Every text of the tab bar is readable on its background: a contrast ratio of 4.5 or more.
+    #[test]
+    fn the_text_of_the_tab_bar_has_a_contrast_ratio_of_at_least_4_5() {
+        for role in [
+            Role::StatusBar,
+            Role::PillName,
+            Role::PillNameCurrent,
+            Role::PillQuiet,
+            Role::PillQuietCurrent,
+            Role::PillBadge,
+            Role::PillBadgeCurrent,
+            Role::SessionBadge,
+            Role::SessionName,
+        ] {
+            let ratio = contrast(style(role));
+            assert!(ratio >= 4.5, "{role:?}: {ratio:.2}");
+        }
+    }
+
+    /// Prints the ratios (run with `--nocapture`) for the report.
+    #[test]
+    fn the_contrast_ratios_are_printed_for_the_report() {
+        for role in [
+            Role::StatusBar,
+            Role::PillName,
+            Role::PillNameCurrent,
+            Role::PillQuiet,
+            Role::PillQuietCurrent,
+            Role::PillBadge,
+            Role::PillBadgeCurrent,
+            Role::SessionBadge,
+            Role::SessionName,
+        ] {
+            println!("contrast {role:?}: {:.2}", contrast(style(role)));
         }
     }
 }
