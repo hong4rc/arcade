@@ -1984,7 +1984,11 @@ fn name_of_pane(
         (!t.is_empty()).then_some(t)
     };
     match from {
-        NameFrom::Directory => directory().or_else(program),
+        // The directory the window was made in stands in for one that cannot be read; the
+        // program only when there is none at all.
+        NameFrom::Directory => directory()
+            .or_else(|| (!fallback_cwd.is_empty()).then(|| dir_label(fallback_cwd)))
+            .or_else(program),
         NameFrom::Program => program().or_else(directory),
         NameFrom::Title => title().or_else(directory).or_else(program),
     }

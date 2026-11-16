@@ -305,3 +305,39 @@ fn a_title_that_changes_ten_times_a_second_costs_only_a_few_bytes_of_the_bar() {
     // The prompt line and its echo account for some; each title change is a redraw of the bar.
     assert!(bytes < 45 * 400 + 2000, "{bytes} bytes");
 }
+
+#[test]
+fn every_way_to_make_a_window_names_it_after_a_directory_by_default() {
+    let daemon = TestDaemon::start();
+    let dir = start_dir(&daemon);
+    // A session started with a program that is not a shell: still named by its directory.
+    let mut client = daemon
+        .attach(AttachOptions::new().size(100, 30).named("tabs").command(&[
+            "/bin/sh",
+            "-c",
+            "mkdir -p inner-dir; cd inner-dir; exec /bin/sh",
+        ]))
+        .unwrap();
+    client.wait_for_text("sh-").unwrap();
+    assert!(
+        bar(&client).contains(&format!(" 1 {dir} ")),
+        "{:?}",
+        bar(&client)
+    );
+    // A new window takes the directory of the pane it was made from, not the program.
+    run(&daemon, "window.new", &[]);
+    assert!(
+        client.wait_until(WAIT, |c| bar(c).contains(" 2 inner-dir ")),
+        "{:?}",
+        bar(&client)
+    );
+    // A pane split off and then broken out into its own window is named the same way.
+    run(&daemon, "pane.split-right", &[]);
+    client.wait_until(WAIT, |c| c.screen_text().contains('│'));
+    run(&daemon, "pane.break", &[]);
+    assert!(
+        client.wait_until(WAIT, |c| bar(c).contains(" 3 inner-dir ")),
+        "{:?}",
+        bar(&client)
+    );
+}
