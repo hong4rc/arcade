@@ -459,9 +459,17 @@ pub struct TestClient {
     pub host_progress: Vec<arcade_term::Progress>,
     /// The titles the host terminal's window was given (OSC 0 or 2), in order.
     pub titles: Vec<String>,
+    /// Every different text the status bar showed after a piece of output, in order: for a
+    /// message that lasts only a moment, which a check made later would miss.
+    pub status_seen: Vec<String>,
 }
 
 impl TestClient {
+    /// Whether the status bar showed text with `needle` in it at any time so far.
+    pub fn saw_status(&self, needle: &str) -> bool {
+        self.status_seen.iter().any(|s| s.contains(needle))
+    }
+
     /// Connect and do the handshake, without attaching.
     pub fn connect(socket: &Path) -> Result<TestClient, String> {
         let stream = UnixStream::connect(socket).map_err(|e| format!("connect: {e}"))?;
@@ -479,6 +487,7 @@ impl TestClient {
             host_notifications: Vec::new(),
             host_progress: Vec::new(),
             titles: Vec::new(),
+            status_seen: Vec::new(),
         };
         client.send_message(&ClientMessage::Hello {
             version: PROTOCOL_VERSION,
@@ -643,6 +652,10 @@ impl TestClient {
                                 self.raw_output.extend_from_slice(&bytes);
                             }
                             self.screen.feed(&bytes);
+                            let status = self.status_row();
+                            if self.status_seen.last() != Some(&status) {
+                                self.status_seen.push(status);
+                            }
                             // The virtual screen's own replies go nowhere; what it was asked to
                             // put on the clipboard is kept.
                             for event in self.screen.drain_events() {

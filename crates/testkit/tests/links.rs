@@ -214,7 +214,7 @@ mod opening {
         client.wait_for_text("and https://yes.example/p.").unwrap();
         go_to(&mut client, "nope");
         client.send(b"o");
-        assert!(client.wait_until(WAIT, |c| c.status_row().contains("no link")));
+        assert!(client.wait_until(WAIT, |c| c.saw_status("no link")));
         assert!(!record.exists());
         client.send(b"/yes.example\r");
         client.send(b"o");
@@ -249,7 +249,7 @@ mod opening {
             format!("1\n{}558/DevOps+request\n", &first[15..])
         );
         // The status bar shows the whole address that was opened.
-        assert!(client.wait_until(WAIT, |c| c.status_row().contains("opening")));
+        assert!(client.wait_until(WAIT, |c| c.saw_status("opening")));
     }
 
     #[test]
@@ -260,7 +260,7 @@ mod opening {
         client.wait_for_text("https://yes.example/p").unwrap();
         go_to(&mut client, "yes.example");
         client.send(b"o");
-        assert!(client.wait_until(WAIT, |c| c.status_row().contains("cannot run")));
+        assert!(client.wait_until(WAIT, |c| c.saw_status("cannot run")));
     }
 }
 
