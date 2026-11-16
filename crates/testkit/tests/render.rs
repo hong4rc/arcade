@@ -54,6 +54,78 @@ fn first_difference(got: &Frame, want: &Frame) -> Option<String> {
     None
 }
 
+/// The text of one row of a frame, a blank cell as a space.
+fn row_text(frame: &Frame, y: u16) -> String {
+    frame
+        .rows
+        .iter()
+        .find(|r| r.y == y)
+        .map(|r| {
+            r.cells
+                .iter()
+                .map(|c| {
+                    if c.text.is_empty() {
+                        " "
+                    } else {
+                        c.text.as_str()
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The row and column of the first cell that differs, if the screens differ in a cell.
+fn first_cell_difference(got: &Frame, want: &Frame) -> Option<(u16, usize)> {
+    for (g, w) in got.rows.iter().zip(&want.rows) {
+        for (col, (gc, wc)) in g.cells.iter().zip(&w.cells).enumerate() {
+            if !same_cell(gc, wc) {
+                return Some((g.y, col));
+            }
+        }
+    }
+    None
+}
+
+/// Everything needed to tell a real difference from a screen that was still changing: both full
+/// rows, the two cells with their attributes, and whether either screen moved in 200 ms.
+fn explain_difference(
+    client: &mut TestClient,
+    alone: &mut PtyHost,
+    first: &Frame,
+    then: &Frame,
+) -> String {
+    let mut text = String::new();
+    if let Some((y, col)) = first_cell_difference(first, then) {
+        let cell = |f: &Frame| {
+            f.rows
+                .iter()
+                .find(|r| r.y == y)
+                .and_then(|r| r.cells.get(col))
+                .map(|c| format!("{c:?}"))
+                .unwrap_or_else(|| "none".into())
+        };
+        text += &format!(
+            "row {y} in the pane : {:?}\nrow {y} alone       : {:?}\ncell {col} in the pane: {}\ncell {col} alone       : {}\n",
+            row_text(first, y),
+            row_text(then, y),
+            cell(first),
+            cell(then)
+        );
+    }
+    // Look again 200 ms later: a screen that still moves is not yet quiet.
+    client.wait_until(Duration::from_millis(200), |_| false);
+    alone.wait_until(Duration::from_millis(200), |_| false);
+    let later_pane = client_frame(client);
+    let later_alone = alone.screen.snapshot(true).unwrap();
+    text += &format!(
+        "the pane changed in the last 200 ms: {}\nneovim alone changed in the last 200 ms: {}\n",
+        first_difference(first, &later_pane).is_some(),
+        first_difference(then, &later_alone).is_some()
+    );
+    text
+}
+
 /// What the panes show on the client's screen: all of it but the status bar, the last row.
 fn client_frame(client: &mut TestClient) -> Frame {
     let mut frame = client.screen.snapshot(true).expect("snapshot");
@@ -448,12 +520,14 @@ fn neovim_in_a_pane_looks_the_same_as_neovim_alone() {
                 None => break,
                 Some(d) => d,
             };
-            assert!(
-                Instant::now() < deadline,
-                "{name}: the pane differs from neovim alone: {last}\n--- in the pane ---\n{}\n--- alone ---\n{}",
-                client.screen_text(),
-                alone.screen_text()
-            );
+            if Instant::now() >= deadline {
+                let detail = explain_difference(&mut client, &mut alone, &got, &want);
+                panic!(
+                    "{name}: the pane differs from neovim alone: {last}\n{detail}--- in the pane ---\n{}\n--- alone ---\n{}",
+                    client.screen_text(),
+                    alone.screen_text()
+                );
+            }
         }
         assert!(
             client
