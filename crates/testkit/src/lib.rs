@@ -447,6 +447,8 @@ pub struct TestClient {
     pub output_messages: usize,
     /// Number of bytes of screen output received.
     pub output_bytes: usize,
+    /// The screen output itself, as it arrived (the first 8 MB only).
+    pub raw_output: Vec<u8>,
     /// What the host terminal was asked to put on its clipboard (OSC 52), decoded, in order.
     pub clipboard_writes: Vec<Vec<u8>>,
     /// How many bells the daemon rang the host terminal with, and the notifications it asked for
@@ -471,6 +473,7 @@ impl TestClient {
             closed: false,
             output_messages: 0,
             output_bytes: 0,
+            raw_output: Vec::new(),
             clipboard_writes: Vec::new(),
             bells: 0,
             host_notifications: Vec::new(),
@@ -636,6 +639,9 @@ impl TestClient {
                         Ok(Some(ServerMessage::Output(bytes))) => {
                             self.output_messages += 1;
                             self.output_bytes += bytes.len();
+                            if self.raw_output.len() < 8 << 20 {
+                                self.raw_output.extend_from_slice(&bytes);
+                            }
                             self.screen.feed(&bytes);
                             // The virtual screen's own replies go nowhere; what it was asked to
                             // put on the clipboard is kept.

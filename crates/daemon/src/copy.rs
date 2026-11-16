@@ -805,8 +805,62 @@ impl Copy {
         Outcome::Moved
     }
 
+    /// The text of a row and the column of its last written cell (blanks are spaces).
+    fn row_text<S: Source>(&self, src: &S, row: usize) -> (String, Option<usize>) {
+        let line = self.line_at(src, row);
+        let mut text = String::new();
+        let mut last = None;
+        for (col, cell) in line.cells.iter().enumerate() {
+            if cell.width == CellWidth::SpacerTail {
+                continue;
+            }
+            if cell.text.trim().is_empty() {
+                text.push(' ');
+            } else {
+                text.push_str(&cell.text);
+                last = Some(col);
+            }
+        }
+        (text, last)
+    }
+
+    /// Whether `row` goes on from the row above: the terminal wrapped the line there, or the
+    /// program broke an address by hand (see `links::hard_break_continues`).
+    fn goes_on_from_above<S: Source>(&self, src: &S, row: usize) -> bool {
+        if row == 0 {
+            return false;
+        }
+        self.line_at(src, row).continues || self.hand_broken(src, row)
+    }
+
+    /// Whether the row above `row` is an address the program cut by hand and `row` is the rest.
+    fn hand_broken<S: Source>(&self, src: &S, row: usize) -> bool {
+        self.hand_broken_within(src, row, 40)
+    }
+
+    fn hand_broken_within<S: Source>(&self, src: &S, row: usize, reach: usize) -> bool {
+        if row == 0 || self.line_at(src, row).continues {
+            return false;
+        }
+        let (prev, last) = self.row_text(src, row - 1);
+        let Some(last) = last else {
+            return false;
+        };
+        // The row above can itself be the rest of an address broken one row before.
+        let prev_is_continuation = reach > 0 && self.hand_broken_within(src, row - 1, reach - 1);
+        let (next, _) = self.row_text(src, row);
+        crate::links::hard_break_continues(
+            prev.trim_end(),
+            last,
+            usize::from(self.cols),
+            prev_is_continuation,
+            &next,
+        )
+    }
+
     /// The link the cursor is on: the one the program marked (OSC 8) on that cell, otherwise an
-    /// address written in the text, also when the terminal broke it over several rows.
+    /// address written in the text, also when the terminal wrapped it over several rows or the
+    /// program broke it over several rows by hand.
     fn link_under_cursor<S: Source>(&self, src: &S) -> Option<String> {
         if let Some(uri) = src.link_at(self.row, self.col) {
             return Some(uri);
@@ -815,21 +869,37 @@ impl Copy {
         const REACH: usize = 40;
         let total = src.total();
         let mut first = self.row;
-        while first > 0 && self.row - first < REACH && self.line_at(src, first).continues {
+        while first > 0 && self.row - first < REACH && self.goes_on_from_above(src, first) {
             first -= 1;
         }
         let mut last = self.row;
-        while last + 1 < total && last - self.row < REACH && self.line_at(src, last + 1).continues {
+        while last + 1 < total && last - self.row < REACH && self.goes_on_from_above(src, last + 1)
+        {
             last += 1;
         }
         let mut text = String::new();
         let mut at = None;
         for row in first..=last {
             let line = self.line_at(src, row);
-            for (col, cell) in line.cells.iter().enumerate() {
+            let by_hand = row > first && !line.continues && self.hand_broken(src, row);
+            let hand_next = row < last && !self.line_at(src, row + 1).continues;
+            // Cells up to the last written one when the next row is the rest of the address, and
+            // none of the indentation of a row that is the rest of the one above.
+            let end = if hand_next {
+                self.row_text(src, row).1.map_or(0, |l| l + 1)
+            } else {
+                line.cells.len()
+            };
+            let mut indent = by_hand;
+            for (col, cell) in line.cells[..end.min(line.cells.len())].iter().enumerate() {
                 if cell.width == CellWidth::SpacerTail {
                     continue;
                 }
+                let blank = cell.text.trim().is_empty();
+                if indent && blank {
+                    continue;
+                }
+                indent = false;
                 if row == self.row && col <= usize::from(self.col) {
                     at = Some(text.len());
                 }
@@ -1972,6 +2042,84 @@ mod tests {
         assert_eq!(
             open(&mut c, &src),
             opens("https://a.example/aaaaaaaaaaaaaaaaaaa")
+        );
+    }
+
+    // The panes of these tests are 40 columns wide: a first row is filled up to the edge.
+    fn full(start: &str, fill: char) -> String {
+        format!("{start}{}", fill.to_string().repeat(40 - start.len()))
+    }
+
+    #[test]
+    fn an_address_the_program_broke_by_hand_is_opened_whole_from_either_row() {
+        let first = full("see https://h.example/p/", '7');
+        let text = [first.as_str(), "  558/DevOps+request"];
+        let whole = format!("{}558/DevOps+request", &first[4..]);
+        for (row, col) in [(0, 6), (0, 39), (1, 2), (1, 15)] {
+            let (src, mut c) = wide(&text, row, col);
+            assert_eq!(open(&mut c, &src), opens(&whole), "{row},{col}");
+        }
+        // On the indentation nothing is under the cursor.
+        let (src, mut c) = wide(&text, 1, 0);
+        assert!(matches!(open(&mut c, &src), Outcome::Message(m) if m.contains("no link")));
+    }
+
+    #[test]
+    fn an_address_broken_by_hand_over_three_rows_stops_at_a_space() {
+        let first = full("see https://h.example/p/", '7');
+        let second = format!("  {}", "b-".repeat(19));
+        let text = [first.as_str(), second.as_str(), "  c/d?e=1 and then words"];
+        let whole = format!("{}{}c/d?e=1", &first[4..], second.trim());
+        for (row, col) in [(0, 8), (1, 10), (2, 3)] {
+            let (src, mut c) = wide(&text, row, col);
+            assert_eq!(open(&mut c, &src), opens(&whole), "{row},{col}");
+        }
+        // The words after the space are not part of it.
+        let (src, mut c) = wide(&text, 2, 12);
+        assert!(matches!(open(&mut c, &src), Outcome::Message(m) if m.contains("no link")));
+        // A middle row of plain letters is not joined, so the address stops at the first row.
+        let plain = format!("  {}", "b".repeat(38));
+        let text = [first.as_str(), plain.as_str(), "  c/d?e=1"];
+        let (src, mut c) = wide(&text, 0, 8);
+        assert_eq!(open(&mut c, &src), opens(&first[4..]));
+    }
+
+    #[test]
+    fn rows_that_only_look_like_the_rest_of_an_address_are_not_joined() {
+        let first = full("see https://h.example/p/", '7');
+        let alone = opens(&first[4..]);
+        // A sentence after an address that reaches the edge, a new address, a blank row, and
+        // text that is not indented.
+        for next in [
+            "  Thanks for reading",
+            "  Thanks",
+            "  https://o.example/x",
+            "   ",
+            "558/x",
+        ] {
+            let (src, mut c) = wide(&[first.as_str(), next], 0, 8);
+            assert_eq!(open(&mut c, &src), alone, "{next:?}");
+        }
+        // A short address at the end of a paragraph, then a row with address characters.
+        let (src, mut c) = wide(
+            &["go to https://a.example/x", "  and see /etc/hosts"],
+            0,
+            10,
+        );
+        assert_eq!(open(&mut c, &src), opens("https://a.example/x"));
+        // A list of addresses, one per row, each reaching the edge.
+        let one = full("https://aaaaaaaaaaaaa.example/p/", '1');
+        let two = full("https://bbbbbbbbbbbbb.example/p/", '2');
+        for (row, want) in [(0, &one), (1, &two)] {
+            let (src, mut c) = wide(&[one.as_str(), two.as_str()], row, 3);
+            assert_eq!(open(&mut c, &src), opens(want), "{row}");
+        }
+        // A table.
+        let table = ["| https://h.example/wiki/pages/3954966 |", "| 558/x | 12 |"];
+        let (src, mut c) = wide(&table, 0, 5);
+        assert_eq!(
+            open(&mut c, &src),
+            opens("https://h.example/wiki/pages/3954966")
         );
     }
 

@@ -38,6 +38,52 @@ pub fn find_address(text: &str, at: usize) -> Option<String> {
     None
 }
 
+/// Whether `token` begins with one of the schemes that are opened.
+fn starts_with_scheme(token: &str) -> bool {
+    let lower: String = token
+        .chars()
+        .take(8)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    SCHEMES.iter().any(|s| lower.starts_with(s))
+}
+
+/// Whether a program that broke a long address by hand went on with it on the next row.
+///
+/// `prev` is the row above as text with its trailing blanks cut off, `prev_last` the column of
+/// its last written cell, `cols` the width of the pane, `next` the row below. The rule, which is
+/// a guess and therefore strict:
+/// - the row above ends in an address (its last word starts with a scheme, or it is itself such a
+///   continuation: `prev_is_continuation`), and that address was cut where the program ran out
+///   of room: its last cell is at or within two cells of the right edge;
+/// - the row below is indentation (at least one blank) and then a word that is not a new address and has an address
+///   character in it (`/ . ? = & % + - _ #` or a digit). A word of plain letters is never joined,
+///   with or without text after it: it is more likely a sentence than the rest of an address.
+pub fn hard_break_continues(
+    prev: &str,
+    prev_last: usize,
+    cols: usize,
+    prev_is_continuation: bool,
+    next: &str,
+) -> bool {
+    if prev_last + 3 < cols {
+        return false;
+    }
+    let last_word = prev.split_whitespace().next_back().unwrap_or("");
+    let ends_in_address = starts_with_scheme(last_word)
+        || (prev_is_continuation && !prev.trim().contains(char::is_whitespace));
+    if !ends_in_address || prev.ends_with(char::is_whitespace) {
+        return false;
+    }
+    let word = next.split_whitespace().next().unwrap_or("");
+    next.starts_with(char::is_whitespace)
+        && !word.is_empty()
+        && !starts_with_scheme(word)
+        && word
+            .chars()
+            .any(|c| c.is_ascii_digit() || "/.?=&%+-_#".contains(c))
+}
+
 /// Cut the punctuation off the end of an address: `. , ; : ! ? ' "` always, and a closing
 /// bracket only when the address has no opening one for it (so `/wiki/Rust_(language)` keeps
 /// its bracket and `(see https://a.example/x)` loses it).
@@ -97,6 +143,57 @@ pub fn open(opener: &[String], uri: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn joins(prev: &str, next: &str) -> bool {
+        // 40 columns wide; the text of the row above is cut at its last written cell.
+        let prev = prev.trim_end();
+        hard_break_continues(prev, prev.chars().count() - 1, 40, false, next)
+    }
+
+    #[test]
+    fn an_address_cut_by_hand_at_the_edge_joins_the_indented_rest() {
+        assert!(joins(
+            "See: https://host.example/wiki/pages/3954966",
+            "  558/DevOps+request"
+        ));
+        // With text after the rest; without any indent it is another line.
+        assert!(joins(
+            "see https://host.example/wiki/pages/395496",
+            " 6558/x ok"
+        ));
+        assert!(!joins(
+            "see https://host.example/wiki/pages/395496",
+            "6558/x ok"
+        ));
+        // Two cells short of the edge still counts, three do not.
+        let row = |len: usize| format!("see https://h.example/{}", "7".repeat(len - 22));
+        assert_eq!(row(38).len(), 38);
+        assert!(joins(&row(40), "  66/x"));
+        assert!(joins(&row(38), "  66/x"));
+        assert!(!joins(&row(37), "  66/x"));
+    }
+
+    #[test]
+    fn text_that_only_looks_like_a_continuation_is_not_joined() {
+        // A sentence after a short address, a word with a space and no address character.
+        assert!(!joins("see https://a.example/x", "  and that is all"));
+        // A full row that ends in an address, followed by a sentence or a plain word.
+        let full = "see https://host.example/wiki/pages/3954";
+        assert!(!joins(full, "  Thanks for reading"));
+        assert!(!joins(full, "  Thanks"));
+        // A list of addresses, one per row, and a row that starts a new address.
+        assert!(!joins(full, "https://other.example/x"));
+        assert!(!joins(full, "  https://other.example/x"));
+        // A table: the row above does not end in an address.
+        assert!(!joins(
+            "| https://host.example/wiki/pages/3954 |",
+            "| 12 | 34 |"
+        ));
+        // The row above is prose that happens to reach the edge.
+        assert!(!joins("the address is in the paragraph above t", "  /x/y"));
+        // Nothing on the row below.
+        assert!(!joins(full, "   "));
+    }
 
     fn at(text: &str, needle: &str) -> Option<String> {
         find_address(text, text.find(needle).unwrap())
