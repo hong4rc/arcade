@@ -280,3 +280,28 @@ fn the_number_and_the_formats_are_read_from_the_file_and_taken_up_on_reload() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A program that changes its title ten times a second (a spinner) costs the status bar a
+/// redraw each time, a few dozen bytes, and nothing of the panes.
+#[test]
+fn a_title_that_changes_ten_times_a_second_costs_only_a_few_bytes_of_the_bar() {
+    let daemon = TestDaemon::start_with(|c| c.config.tab_format = template("{name} {title}"));
+    let mut client = attach(&daemon);
+    run(&daemon, "window.rename", &["nm"]);
+    client.type_line(
+        "i=0; while [ $i -lt 50 ]; do printf '\\033]2;spin-%s\\007' $((i%10)); sleep 0.1; i=$((i+1)); done; echo spun-$((40 + 2))",
+    );
+    // Wait until the loop has begun, then count what the client gets during the rest of it.
+    assert!(client.wait_until(WAIT, |c| bar(c).contains(" nm spin-")));
+    let (messages, bytes) = (client.output_messages, client.output_bytes);
+    assert!(client.wait_until(Duration::from_secs(20), |c| {
+        c.screen_text().contains("spun-42")
+    }));
+    let (messages, bytes) = (
+        client.output_messages - messages,
+        client.output_bytes - bytes,
+    );
+    eprintln!("spinner: {messages} messages, {bytes} bytes for about 45 title changes");
+    // The prompt line and its echo account for some; each title change is a redraw of the bar.
+    assert!(bytes < 45 * 400 + 2000, "{bytes} bytes");
+}
