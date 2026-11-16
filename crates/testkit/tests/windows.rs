@@ -216,16 +216,26 @@ fn tab_becomes(client: &mut TestClient, name: &str) {
 }
 
 /// Wait until the first tab is not called this any more.
-fn tab_stops_being(client: &mut TestClient, name: &str) {
+fn tab_stops_being(daemon: &TestDaemon, client: &mut TestClient, name: &str) {
     let deadline = Instant::now() + WAIT;
     while bar_of(client).contains(&format!(" {name}  1 ")) {
         client.type_line("");
         client.wait_until(Duration::from_millis(250), |_| false);
-        assert!(
-            Instant::now() < deadline,
-            "the tab is still {name}: {:?}",
-            bar_of(client)
-        );
+        if Instant::now() >= deadline {
+            let ps = std::process::Command::new("ps")
+                .args(["-ax", "-o", "pid,ppid,pgid,tpgid,stat,command"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+            let lines: Vec<&str> = ps.lines().filter(|l| l.contains("sleep 3")).collect();
+            // What the daemon itself thinks the windows are called, and whether the program is
+            // still alive: with these a stale bar can be told from a stale name.
+            let windows = daemon.command("window.list", &[]);
+            panic!(
+                "the tab is still {name}: {:?}\nthe daemon's windows: {windows:?}\nprocesses: {lines:#?}",
+                bar_of(client)
+            );
+        }
     }
 }
 
@@ -256,7 +266,7 @@ fn a_tab_is_named_after_the_program_unless_it_was_named_by_hand() {
     client.type_line("sleep 31");
     tab_becomes(&mut client, "sleep");
     client.send(b"\x03");
-    tab_stops_being(&mut client, "sleep");
+    tab_stops_being(&daemon, &mut client, "sleep");
     // A name chosen by hand stays, whatever runs afterwards.
     run(&daemon, "window.rename", &["mine"]);
     assert!(client.wait_until(WAIT, |c| bar_of(c).contains(" mine  1 ")));
@@ -275,7 +285,7 @@ fn a_tab_is_named_after_the_program_unless_it_was_named_by_hand() {
     run(&daemon, "window.rename", &[""]);
     tab_becomes(&mut client, "sleep");
     client.send(b"\x03");
-    tab_stops_being(&mut client, "sleep");
+    tab_stops_being(&daemon, &mut client, "sleep");
 }
 
 #[test]
@@ -358,5 +368,5 @@ fn an_empty_window_name_typed_at_the_prompt_gives_the_window_back_to_the_program
     // Enter on an empty line is the answer "no name": the program's name comes back.
     ask(&mut client);
     client.send(b"\r");
-    tab_stops_being(&mut client, "edit");
+    tab_stops_being(&daemon, &mut client, "edit");
 }
