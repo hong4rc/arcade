@@ -1577,10 +1577,11 @@ fn daemon_and_rehearsal_mb(daemon: i32) -> f64 {
         let (Some(pid), Some(ppid)) = (f.next(), f.next()) else {
             continue;
         };
-        if ppid.parse::<i32>().ok() == Some(daemon) && line.contains("__rehearse") {
-            if let Ok(pid) = pid.parse::<i32>() {
-                total += rss_of(pid);
-            }
+        if ppid.parse::<i32>().ok() == Some(daemon)
+            && line.contains("__rehearse")
+            && let Ok(pid) = pid.parse::<i32>()
+        {
+            total += rss_of(pid);
         }
     }
     total
