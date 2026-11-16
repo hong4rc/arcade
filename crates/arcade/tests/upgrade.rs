@@ -718,7 +718,13 @@ fn a_daemon_from_before_the_feature_is_restarted_with_its_sessions_made_again() 
         let old = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.tools/old")
             .join(format!("arcade-{version}"));
-        if !old.exists() {
+        // A program fetched for another system (the directory is shared with a Linux container)
+        // cannot run here.
+        let runs = Command::new(&old)
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !old.exists() || !runs {
             eprintln!(
                 "skipped {version}: run scripts/fetch-old-releases.sh to fetch {}",
                 old.display()
@@ -785,18 +791,25 @@ fn a_daemon_from_before_the_feature_is_restarted_with_its_sessions_made_again() 
         );
         // The shells of the new daemon: one in each directory the old panes had.
         let daemon = *env.daemon_pids().last().unwrap();
-        let children = Command::new("pgrep")
-            .args(["-P", &daemon.to_string()])
+        let table = Command::new("ps")
+            .args(["-axo", "pid=,ppid="])
             .output()
             .unwrap();
-        let mut pids: Vec<i32> = String::from_utf8_lossy(&children.stdout)
+        let mut pids: Vec<i32> = String::from_utf8_lossy(&table.stdout)
             .lines()
-            .filter_map(|l| l.trim().parse().ok())
+            .filter_map(|l| {
+                let mut f = l.split_whitespace().map(|n| n.parse::<i32>().ok());
+                let (pid, ppid) = (f.next()??, f.next()??);
+                (ppid == daemon as i32).then_some(pid)
+            })
             .collect();
         pids.sort_unstable();
         let dirs: Vec<String> = pids
             .iter()
             .map(|pid| {
+                if let Ok(p) = std::fs::read_link(format!("/proc/{pid}/cwd")) {
+                    return p.display().to_string();
+                }
                 let out = Command::new("lsof")
                     .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
                     .output()
