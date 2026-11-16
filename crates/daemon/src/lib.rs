@@ -50,6 +50,7 @@ pub mod stage;
 mod status;
 mod theme;
 mod tree;
+mod width;
 
 pub use keymap::{Binding, Keymap, KeysConfig, Table, normalize, parse_key, typed_name};
 pub use keys::{Input, KeyReader};

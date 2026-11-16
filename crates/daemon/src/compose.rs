@@ -10,25 +10,9 @@ use arcade_term::{Cell, CellWidth, Frame, LinkSpan, RowUpdate, Style};
 use crate::layout::{Divider, Rect};
 use crate::theme::{self, Role, Symbol};
 
-/// How many columns a character takes on screen: 0 for combining marks, 2 for wide characters.
-pub fn char_width(c: char) -> usize {
-    let n = c as u32;
-    match n {
-        0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF => 0,
-        0xFE00..=0xFE0F | 0x200B..=0x200F | 0xFE20..=0xFE2F => 0,
-        0x1100..=0x115F
-        | 0x2E80..=0xA4CF
-        | 0xAC00..=0xD7A3
-        | 0xF900..=0xFAFF
-        | 0xFE30..=0xFE6F
-        | 0xFF00..=0xFF60
-        | 0xFFE0..=0xFFE6
-        | 0x1F300..=0x1F64F
-        | 0x1F900..=0x1F9FF
-        | 0x20000..=0x3FFFD => 2,
-        _ => 1,
-    }
-}
+/// How many columns a character takes on screen: 0 for combining marks, 2 for wide characters;
+/// the same as in a pane (see `width`).
+pub use crate::width::char_width;
 
 pub fn blank(style: Style) -> Cell {
     Cell {
@@ -354,6 +338,74 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The columns the pane's terminal engine gives a text: the cursor's place after printing it
+    /// on an empty line.
+    fn pane_columns(text: &str) -> usize {
+        let mut term = arcade_term::Term::new(arcade_term::TermConfig::new(20, 3)).unwrap();
+        term.feed(text.as_bytes());
+        usize::from(term.snapshot(true).unwrap().cursor.x)
+    }
+
+    /// A name on the bar must be as wide there as in a pane, or the bar ends a cell out. The pane
+    /// (the terminal engine, which is what Ghostty does) is the reference.
+    #[test]
+    fn the_bar_gives_a_character_the_width_the_pane_gives_it() {
+        let texts = [
+            "a",
+            "\u{2665}",
+            "\u{2764}",
+            "\u{2605}",
+            "\u{2022}",
+            "\u{2192}",
+            "\u{25cf}",
+            "\u{25b6}",
+            "\u{2500}",
+            "\u{e0b6}",
+            "\u{e795}",
+            "\u{2b50}",
+            "\u{26a1}",
+            "\u{1f600}",
+            "\u{4e2d}",
+            "\u{ff21}",
+            "e\u{301}",
+            "\u{231a}",
+            "\u{23e9}",
+            "\u{2614}",
+            "\u{2705}",
+            "\u{274c}",
+            "\u{1f680}",
+        ];
+        assert_eq!(disagreements(&texts), Vec::<String>::new());
+    }
+
+    /// The texts of `texts` whose width on the bar is not the width in a pane.
+    fn disagreements(texts: &[&str]) -> Vec<String> {
+        texts
+            .iter()
+            .filter_map(|text| {
+                let bar = text_cells(text, Style::default()).len();
+                let pane = pane_columns(text);
+                (bar != pane).then(|| format!("{text:?}: bar {bar}, pane {pane}"))
+            })
+            .collect()
+    }
+
+    /// Known difference, not yet closed: the engine joins a character with what follows it (a
+    /// variation selector that asks for the picture, a zero width joiner, a pair of regional
+    /// indicators) into one cluster, and the bar takes the characters one at a time. A window
+    /// name with such a sequence is drawn out of line. Run with `--ignored` to see the list.
+    #[test]
+    #[ignore = "the bar does not join sequences into clusters as the engine does"]
+    fn the_bar_gives_a_sequence_the_width_the_pane_gives_it() {
+        let texts = [
+            "\u{2665}\u{fe0f}",
+            "\u{2764}\u{fe0f}",
+            "\u{1f468}\u{200d}\u{1f469}",
+            "\u{1f1fa}\u{1f1f8}",
+        ];
+        assert_eq!(disagreements(&texts), Vec::<String>::new());
+    }
 
     #[test]
     fn wide_and_combining_characters_take_the_right_columns() {

@@ -1117,6 +1117,35 @@ mod tests {
         assert!(!cut[0].quiet && cut.last().unwrap().quiet);
     }
 
+    /// A window named with a character that is wide in a pane (U+2B50, a star) still gives a bar
+    /// exactly as wide as the screen, at the widths of the author's terminal and below, in both
+    /// styles.
+    #[test]
+    fn a_wide_character_in_a_name_does_not_push_the_bar_out() {
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            let mut i = four_windows();
+            i.style = style;
+            i.session = "\u{2b50}work".into();
+            i.tabs[0].text = vec![TabPiece::plain("\u{2b50}everfit-microservices")];
+            i.tabs[1].text = vec![TabPiece::plain("api-\u{26a1}\u{2b50}")];
+            for width in [150u16, 80, 50] {
+                let (cells, _, spans) = build_with_tabs(width, &i);
+                assert_eq!(cells.len(), usize::from(width), "{style:?} {width}");
+                // Every wide character is followed by its second cell, none cut in half.
+                for (n, cell) in cells.iter().enumerate() {
+                    if cell.width == arcade_term::CellWidth::Wide {
+                        assert_eq!(
+                            cells.get(n + 1).map(|c| c.width),
+                            Some(arcade_term::CellWidth::SpacerTail),
+                            "{style:?} {width} at {n}"
+                        );
+                    }
+                }
+                assert!(spans.iter().all(|s| s.to <= width));
+            }
+        }
+    }
+
     /// The four windows of the author's bar: three quiet, one with a notification that needs them.
     fn four_windows() -> StatusInfo {
         let tab = |number: usize, name: &str, current: bool, notice: Option<Class>| Tab {
