@@ -241,8 +241,9 @@ fn mark_style(class: Class, block: arcade_term::Style, info: &StatusInfo) -> arc
 /// hidden tab), where it starts and ends, and whether it is a marker.
 type Laid = (Vec<Cell>, Vec<(usize, usize, usize, bool)>);
 
-/// How small a tab's text is made, in cells, before a tab is hidden.
-const TAB_TEXT_MIN: usize = 4;
+/// How small a tab's text is made, in cells, before a tab is hidden: three cells, the ellipsis and
+/// three cells. A name of this many cells or fewer is never cut.
+const TAB_TEXT_MIN: usize = 7;
 
 fn pieces_width(pieces: &[TabPiece]) -> usize {
     pieces
@@ -506,7 +507,7 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
 }
 
 /// The session's label and the tabs in `room` cells: as they are when they fit; with the longest
-/// names cut short (to no less than about four cells, the current tab's last) when they do not;
+/// names cut short (to no less than seven cells, the current tab's last) when they do not;
 /// and only when that is not enough with tabs hidden, a marker at the end where they are. The
 /// current tab always shows. Returns the cells and, for each tab or marker, its index (for a
 /// marker the nearest hidden tab), where it starts and ends, and whether it is a marker.
@@ -1170,6 +1171,52 @@ mod tests {
     /// The cells of the tab `span` covers, as text.
     fn shown_text(cells: &[Cell], span: &TabSpan) -> String {
         text(&cells[usize::from(span.from)..usize::from(span.to)])
+    }
+
+    /// A cut name stays readable and is cut no more than the width needs: at every width the bar
+    /// is as wide as the screen, the current tab shows, no visible name is under seven cells (or
+    /// its own length when that is less), and no name is cut while the bar has room to show it
+    /// whole.
+    #[test]
+    fn a_cut_name_keeps_seven_cells_and_takes_back_all_the_room_there_is() {
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            let mut i = four_windows();
+            i.style = style;
+            let (_, _, whole) = build_with_tabs(400, &i);
+            // What a tab takes besides its name, at the width where nothing is cut.
+            let names: Vec<usize> = i.tabs.iter().map(|t| pieces_width(&t.text)).collect();
+            let chrome: Vec<usize> = whole
+                .iter()
+                .map(|s| usize::from(s.to - s.from) - names[s.index])
+                .collect();
+            for width in 20u16..=200 {
+                let (cells, _, spans) = build_with_tabs(width, &i);
+                let line = text(&cells);
+                let ctx = format!("{style:?} at {width}: {line:?}");
+                assert_eq!(cells.len(), usize::from(width), "{ctx}");
+                assert!(
+                    spans.iter().any(|s| !s.marker && s.index == 2),
+                    "the current tab shows: {ctx}"
+                );
+                let end = spans.iter().map(|s| usize::from(s.to)).max().unwrap();
+                // The cell after the last tab is its gap; whatever is beyond is empty room.
+                let free = usize::from(width).saturating_sub(end + 1);
+                for span in spans.iter().filter(|s| !s.marker) {
+                    let name = usize::from(span.to - span.from) - chrome[span.index];
+                    let natural = names[span.index];
+                    assert!(
+                        name >= natural.min(7),
+                        "{} is cut too far: {ctx}",
+                        span.index
+                    );
+                    assert!(
+                        name == natural || free < natural - name,
+                        "{} is cut with {free} empty cells to spare: {ctx}",
+                        span.index
+                    );
+                }
+            }
+        }
     }
 
     /// Long names give up cells before any tab is hidden: every tab keeps its number and marks,
