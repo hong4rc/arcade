@@ -173,6 +173,9 @@ pub struct Copy {
     /// Whether the mark of the place in the history is drawn on the first row, and the place
     /// the view was last drawn with, to draw it again when it changes.
     pub show_position: bool,
+    /// Cells kept free at the right end of the first row, for the mark of a notification that the
+    /// pane wears in its corner; the position mark ends before them.
+    pub right_gap: u16,
     pub drawn_position: Option<(usize, usize)>,
 }
 
@@ -465,6 +468,7 @@ impl Copy {
             marks: Marks::default(),
             anchor: None,
             show_position: true,
+            right_gap: 0,
             drawn_position: None,
         }
         .remembered(src)
@@ -1348,11 +1352,12 @@ impl Copy {
             let (above, history) = self.position(src);
             let text = format!("[{above}/{history}]");
             let cols = usize::from(self.cols);
+            let gap = usize::from(self.right_gap);
             if let Some(first) = rows.first_mut()
-                && text.len() <= cols
+                && text.len() + gap <= cols
                 && first.len() >= cols
             {
-                let start = cols - text.len();
+                let start = cols - gap - text.len();
                 if let Some(spans) = links.first_mut() {
                     let cut = u16::try_from(start).unwrap_or(u16::MAX);
                     spans.retain_mut(|s| {
@@ -1364,7 +1369,7 @@ impl Copy {
                     first[start - 1] = blank(Style::default());
                 }
                 let style = theme::style(Role::ScrollPosition);
-                for (cell, c) in first[start..cols].iter_mut().zip(text.chars()) {
+                for (cell, c) in first[start..cols - gap].iter_mut().zip(text.chars()) {
                     *cell = Cell {
                         text: c.to_string(),
                         width: arcade_term::CellWidth::Narrow,

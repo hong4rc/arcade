@@ -97,6 +97,24 @@ fn status_info(
     }
 }
 
+/// The panes that wear the mark of their notification in the top right corner: out of focus, in a
+/// window of several panes, wide enough, with a notification, and the setting on.
+fn panes_wearing_a_mark(
+    config: &crate::config::Config,
+    notices: &crate::notify::Store,
+    in_focus: PaneId,
+    visible: &[(PaneId, Rect)],
+) -> Vec<PaneId> {
+    if !config.notification.pane_mark || visible.len() < 2 || notices.is_empty() {
+        return Vec::new();
+    }
+    visible
+        .iter()
+        .filter(|(p, r)| *p != in_focus && r.w >= MARK_MIN_WIDTH && notices.get(*p).is_some())
+        .map(|(p, _)| *p)
+        .collect()
+}
+
 /// A pane narrower than this has no room for the mark of its notification.
 const MARK_MIN_WIDTH: u16 = 12;
 
@@ -435,6 +453,12 @@ impl Server {
                 .then(|| theme::style(theme::Role::LinkUnderline)),
         );
         let mut failed = Vec::new();
+        let wearing = panes_wearing_a_mark(
+            &self.config,
+            &self.notices,
+            session.current_window().focus,
+            &visible,
+        );
         for (pane_id, rect) in &visible {
             let Some(pane) = self.panes.get_mut(pane_id) else {
                 continue;
@@ -445,6 +469,12 @@ impl Server {
                 pane.dirty = false;
                 // The mark of the place in the history is drawn again only when a number moved.
                 copy.show_position = self.config.scroll_position;
+                // The corner belongs to the mark of a notification; the position mark gives way.
+                let gap = u16::from(wearing.contains(pane_id));
+                if copy.right_gap != gap {
+                    copy.right_gap = gap;
+                    copy.dirty = true;
+                }
                 let position = copy.position(&pane.term);
                 if copy.show_position && copy.drawn_position != Some(position) {
                     copy.dirty = true;
@@ -496,12 +526,10 @@ impl Server {
         // A pane out of focus, in a window of several panes, wears the mark of its notification in
         // one cell at the top right (with one pane the tab says it, and the pane in focus is
         // being looked at). It covers that cell of what the program drew.
-        if self.config.notification.pane_mark && visible.len() > 1 && !self.notices.is_empty() {
-            let in_focus = session.current_window().focus;
+        {
             for (pane_id, rect) in &visible {
-                if *pane_id != in_focus
+                if wearing.contains(pane_id)
                     && let Some(n) = self.notices.get(*pane_id)
-                    && rect.w >= MARK_MIN_WIDTH
                 {
                     let mark =
                         text_cells(theme::notice_symbol(n.class), theme::notice_style(n.class));
