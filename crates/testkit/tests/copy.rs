@@ -268,23 +268,46 @@ fn the_capital_y_copies_and_stays_in_copy_mode() {
 }
 
 #[test]
-fn enter_does_not_copy_and_the_selection_stays() {
+fn enter_leaves_copy_mode_at_once_with_or_without_a_selection_and_copies_nothing() {
     let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.type_line("echo no-enter-copy");
     client.wait_for_row("no-enter-copy").unwrap();
+    // With a selection: one Enter, out of copy mode, nothing on the clipboard.
     enter(&mut client);
     search(&mut client, false, "no-enter-copy");
     client.wait_for_row("no-enter-copy").unwrap();
-    client.send(b"V\r");
-    std::thread::sleep(Duration::from_millis(300));
-    client.read_more(std::time::Instant::now() + Duration::from_millis(100));
+    client.send(b"V");
+    assert!(client.wait_until(WAIT, |c| copy_word(&bar(c)) == Some("V-LINE")));
+    client.send(b"\r");
+    assert!(left_copy_mode(&mut client), "{}", bar(&client));
+    client.read_more(std::time::Instant::now() + Duration::from_millis(300));
     assert!(client.clipboard_writes.is_empty());
+    // The next key goes to the program.
+    client.type_line("echo after-enter-$((40 + 2))");
+    client.wait_for_text("after-enter-42").unwrap();
+    // Without a selection it leaves too.
+    enter(&mut client);
+    client.send(b"\r");
+    assert!(left_copy_mode(&mut client), "{}", bar(&client));
+    assert!(client.clipboard_writes.is_empty());
+}
+
+#[test]
+fn enter_still_runs_a_search_and_takes_a_jump_label() {
+    let daemon = quiet_daemon();
+    let mut client = client(&daemon);
+    client.type_line("echo needle-here");
+    client.wait_for_row("needle-here").unwrap();
+    enter(&mut client);
+    // Typing a search: Enter runs it and stays in copy mode.
+    search(&mut client, false, "needle-here");
     assert!(in_copy_mode(&mut client), "{}", bar(&client));
-    // The selection is still there: the copy key copies it.
-    client.send(b"y");
-    wait_clipboard(&mut client, 1);
-    assert_eq!(client.clipboard_writes[0], b"no-enter-copy".to_vec());
+    // A jump: Enter takes the nearest match, the jump ends, copy mode stays.
+    client.send(b"sneedle");
+    assert!(client.wait_until(WAIT, |c| copy_word(&bar(c)) == Some("JUMP")));
+    client.send(b"\r");
+    assert!(client.wait_until(WAIT, |c| copy_word(&bar(c)) == Some("COPY")));
 }
 
 #[test]

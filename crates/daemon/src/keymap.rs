@@ -746,6 +746,8 @@ impl Keymap {
             &[],
             false,
         );
+        // The one key that always gets out, with a selection or without; nothing is copied.
+        bind(t, plain(Code::Named(Named::Enter)), "copy.exit", &[], false);
         // The movement keys last, so that nothing above can have taken one.
         for (index, command) in [
             (0, "copy.left"),
@@ -995,6 +997,7 @@ mod tests {
             ("]", "copy.prompt-next"),
             ("O", "copy.select-output"),
             ("escape", "copy.cancel"),
+            ("enter", "copy.exit"),
             ("q", "copy.exit"),
         ] {
             assert_eq!(copy_command(&map, key).as_deref(), Some(command), "{key}");

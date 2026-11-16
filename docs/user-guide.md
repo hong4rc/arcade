@@ -128,7 +128,7 @@ These keys do not repeat: hold the modifier and press again.
 | `s` | Jump: type what to go to, then the label of the match (see "Jump" below) |
 | `[` / `]` | Move the cursor to the previous / next shell prompt (see "Commands and their output" below) |
 | `O` | Select the output of the command the cursor is in; again, the output of the one before (see below) |
-| `q` | Leave |
+| `q`, `Enter` | Leave (nothing is copied; with a selection too) |
 | `Esc` | Cancel (drop the selection, or leave if nothing is selected) |
 
 **Where you are in the history.** A pane in copy mode (also when the wheel scrolled it) shows `[above/history]` at the right end of its first row, as tmux does: how many lines the view is above the bottom, over how many lines of history there are. At the bottom of copy mode it says `[0/<history>]`, so the mark does not come and go while you move; at the top of the history both numbers are the same. Each scrolled pane has its own mark. It is drawn over the view only: it is never selected, copied, searched, or counted by a jump, and a pane too narrow for it shows none. It is drawn again only when a number changes, and it costs nothing while a pane is at the bottom outside copy mode. `[scrollback] show-position = false` turns it off.
