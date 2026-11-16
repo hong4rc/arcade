@@ -218,6 +218,8 @@ pub struct Config {
     /// Whether the windows' numbers close up when one goes.
     pub renumber: bool,
     pub scrollback_lines: Option<usize>,
+    /// Whether a pane in copy mode shows `[above/history]` on its first row.
+    pub scroll_position: bool,
     pub clipboard: ClipboardConfig,
     pub links: LinksConfig,
     /// Whether the daemon keeps the machine from sleeping because it sat idle.
@@ -244,6 +246,7 @@ impl Default for Config {
             base_index: 1,
             renumber: true,
             scrollback_lines: None,
+            scroll_position: true,
             prevent_sleep: true,
             on_session_end: OnSessionEnd::Switch,
             notification: NotificationConfig::default(),
@@ -948,8 +951,16 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                 for (n, v) in table.iter() {
                     match n.get_ref().as_ref() {
                         "lines" => config.scrollback_lines = r.integer("lines", v),
+                        "show-position" => {
+                            if let Some(b) = r.boolean("show-position", v) {
+                                config.scroll_position = b;
+                            }
+                        }
                         other => {
-                            r.error(n.span().start, unknown_key("scrollback", other, &["lines"]));
+                            r.error(
+                                n.span().start,
+                                unknown_key("scrollback", other, &["lines", "show-position"]),
+                            );
                         }
                     }
                 }

@@ -43,6 +43,8 @@ pub enum Role {
     Selection,
     /// The status bar word that says a selection is active (`VISUAL`, `V-LINE`) or a jump is open.
     IndicatorSelect,
+    /// The `[above/history]` mark on the first row of a pane in copy mode.
+    ScrollPosition,
     /// The cells that match what was typed in a jump, and the one-letter label of a match.
     JumpMatch,
     JumpLabel,
@@ -140,6 +142,11 @@ pub fn style(role: Role) -> Style {
             fg: Color::Indexed(0),
             bg: Color::Indexed(5),
             bold: true,
+            ..Style::default()
+        },
+        Role::ScrollPosition => Style {
+            fg: Color::Indexed(0),
+            bg: Color::Indexed(3),
             ..Style::default()
         },
         Role::JumpMatch => Style {

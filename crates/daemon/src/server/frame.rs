@@ -347,6 +347,13 @@ impl Server {
             // the program draws is read again when copy mode ends.
             if let Some(copy) = pane.copy.as_mut() {
                 pane.dirty = false;
+                // The mark of the place in the history is drawn again only when a number moved.
+                copy.show_position = self.config.scroll_position;
+                let position = copy.position(&pane.term);
+                if copy.show_position && copy.drawn_position != Some(position) {
+                    copy.dirty = true;
+                }
+                copy.drawn_position = Some(position);
                 if relayout || copy.dirty {
                     copy.dirty = false;
                     let rows = copy

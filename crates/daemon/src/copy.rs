@@ -162,6 +162,10 @@ pub struct Copy {
     marks: Marks,
     /// Where the followed row (see `Source::anchor_row`) was when copy mode last looked.
     anchor: Option<usize>,
+    /// Whether the mark of the place in the history is drawn on the first row, and the place
+    /// the view was last drawn with, to draw it again when it changes.
+    pub show_position: bool,
+    pub drawn_position: Option<(usize, usize)>,
 }
 
 #[derive(Default)]
@@ -452,6 +456,8 @@ impl Copy {
             by_wheel: false,
             marks: Marks::default(),
             anchor: None,
+            show_position: true,
+            drawn_position: None,
         }
         .remembered(src)
     }
@@ -1226,8 +1232,44 @@ impl Copy {
         Some(out)
     }
 
-    /// What the pane shows now: the rows from `top`, the selection and the matches marked.
+    /// Where the view is in the history: how many lines it is above the bottom, and how many
+    /// lines of history there are (the rows above the live screen). Two counters, no walk.
+    pub fn position<S: Source>(&self, src: &S) -> (usize, usize) {
+        let history = src.total().saturating_sub(usize::from(self.rows));
+        (history.saturating_sub(self.top), history)
+    }
+
+    /// What the pane shows now: the rows from `top`, the selection and the matches marked, and
+    /// on the first row, at the right, `[above/history]` (as tmux does) when that is wanted and
+    /// there is room. The mark is drawn over the view only: the text the rows hold is not touched.
     pub fn view<S: Source>(&self, src: &S) -> Vec<Vec<Cell>> {
+        let mut rows = self.view_rows(src);
+        if self.show_position {
+            let (above, history) = self.position(src);
+            let text = format!("[{above}/{history}]");
+            let cols = usize::from(self.cols);
+            if let Some(first) = rows.first_mut()
+                && text.len() <= cols
+                && first.len() >= cols
+            {
+                let start = cols - text.len();
+                if first[start].width == arcade_term::CellWidth::SpacerTail && start > 0 {
+                    first[start - 1] = blank(Style::default());
+                }
+                let style = theme::style(Role::ScrollPosition);
+                for (cell, c) in first[start..cols].iter_mut().zip(text.chars()) {
+                    *cell = Cell {
+                        text: c.to_string(),
+                        width: arcade_term::CellWidth::Narrow,
+                        style,
+                    };
+                }
+            }
+        }
+        rows
+    }
+
+    fn view_rows<S: Source>(&self, src: &S) -> Vec<Vec<Cell>> {
         let mark = theme::style(Role::Selection);
         let span = self.selection_span(src);
         let pattern = self.search.as_ref().map(|(p, _)| p.as_str());
@@ -1301,6 +1343,54 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    fn first_row_text(c: &Copy, src: &Rows) -> String {
+        c.view(src)[0]
+            .iter()
+            .map(|cell| {
+                if cell.text.is_empty() {
+                    " "
+                } else {
+                    cell.text.as_str()
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_first_row_carries_the_place_in_the_history_and_leaves_the_text_alone() {
+        let spec: Vec<String> = (0..20).map(|i| format!("row{i:02}")).collect();
+        let refs: Vec<&str> = spec.iter().map(String::as_str).collect();
+        let src = rows(&refs);
+        // 20 rows, a view of 4: 16 rows of history. At the bottom the view is 0 above it.
+        let mut c = Copy::enter(&src, (0, 0), COLS, 4);
+        assert_eq!(c.position(&src), (0, 16));
+        assert_eq!(first_row_text(&c, &src), "row1[0/16]");
+        c.top = 10;
+        assert_eq!(c.position(&src), (6, 16));
+        // The mark takes the right end of the first row; what the row holds is not touched.
+        assert_eq!(first_row_text(&c, &src), "row1[6/16]");
+        assert_eq!(src.line(10).unwrap().cells[4].text, "0");
+        c.top = 0;
+        assert_eq!(c.position(&src), (16, 16));
+        // Off: the row is as it was.
+        c.show_position = false;
+        assert_eq!(first_row_text(&c, &src), "row00     ");
+    }
+
+    #[test]
+    fn a_pane_too_narrow_for_the_mark_has_none() {
+        let spec: Vec<String> = (0..200).map(|i| format!("r{i}")).collect();
+        let refs: Vec<&str> = spec.iter().map(String::as_str).collect();
+        let src = rows(&refs);
+        let mut c = Copy::enter(&src, (0, 0), 8, 4);
+        c.top = 0;
+        // "[196/196]" is 9 cells; the pane has 8.
+        assert!(!first_row_text(&c, &src).contains('['));
+        let mut roomy = Copy::enter(&src, (0, 0), COLS, 4);
+        roomy.top = 0;
+        assert!(first_row_text(&roomy, &src).ends_with("[196/196]"));
     }
 
     fn copy_at(src: &Rows, row: usize, col: u16) -> Copy {
@@ -2335,6 +2425,8 @@ mod tests {
     fn the_view_marks_the_selection_and_the_matches() {
         let src = rows(&["abc def", "abc"]);
         let mut c = copy_at(&src, 0, 4);
+        // The mark of the place in the history is not what is looked at here.
+        c.show_position = false;
         run(
             &mut c,
             &src,

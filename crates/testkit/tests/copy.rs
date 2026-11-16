@@ -26,6 +26,12 @@ fn scratch() -> PathBuf {
     dir
 }
 
+/// A daemon that does not draw the `[above/history]` mark, which would cover the end of a row
+/// that a test looks for by its whole text; the mark has tests of its own.
+fn quiet_daemon() -> TestDaemon {
+    TestDaemon::start_with(|c| c.config.scroll_position = false)
+}
+
 fn client(daemon: &TestDaemon) -> TestClient {
     let mut client = daemon
         .attach(AttachOptions::new().size(100, 30).named("copy"))
@@ -87,7 +93,7 @@ fn wait_clipboard(client: &mut TestClient, count: usize) {
 
 #[test]
 fn three_lines_far_up_the_scrollback_reach_the_client_as_one_osc52_sequence() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.type_line("seq 1 500");
     client.wait_for_row("500").unwrap();
@@ -115,6 +121,7 @@ fn the_command_mode_feeds_the_command_and_the_client_gets_no_sequence() {
     let file = dir.join("clipboard.txt");
     let target = file.clone();
     let daemon = TestDaemon::start_with(move |c| {
+        c.config.scroll_position = false;
         c.config.clipboard.mode = ClipboardMode::Command;
         c.config.clipboard.command = Some(format!("cat > '{}'", target.display()));
     });
@@ -142,7 +149,10 @@ fn the_command_mode_feeds_the_command_and_the_client_gets_no_sequence() {
 
 #[test]
 fn the_mode_off_only_keeps_the_buffer() {
-    let daemon = TestDaemon::start_with(|c| c.config.clipboard.mode = ClipboardMode::Off);
+    let daemon = TestDaemon::start_with(|c| {
+        c.config.scroll_position = false;
+        c.config.clipboard.mode = ClipboardMode::Off;
+    });
     let mut client = client(&daemon);
     client.type_line("echo keep-this");
     client.wait_for_row("keep-this").unwrap();
@@ -156,7 +166,7 @@ fn the_mode_off_only_keeps_the_buffer() {
 
 #[test]
 fn a_very_large_copy_comes_with_a_warning() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     let line = "a".repeat(90);
     client.type_line(&format!("yes {line} | head -1000"));
@@ -177,7 +187,7 @@ fn a_very_large_copy_comes_with_a_warning() {
 
 #[test]
 fn the_screen_stands_still_in_copy_mode_while_the_program_goes_on_printing() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.type_line("(sleep 1; echo LATE-$((40+2))) &");
     client.wait_for_prompt().unwrap();
@@ -201,7 +211,7 @@ fn the_screen_stands_still_in_copy_mode_while_the_program_goes_on_printing() {
 
 #[test]
 fn another_pane_goes_on_updating_while_this_one_is_in_copy_mode() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.send(PREFIX);
     client.send(b"|");
@@ -216,7 +226,7 @@ fn another_pane_goes_on_updating_while_this_one_is_in_copy_mode() {
 
 #[test]
 fn escape_drops_the_selection_first_and_leaves_the_second_time() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.type_line("echo select-me");
     client.wait_for_row("select-me").unwrap();
@@ -240,7 +250,7 @@ fn escape_drops_the_selection_first_and_leaves_the_second_time() {
 
 #[test]
 fn the_capital_y_copies_and_stays_in_copy_mode() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.type_line("echo stay-here");
     client.wait_for_row("stay-here").unwrap();
@@ -259,7 +269,7 @@ fn the_capital_y_copies_and_stays_in_copy_mode() {
 
 #[test]
 fn enter_does_not_copy_and_the_selection_stays() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.type_line("echo no-enter-copy");
     client.wait_for_row("no-enter-copy").unwrap();
@@ -279,7 +289,7 @@ fn enter_does_not_copy_and_the_selection_stays() {
 
 #[test]
 fn lines_after_characters_take_the_rows_from_the_anchor_to_the_cursor() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.type_line("printf 'alpha one\\nbeta two\\ngamma three\\ndelta four\\n'");
     client.wait_for_row("delta four").unwrap();
@@ -299,7 +309,7 @@ fn lines_after_characters_take_the_rows_from_the_anchor_to_the_cursor() {
 
 #[test]
 fn the_paste_key_writes_what_was_copied_into_the_pane() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.type_line("echo hello-paste");
     client.wait_for_row("hello-paste").unwrap();
@@ -320,7 +330,7 @@ fn the_paste_key_writes_what_was_copied_into_the_pane() {
 
 #[test]
 fn a_program_that_asked_for_bracketed_paste_gets_the_markers_and_others_do_not() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.type_line("echo marked-text");
     client.wait_for_row("marked-text").unwrap();
@@ -339,7 +349,7 @@ fn a_program_that_asked_for_bracketed_paste_gets_the_markers_and_others_do_not()
 
 #[test]
 fn pasting_with_nothing_copied_says_so() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.send(PREFIX);
     client.send(b"]");
@@ -350,7 +360,7 @@ fn pasting_with_nothing_copied_says_so() {
 fn a_program_writing_the_clipboard_is_heard_by_default_and_not_when_the_settings_forbid_it() {
     let ask = r"printf '\033]52;c;%s\a' $(printf from-pane | base64)";
     // On by default: the client is sent exactly one sequence.
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.type_line(ask);
     wait_clipboard(&mut client, 1);
@@ -358,7 +368,10 @@ fn a_program_writing_the_clipboard_is_heard_by_default_and_not_when_the_settings
     client.read_more(std::time::Instant::now() + Duration::from_millis(50));
     assert_eq!(client.clipboard_writes, vec![b"from-pane".to_vec()]);
     // Forbidden by `allow-pane-write = false`: nothing is sent, and the buffer stays empty.
-    let daemon = TestDaemon::start_with(|c| c.config.clipboard.allow_pane_write = false);
+    let daemon = TestDaemon::start_with(|c| {
+        c.config.scroll_position = false;
+        c.config.clipboard.allow_pane_write = false;
+    });
     let mut client = self::client(&daemon);
     client.type_line(ask);
     client.wait_for_prompt().unwrap();
@@ -372,7 +385,7 @@ fn a_program_writing_the_clipboard_is_heard_by_default_and_not_when_the_settings
 
 #[test]
 fn a_thousand_clipboard_writes_in_one_burst_reach_the_client_as_few_and_the_last_is_the_last() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     let dir = std::env::temp_dir().join(format!("arc-osc52-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -397,7 +410,7 @@ fn a_thousand_clipboard_writes_in_one_burst_reach_the_client_as_few_and_the_last
 
 #[test]
 fn a_clipboard_write_from_a_pane_that_never_stops_printing_still_reaches_the_client() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     // "X" in base64 is "WA==".
     client.type_line(r"printf '\033]52;c;WA==\007'; yes");
@@ -409,7 +422,7 @@ fn a_clipboard_write_from_a_pane_that_never_stops_printing_still_reaches_the_cli
 
 #[test]
 fn the_commands_work_from_inside_a_pane_too() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     let pane = client.focused_pane_id();
     let (ok, _) = daemon.command_from(Some(pane), "copy.enter", &[]).unwrap();
@@ -428,7 +441,7 @@ fn the_commands_work_from_inside_a_pane_too() {
 
 #[test]
 fn resizing_the_terminal_leaves_copy_mode() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     enter(&mut client);
     client.resize(90, 25);
@@ -445,7 +458,10 @@ fn the_authors_movement_keys_and_a_rebound_key_work_in_copy_mode() {
     )
     .unwrap();
     let path = file.clone();
-    let daemon = TestDaemon::start_with(move |c| c.config_path = Some(path));
+    let daemon = TestDaemon::start_with(move |c| {
+        c.config.scroll_position = false;
+        c.config_path = Some(path);
+    });
     let mut client = client(&daemon);
     client.type_line("printf 'a\\nfoo\\nb\\nfoo\\nc\\n'");
     client.wait_for_row("c").unwrap();
@@ -517,7 +533,10 @@ fn late_output_taken_in(client: &mut TestClient, marker: &std::path::Path) {
 
 #[test]
 fn the_selection_stays_on_its_line_when_old_lines_are_cut_from_a_full_scrollback() {
-    let daemon = TestDaemon::start_with(|c| c.scrollback_lines = 200);
+    let daemon = TestDaemon::start_with(|c| {
+        c.config.scroll_position = false;
+        c.scrollback_lines = 200;
+    });
     let (mut client, marker) = full_scrollback_with_late_output(&daemon, 100);
     client.send(b"V");
     // Lines are cut off the top of the scrollback while the selection is held.
@@ -530,7 +549,10 @@ fn the_selection_stays_on_its_line_when_old_lines_are_cut_from_a_full_scrollback
 
 #[test]
 fn a_selected_line_that_was_cut_off_is_dropped_with_a_message() {
-    let daemon = TestDaemon::start_with(|c| c.scrollback_lines = 200);
+    let daemon = TestDaemon::start_with(|c| {
+        c.config.scroll_position = false;
+        c.scrollback_lines = 200;
+    });
     let (mut client, marker) = full_scrollback_with_late_output(&daemon, 1000);
     client.send(b"V");
     late_output_taken_in(&mut client, &marker);
@@ -550,7 +572,10 @@ fn a_selected_line_that_was_cut_off_is_dropped_with_a_message() {
 /// cursor stays on its line, a fixed distance under the one line that is different.
 #[test]
 fn the_cursor_stays_on_its_line_when_identical_lines_are_cut_from_a_full_scrollback() {
-    let daemon = TestDaemon::start_with(|c| c.scrollback_lines = 200);
+    let daemon = TestDaemon::start_with(|c| {
+        c.config.scroll_position = false;
+        c.scrollback_lines = 200;
+    });
     let dir = scratch();
     let marker = dir.join("printed");
     // A wide terminal makes the library cut off few lines at a time.
@@ -591,7 +616,7 @@ fn the_cursor_stays_on_its_line_when_identical_lines_are_cut_from_a_full_scrollb
 
 #[test]
 fn the_bar_tells_copy_visual_v_line_and_jump_apart() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.type_line("echo state-check");
     client.wait_for_row("state-check").unwrap();
@@ -617,7 +642,7 @@ fn the_bar_tells_copy_visual_v_line_and_jump_apart() {
 
 #[test]
 fn a_jump_label_moves_the_cursor_and_a_selection_follows_it_to_the_copy() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.type_line("printf 'first mark\\nsecond line\\nthird mark here\\n'");
     client.wait_for_row("third mark here").unwrap();
@@ -668,6 +693,7 @@ fn the_last_output_is_copied_without_entering_copy_mode() {
     let file = dir.join("clipboard.txt");
     let target = file.clone();
     let daemon = TestDaemon::start_with(move |c| {
+        c.config.scroll_position = false;
         c.config.clipboard.mode = ClipboardMode::Command;
         c.config.clipboard.command = Some(format!("cat > '{}'", target.display()));
     });
@@ -703,7 +729,7 @@ fn the_last_output_is_copied_without_entering_copy_mode() {
 
 #[test]
 fn a_pane_without_prompt_marks_says_so_when_asked_for_its_last_output() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let mut client = client(&daemon);
     client.send(PREFIX);
     client.send(b"Y");
@@ -713,7 +739,7 @@ fn a_pane_without_prompt_marks_says_so_when_asked_for_its_last_output() {
 
 #[test]
 fn the_prompt_and_output_keys_work_in_copy_mode_of_a_real_pane() {
-    let daemon = TestDaemon::start();
+    let daemon = quiet_daemon();
     let script = marked_session();
     let mut client = daemon
         .attach(
