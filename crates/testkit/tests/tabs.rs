@@ -179,14 +179,16 @@ fn the_number_stands_left_or_right_of_the_name_or_is_not_shown_with_a_colour_of_
             assert!(!line.contains(" 1 "), "{line:?}");
             continue;
         }
-        // The number is drawn in another colour than the name, on the same background.
+        // The number is drawn in another colour than the name, and in the colours of the tab
+        // swapped (the tab shown is the current one).
         let at = match position {
             NumberPosition::Left => column_of(&line, "1 nm"),
             _ => column_of(&line, "nm 1") + 3,
         };
         let number = client.screen.style_at(y, at);
         assert_ne!(number.fg, name.fg, "{position:?}");
-        assert_eq!(number.bg, name.bg, "{position:?}");
+        assert_eq!(number.bg, name.fg, "{position:?}");
+        assert_eq!(number.fg, name.bg, "{position:?}");
     }
 }
 
