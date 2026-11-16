@@ -142,10 +142,12 @@ fn the_tab_of_a_window_shows_the_progress_of_its_panes_until_it_is_removed() {
     }));
 }
 
-/// The bytes of screen output, not counting the progress sequences passed on to the host.
-fn screen_bytes(client: &TestClient) -> usize {
-    let raw = String::from_utf8_lossy(&client.raw_output).into_owned();
-    raw.replace("\x1b]9;4;1;42\x1b\\", "").len()
+/// How many times a frame addressed the status bar's row (the last of the 30 rows) from `from` on.
+/// The renderer moves to a row with an absolute position, and a bar that did not change is not
+/// written at all.
+fn bar_writes_since(client: &TestClient, from: usize) -> usize {
+    let raw = String::from_utf8_lossy(&client.raw_output[from..]).into_owned();
+    raw.matches("\x1b[30;").count()
 }
 
 #[test]
@@ -154,20 +156,25 @@ fn a_report_that_says_the_same_again_does_not_redraw_the_bar() {
     let mut client = start(&daemon);
     client.type_line(&report(1, 42));
     assert!(client.wait_until(WAIT, |c| c.screen_text().contains("42%")));
+    // The count sees a write of the bar: showing the first report wrote it.
+    assert!(bar_writes_since(&client, 0) >= 1);
     let lap = |client: &mut TestClient, body: &str, marker: &str| {
-        let before = screen_bytes(client);
+        let from = client.raw_output.len();
         client.type_line(&format!(
             "i=0; while [ $i -lt 40 ]; do {body}; sleep 0.02; i=$((i+1)); done; echo {marker}"
         ));
         client.wait_for_text(marker).unwrap();
         client.wait_until(Duration::from_millis(300), |_| false);
-        screen_bytes(client) - before
+        bar_writes_since(client, from)
     };
+    // The bar is written when it changes (a new report for it to show), so the lap with
+    // reports repeats the one that is already shown.
     let with_reports = lap(&mut client, &report(1, 42)[..], "lap-one");
     let without = lap(&mut client, "true", "lap-two");
-    // The two laps type about the same text; 40 reports must not add a bar's worth of cells each.
+    // Forty identical reports must not write the bar again: the bar is written when something
+    // on it changes (the same as in the lap without reports), not once for each report.
     assert!(
-        with_reports < without + 400,
-        "with {with_reports} bytes, without {without}"
+        with_reports <= without + 2,
+        "the bar's row was written {with_reports} times with reports and {without} without"
     );
 }
