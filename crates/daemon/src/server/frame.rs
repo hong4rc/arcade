@@ -2,12 +2,51 @@
 
 use super::*;
 use crate::compose::text_cells;
+use crate::format::Field;
 use crate::render::HostModes;
 use crate::status::{self, StatusInfo, Tab};
 use crate::theme;
 
+/// What a tab says besides its number, from the format of the configuration: by default the
+/// window's name. The program's title is a quiet piece, cut to `TAB_TITLE_CELLS`.
+pub(super) fn tab_text(
+    config: &Config,
+    panes: &HashMap<u64, Pane>,
+    w: &Window,
+) -> Vec<status::TabPiece> {
+    let title: String = panes
+        .get(&w.focus)
+        .and_then(|p| p.title.as_deref())
+        .map(|t| clean_title(t, TITLE_LIMIT).trim().to_string())
+        .unwrap_or_default();
+    let title = status::cut_to_cells(&title, status::TAB_TITLE_CELLS);
+    let pieces = config.tab_format.render(|field| match field {
+        Field::Name => w.name.clone(),
+        // The same word twice says nothing more.
+        Field::Title if title == w.name => String::new(),
+        Field::Title => title.clone(),
+        Field::Program => w.program.clone(),
+        Field::Directory => w.directory.clone(),
+        Field::Session | Field::Number => String::new(),
+    });
+    let mut out: Vec<status::TabPiece> = pieces
+        .into_iter()
+        .map(|p| status::TabPiece {
+            text: clean_title(&p.text, TITLE_LIMIT),
+            quiet: p.field == Some(Field::Title),
+        })
+        .collect();
+    if out.is_empty() {
+        // A format that says nothing for this window must not leave an empty tab.
+        out.push(status::TabPiece::plain(w.name.clone()));
+    }
+    out
+}
+
 fn status_info(
     s: &Session,
+    config: &Config,
+    panes: &HashMap<u64, Pane>,
     copy: Option<crate::status::CopyState>,
     unlock_key: Option<String>,
     notices: &crate::notify::Store,
@@ -15,12 +54,13 @@ fn status_info(
 ) -> StatusInfo {
     StatusInfo {
         session: s.name.clone(),
+        number: config.tab_number,
         tabs: s
             .windows
             .iter()
             .map(|w| Tab {
                 number: w.number,
-                name: w.name.clone(),
+                text: tab_text(config, panes, w),
                 current: w.id == s.current,
                 zoomed: w.zoomed,
                 notice: notices.highest(w.layout.rects().into_iter().map(|(p, _)| p)),
@@ -56,28 +96,29 @@ fn clean_title(text: &str, limit: usize) -> String {
 pub(super) const PROGRESS_REMOVE: &[u8] = b"\x1b]9;4;0\x1b\\";
 
 impl Server {
-    /// What the pane's foreground program is called, for the window the pane makes.
-    pub(super) fn program_name(&self, pane: u64) -> Option<String> {
-        let p = self.panes.get(&pane)?;
-        pty::foreground_program(std::os::fd::AsRawFd::as_raw_fd(&p.master), p.pid)
-    }
-
-    /// The title of the host terminal's window: what the focused pane's program calls itself
-    /// (or the window's name when it has set no title), then the session and the window number.
+    /// The title of the host terminal's window, made from the format of the configuration: by
+    /// default the session, the window's number and name, then what the focused pane's program
+    /// calls itself. Empty when the format says Arcade sets none.
     fn host_title(&self, s: &Session) -> String {
         let window = s.current_window();
-        let pane_title = self
-            .panes
-            .get(&window.focus)
+        let pane = self.panes.get(&window.focus);
+        let title = pane
             .and_then(|p| p.title.as_deref())
-            .unwrap_or(&window.name);
-        let first = clean_title(pane_title, TITLE_LIMIT);
+            .map(|t| clean_title(t, TITLE_LIMIT).trim().to_string())
+            .unwrap_or_default();
         let session = clean_title(&s.name, TITLE_LIMIT);
-        // The same word twice says nothing more.
-        if first == session {
-            return format!("{session}:{}", window.number);
-        }
-        format!("{first} \u{b7} {session}:{}", window.number)
+        let name = clean_title(&window.name, TITLE_LIMIT);
+        let text = self.config.title_format.render_text(|field| match field {
+            Field::Session => session.clone(),
+            Field::Number => window.number.to_string(),
+            Field::Name => name.clone(),
+            // The same word twice says nothing more.
+            Field::Title if title == name || title == session => String::new(),
+            Field::Title => title.clone(),
+            Field::Program => window.program.clone(),
+            Field::Directory => window.directory.clone(),
+        });
+        clean_title(&text, TITLE_LIMIT * 2)
     }
 
     /// Tell each attached client's terminal the title of its window, when and only when it is
@@ -92,7 +133,7 @@ impl Server {
                 continue;
             }
             let title = self.host_title(s);
-            if s.sent_title.as_deref() != Some(title.as_str()) {
+            if !title.is_empty() && s.sent_title.as_deref() != Some(title.as_str()) {
                 due.push((s.id, client, title));
             }
         }
@@ -240,16 +281,49 @@ impl Server {
                         }
                     }
                 }
-                for window in session.windows.iter_mut().filter(|w| !w.name_manual) {
-                    let name = self
-                        .panes
-                        .get(&window.focus)
-                        .and_then(|p| pty::foreground_program(p.master.as_raw_fd(), p.pid));
-                    if let Some(name) = name
-                        && name != window.name
-                    {
-                        window.name = name;
-                        session.chrome_dirty = true;
+                // The program and the directory of each window, for the formats that use them.
+                let wants_program = self.config.tab_format.uses(Field::Program)
+                    || self.config.title_format.uses(Field::Program);
+                let wants_directory = self.config.tab_format.uses(Field::Directory)
+                    || self.config.title_format.uses(Field::Directory);
+                if wants_program || wants_directory {
+                    for window in session.windows.iter_mut() {
+                        let Some(p) = self.panes.get(&window.focus) else {
+                            continue;
+                        };
+                        let program = if wants_program {
+                            pty::foreground_program(p.master.as_raw_fd(), p.pid).unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        let directory = if wants_directory {
+                            pty::process_cwd(p.pid)
+                                .map(|c| dir_label(&c))
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        if program != window.program || directory != window.directory {
+                            window.program = program;
+                            window.directory = directory;
+                            session.chrome_dirty = true;
+                        }
+                    }
+                }
+                // The automatic name goes on following its source only when the configuration
+                // says so; otherwise it was given when the window was made.
+                if self.config.window_name_follow {
+                    for window in session.windows.iter_mut().filter(|w| !w.name_manual) {
+                        let name = name_of_pane(
+                            &self.panes,
+                            self.config.window_name_from,
+                            window.focus,
+                            &session.cwd,
+                        );
+                        if name != window.name {
+                            window.name = name;
+                            session.chrome_dirty = true;
+                        }
                     }
                 }
             }
@@ -363,7 +437,15 @@ impl Server {
                 });
                 let (cells, prompt_cursor, spans) = status::build_with_tabs(
                     cols,
-                    &status_info(session, copy_on, unlock_key, &self.notices, hint),
+                    &status_info(
+                        session,
+                        &self.config,
+                        &self.panes,
+                        copy_on,
+                        unlock_key,
+                        &self.notices,
+                        hint,
+                    ),
                 );
                 // Where the tabs are as drawn, for a click on one.
                 session.tab_bar = spans

@@ -226,7 +226,10 @@ fn tab_stops_being(client: &mut TestClient, name: &str) {
 
 #[test]
 fn a_tab_is_named_after_the_program_unless_it_was_named_by_hand() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_with(|c| {
+        c.config.window_name_from = arcade_daemon::config::NameFrom::Program;
+        c.config.window_name_follow = true;
+    });
     let mut client = daemon
         .attach(AttachOptions::new().size(100, 30).named("names"))
         .unwrap();
@@ -308,7 +311,10 @@ fn nothing_reaches_the_client_while_every_pane_is_still() {
 /// last drawn, though nothing more is printed afterwards.
 #[test]
 fn a_tab_takes_the_name_of_a_program_that_starts_with_nothing_printed_later() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_with(|c| {
+        c.config.window_name_from = arcade_daemon::config::NameFrom::Program;
+        c.config.window_name_follow = true;
+    });
     let mut client = daemon.attach_shell();
     client.wait_for_prompt().unwrap();
     client.type_line("sleep 33");

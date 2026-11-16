@@ -29,6 +29,7 @@ mod commands;
 mod compose;
 pub mod config;
 mod copy;
+pub mod format;
 mod keymap;
 mod keys;
 pub mod keytools;

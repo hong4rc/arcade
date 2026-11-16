@@ -14,7 +14,20 @@ use toml::Spanned;
 use toml::de::{DeTable, DeValue};
 
 use crate::commands;
+use crate::format::{Field, Template};
 use crate::keymap::{Binding, Keymap, KeysConfig, Table, normalize, parse_key};
+
+pub const DEFAULT_TAB_FORMAT: &str = "{name}";
+pub const DEFAULT_TITLE_FORMAT: &str = "{session}:{number} {name} \u{b7} {title}";
+pub const TAB_FIELDS: &[Field] = &[Field::Name, Field::Title, Field::Program, Field::Directory];
+pub const TITLE_FIELDS: &[Field] = &[
+    Field::Session,
+    Field::Number,
+    Field::Name,
+    Field::Title,
+    Field::Program,
+    Field::Directory,
+];
 
 /// Where the status bar sits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +35,25 @@ pub enum StatusPosition {
     Bottom,
     Top,
     Off,
+}
+
+/// Where the number of a window stands in its tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NumberPosition {
+    Left,
+    Right,
+    Off,
+}
+
+/// Where the automatic name of a window comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NameFrom {
+    /// The last part of the directory of the window's focused pane.
+    Directory,
+    /// The program in the foreground of the focused pane.
+    Program,
+    /// The title the program in the focused pane set.
+    Title,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,6 +202,17 @@ pub struct Config {
     pub keys: KeysConfig,
     pub overrides: Vec<KeyOverride>,
     pub status_position: StatusPosition,
+    /// Where a window's number stands in its tab, or that it is not shown.
+    pub tab_number: NumberPosition,
+    /// What a tab says besides the number (fields: name, title, program, directory).
+    pub tab_format: Template,
+    /// The title Arcade sets on the host terminal's window (fields: session, number, name,
+    /// title, program, directory); empty means Arcade sets none.
+    pub title_format: Template,
+    /// Where the automatic name of a window comes from, and whether it goes on following its
+    /// source after the window was made.
+    pub window_name_from: NameFrom,
+    pub window_name_follow: bool,
     /// The number of the first window.
     pub base_index: usize,
     /// Whether the windows' numbers close up when one goes.
@@ -192,6 +235,12 @@ impl Default for Config {
             keys: KeysConfig::default(),
             overrides: Vec::new(),
             status_position: StatusPosition::Bottom,
+            tab_number: NumberPosition::Left,
+            tab_format: Template::parse(DEFAULT_TAB_FORMAT, TAB_FIELDS).expect("a valid default"),
+            title_format: Template::parse(DEFAULT_TITLE_FORMAT, TITLE_FIELDS)
+                .expect("a valid default"),
+            window_name_from: NameFrom::Directory,
+            window_name_follow: false,
             base_index: 1,
             renumber: true,
             scrollback_lines: None,
@@ -776,9 +825,40 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                                 None => config.status_position,
                             };
                         }
-                        other => {
-                            r.error(n.span().start, unknown_key("status", other, &["position"]))
+                        "number" => match r.string("number", v) {
+                            Some("left") => config.tab_number = NumberPosition::Left,
+                            Some("right") => config.tab_number = NumberPosition::Right,
+                            Some("off") => config.tab_number = NumberPosition::Off,
+                            Some(other) => r.error(
+                                v.span().start,
+                                format!("number is left, right or off, not \"{other}\""),
+                            ),
+                            None => {}
+                        },
+                        "tab-format" => {
+                            if let Some(text) = r.string("tab-format", v) {
+                                match Template::parse(text, TAB_FIELDS) {
+                                    Ok(t) => config.tab_format = t,
+                                    Err(e) => r.error(v.span().start, format!("tab-format: {e}")),
+                                }
+                            }
                         }
+                        "title-format" => {
+                            if let Some(text) = r.string("title-format", v) {
+                                match Template::parse(text, TITLE_FIELDS) {
+                                    Ok(t) => config.title_format = t,
+                                    Err(e) => r.error(v.span().start, format!("title-format: {e}")),
+                                }
+                            }
+                        }
+                        other => r.error(
+                            n.span().start,
+                            unknown_key(
+                                "status",
+                                other,
+                                &["position", "number", "tab-format", "title-format"],
+                            ),
+                        ),
                     }
                 }
             }
@@ -795,9 +875,30 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                                 config.renumber = b;
                             }
                         }
+                        "name-from" => match r.string("name-from", v) {
+                            Some("directory") => config.window_name_from = NameFrom::Directory,
+                            Some("program") => config.window_name_from = NameFrom::Program,
+                            Some("title") => config.window_name_from = NameFrom::Title,
+                            Some(other) => r.error(
+                                v.span().start,
+                                format!(
+                                    "name-from is directory, program or title, not \"{other}\""
+                                ),
+                            ),
+                            None => {}
+                        },
+                        "name-follow" => {
+                            if let Some(b) = r.boolean("name-follow", v) {
+                                config.window_name_follow = b;
+                            }
+                        }
                         other => r.error(
                             n.span().start,
-                            unknown_key("window", other, &["base-index", "renumber"]),
+                            unknown_key(
+                                "window",
+                                other,
+                                &["base-index", "renumber", "name-from", "name-follow"],
+                            ),
                         ),
                     }
                 }

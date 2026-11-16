@@ -256,6 +256,10 @@ struct Window {
     name: String,
     /// The user chose the name, so it is not taken from the working directory any more.
     name_manual: bool,
+    /// The program in the foreground of the focused pane and its directory (the last part, `~`
+    /// for the home directory), looked at about once a second and only while a format uses them.
+    program: String,
+    directory: String,
     layout: Layout,
     focus: PaneId,
     /// The pane that had the focus before this one.
@@ -1394,6 +1398,11 @@ impl Server {
         self.ever_had_session = true;
         let pane_id = pane.id;
         self.panes.insert(pane_id, pane);
+        let first_name = name_at_creation(
+            self.config.window_name_from,
+            &request.cwd,
+            first_program_name(&request.command, &request.env),
+        );
         self.sessions.insert(
             session_id,
             Session {
@@ -1403,9 +1412,11 @@ impl Server {
                 cwd: request.cwd.clone(),
                 windows: vec![Window {
                     id: window_id,
-                    name: first_program_name(&request.command, &request.env),
+                    name: first_name,
                     number: self.config.base_index,
                     name_manual: false,
+                    program: String::new(),
+                    directory: String::new(),
                     layout: Layout::new(pane_id, area_cols, area_rows),
                     focus: pane_id,
                     last_focus: None,
@@ -1620,6 +1631,7 @@ impl Server {
         // Answers the terminal wants to give to the program go back to it at once.
         let mut clipboard_writes = Vec::new();
         let mut signals = Vec::new();
+        let mut title_changed = false;
 
         if pane.term.has_events() {
             // Who has the terminal now: a title belongs to the program that wrote it. Asked
@@ -1634,7 +1646,9 @@ impl Server {
                         // A title is the program's own words: it is kept no longer than it is
                         // ever shown.
                         let title: String = title.chars().take(frame::TITLE_LIMIT).collect();
-                        pane.title = Some(title).filter(|t| !t.is_empty());
+                        let title = Some(title).filter(|t| !t.is_empty());
+                        title_changed |= title != pane.title;
+                        pane.title = title;
                         pane.title_owner = writer;
                     }
                     TermEvent::TitlePush => {
@@ -1675,6 +1689,14 @@ impl Server {
             }
             if !replies.is_empty() {
                 queue_pane_input(pane, &replies);
+            }
+        }
+        // A tab that shows the title of the program has to be drawn again; only the bar is.
+        if title_changed && self.config.tab_format.uses(crate::format::Field::Title) {
+            for s in self.sessions.values_mut() {
+                if s.windows.iter().any(|w| w.focus == pane_id) {
+                    s.chrome_dirty = true;
+                }
             }
         }
         // Only the latest write counts, and it waits until the output has been passed on.
@@ -1902,6 +1924,63 @@ fn first_program_name(command: &[String], env: &[String]) -> String {
         .unwrap_or(&program)
         .trim_start_matches('-')
         .to_string()
+}
+
+/// The longest name a window takes from the title of its program, in characters.
+const NAME_FROM_TITLE_LIMIT: usize = 32;
+
+/// How a directory is called in a window's name: its last part, `~` for the home directory.
+fn dir_label(cwd: &str) -> String {
+    if std::env::var("HOME").is_ok_and(|home| {
+        !home.is_empty() && home.trim_end_matches('/') == cwd.trim_end_matches('/') && cwd != "/"
+    }) {
+        return "~".to_string();
+    }
+    directory_name(cwd)
+}
+
+/// What a window made now is called, by what the configuration says the name comes from. The
+/// directory is the one the pane was started in; the program is what it was started with.
+fn name_at_creation(from: crate::config::NameFrom, cwd: &str, program: String) -> String {
+    match from {
+        crate::config::NameFrom::Program => program,
+        // No program has set a title yet.
+        crate::config::NameFrom::Directory | crate::config::NameFrom::Title => dir_label(cwd),
+    }
+}
+
+/// What a window is called by its focused pane, as it is now. `fallback_cwd` is used when the
+/// pane's own directory cannot be read.
+fn name_of_pane(
+    panes: &HashMap<u64, Pane>,
+    from: crate::config::NameFrom,
+    pane: u64,
+    fallback_cwd: &str,
+) -> String {
+    use crate::config::NameFrom;
+    let Some(p) = panes.get(&pane) else {
+        return dir_label(fallback_cwd);
+    };
+    let directory = || pty::process_cwd(p.pid).map(|c| dir_label(&c));
+    let program = || pty::foreground_program(std::os::fd::AsRawFd::as_raw_fd(&p.master), p.pid);
+    let title = || {
+        let t: String = p
+            .title
+            .as_deref()
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(NAME_FROM_TITLE_LIMIT)
+            .collect();
+        let t = t.trim().to_string();
+        (!t.is_empty()).then_some(t)
+    };
+    match from {
+        NameFrom::Directory => directory().or_else(program),
+        NameFrom::Program => program().or_else(directory),
+        NameFrom::Title => title().or_else(directory).or_else(program),
+    }
+    .unwrap_or_else(|| dir_label(fallback_cwd))
 }
 
 /// The last part of a directory path, or the whole path for the root.

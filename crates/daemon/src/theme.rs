@@ -20,6 +20,9 @@ pub enum Role {
     /// the tab of the current window.
     TabNumber,
     TabNumberCurrent,
+    /// The program's own title in a tab, fainter than the name.
+    TabTitle,
+    TabTitleCurrent,
     /// The words at the right end of the status bar (`PREFIX`, `LOCK`, `COPY`).
     Indicator,
     /// A line of text that replaces the status bar for a moment (an error, a result).
@@ -84,6 +87,15 @@ pub fn style(role: Role) -> Style {
         },
         Role::TabNumberCurrent => Style {
             fg: Color::Indexed(15),
+            ..style(Role::TabCurrent)
+        },
+        Role::TabTitle => Style {
+            faint: true,
+            ..style(Role::Tab)
+        },
+        Role::TabTitleCurrent => Style {
+            faint: true,
+            bold: false,
             ..style(Role::TabCurrent)
         },
         Role::Indicator => Style {

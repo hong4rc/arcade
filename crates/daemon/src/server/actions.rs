@@ -330,17 +330,29 @@ impl Server {
                 Ok(String::new())
             }
             Command::WindowRename(Some(name)) => {
+                // An empty name gives the window back to automatic naming: it is named by the
+                // rule of the configuration at once.
+                let automatic = name.is_empty().then(|| {
+                    let focus = self
+                        .sessions
+                        .get(&ctx.session)
+                        .and_then(|s| s.window(ctx.window))
+                        .map(|w| w.focus);
+                    let cwd = self.sessions.get(&ctx.session).map(|s| s.cwd.clone());
+                    name_of_pane(
+                        &self.panes,
+                        self.config.window_name_from,
+                        focus.unwrap_or(ctx.pane),
+                        &cwd.unwrap_or_default(),
+                    )
+                });
                 let window = self
                     .sessions
                     .get_mut(&ctx.session)
                     .and_then(|s| s.window_mut(ctx.window))
                     .ok_or_else(|| "no such window".to_string())?;
-                // An empty name gives the window back to automatic naming, which takes over at
-                // the next look at the names.
                 window.name_manual = !name.is_empty();
-                if !name.is_empty() {
-                    window.name = name;
-                }
+                window.name = automatic.unwrap_or(name);
                 if let Some(s) = self.sessions.get_mut(&ctx.session) {
                     s.chrome_dirty = true;
                     s.names_checked = None;
@@ -1016,6 +1028,8 @@ impl Server {
         for s in self.sessions.values_mut() {
             s.key_state.prefix = keys::PrefixState::Idle;
             s.chrome_dirty = true;
+            // The program and directory of each window are looked at again.
+            s.names_checked = None;
             if renumber {
                 for (i, w) in s.windows.iter_mut().enumerate() {
                     w.number = base_index + i;
@@ -1305,9 +1319,7 @@ impl Server {
             .get(&ctx.pane)
             .and_then(|p| pty::process_cwd(p.pid))
             .unwrap_or_else(|| session.cwd.clone());
-        let name = self
-            .program_name(ctx.pane)
-            .unwrap_or_else(|| directory_name(&cwd));
+        let name = name_of_pane(&self.panes, self.config.window_name_from, ctx.pane, &cwd);
         self.unzoom(ctx);
         self.remove_leaf(ctx);
         let window_id = self.next_window;
@@ -1323,6 +1335,8 @@ impl Server {
                 number: 0,
                 name,
                 name_manual: false,
+                program: String::new(),
+                directory: String::new(),
                 layout: Layout::new(ctx.pane, cols, rows),
                 focus: ctx.pane,
                 last_focus: None,
@@ -1418,6 +1432,11 @@ impl Server {
         let window_id = self.next_window;
         self.next_window += 1;
         let (base_index, renumber) = (self.config.base_index, self.config.renumber);
+        let name = name_at_creation(
+            self.config.window_name_from,
+            &cwd,
+            first_program_name(&[], &env),
+        );
         let Some(session) = self.sessions.get_mut(&ctx.session) else {
             return Ok(String::new());
         };
@@ -1426,8 +1445,10 @@ impl Server {
             Window {
                 id: window_id,
                 number: 0,
-                name: first_program_name(&[], &env),
+                name,
                 name_manual: false,
+                program: String::new(),
+                directory: String::new(),
                 layout: Layout::new(pane_id, cols, rows),
                 focus: pane_id,
                 last_focus: None,

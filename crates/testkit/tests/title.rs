@@ -3,7 +3,19 @@
 
 use std::time::Duration;
 
+use arcade_daemon::config::TITLE_FIELDS;
+use arcade_daemon::format::Template;
 use arcade_testkit::{AttachOptions, Screened, TestClient, TestDaemon, WAIT, wait_for_file};
+
+/// A daemon whose title format puts the program's title first and the session after it, which
+/// the cases here were written for.
+fn daemon() -> TestDaemon {
+    TestDaemon::start_with(|c| c.config.title_format = old_order())
+}
+
+fn old_order() -> Template {
+    Template::parse("{title} \u{b7} {session}:{number}", TITLE_FIELDS).unwrap()
+}
 
 fn run(daemon: &TestDaemon, name: &str, args: &[&str]) {
     let (ok, output) = daemon.command(name, args).unwrap();
@@ -28,18 +40,74 @@ fn wait_title(client: &mut TestClient, wanted: &str) {
 }
 
 #[test]
-fn attaching_gives_the_window_name_the_session_and_the_window_number() {
+fn attaching_gives_the_session_and_the_window_number_and_the_name_of_the_window() {
+    // The default format: the Arcade part first, the program's own title after it.
     let daemon = TestDaemon::start();
     let client = attach(&daemon);
     let title = last_title(&client);
-    assert!(title.ends_with(" \u{b7} thu:1"), "{title:?}");
-    // The pane has set no title, so the front of it is the window's name, which is not empty.
-    assert!(title.len() > " \u{b7} thu:1".len(), "{title:?}");
+    assert!(title.starts_with("thu:1 "), "{title:?}");
+    // The pane has set no title, so there is nothing after the name and no dangling separator.
+    assert!(!title.contains('\u{b7}'), "{title:?}");
+    assert!(title.len() > "thu:1 ".len(), "{title:?}");
+}
+
+#[test]
+fn the_default_title_puts_arcade_first_and_the_title_of_the_program_after() {
+    let daemon = TestDaemon::start();
+    let mut client = attach(&daemon);
+    client.type_line("printf '\\033]2;real-title\\007'");
+    assert!(client.wait_until(WAIT, |c| last_title(c).ends_with(" \u{b7} real-title")));
+    assert!(
+        last_title(&client).starts_with("thu:1 "),
+        "{:?}",
+        client.titles
+    );
+}
+
+#[test]
+fn a_title_format_without_the_title_leaves_the_programs_title_out() {
+    let daemon = TestDaemon::start_with(|c| {
+        c.config.title_format = Template::parse("{session}:{number}", TITLE_FIELDS).unwrap();
+    });
+    let mut client = attach(&daemon);
+    assert_eq!(last_title(&client), "thu:1");
+    client.type_line("printf '\\033]2;secret\\007'; echo done-$((40 + 2))");
+    client.wait_for_text("done-42").unwrap();
+    client.wait_until(Duration::from_millis(400), |_| false);
+    assert!(
+        client.titles.iter().all(|t| !t.contains("secret")),
+        "{:?}",
+        client.titles
+    );
+}
+
+#[test]
+fn a_reordered_title_format_is_followed_and_an_empty_one_sets_no_title() {
+    let daemon = TestDaemon::start_with(|c| {
+        c.config.title_format =
+            Template::parse("{number}/{session}|{title}", TITLE_FIELDS).unwrap();
+    });
+    let mut client = attach(&daemon);
+    client.type_line("printf '\\033]2;abc\\007'");
+    assert!(
+        client.wait_until(WAIT, |c| last_title(c) == "1/thu|abc"),
+        "{:?}",
+        client.titles
+    );
+
+    let silent = TestDaemon::start_with(|c| {
+        c.config.title_format = Template::parse("", TITLE_FIELDS).unwrap();
+    });
+    let mut quiet = attach(&silent);
+    quiet.type_line("printf '\\033]2;abc\\007'; echo done-$((40 + 2))");
+    quiet.wait_for_text("done-42").unwrap();
+    quiet.wait_until(Duration::from_millis(400), |_| false);
+    assert!(quiet.titles.is_empty(), "{:?}", quiet.titles);
 }
 
 #[test]
 fn the_title_a_pane_sets_goes_to_the_terminal_and_a_second_window_changes_the_number() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut client = attach(&daemon);
     client.type_line("printf '\\033]2;abc\\007'");
     wait_title(&mut client, "abc");
@@ -50,7 +118,7 @@ fn the_title_a_pane_sets_goes_to_the_terminal_and_a_second_window_changes_the_nu
 
 #[test]
 fn moving_the_focus_to_another_pane_brings_that_pane_s_title() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut client = attach(&daemon);
     client.type_line("printf '\\033]2;left-one\\007'");
     wait_title(&mut client, "left-one");
@@ -64,7 +132,7 @@ fn moving_the_focus_to_another_pane_brings_that_pane_s_title() {
 
 #[test]
 fn a_pane_without_the_focus_setting_a_title_sends_nothing() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut client = attach(&daemon);
     // This shell sets a title a second from now, after the focus has moved to a new pane, and
     // then writes a file so the test knows it has.
@@ -92,7 +160,7 @@ fn a_pane_without_the_focus_setting_a_title_sends_nothing() {
 
 #[test]
 fn control_characters_in_a_title_are_dropped() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut client = attach(&daemon);
     client.type_line("printf '\\033]2;a\\001b\\037c\\007'");
     wait_title(&mut client, "abc");
@@ -103,7 +171,7 @@ fn control_characters_in_a_title_are_dropped() {
 /// past the limit however often it is set.
 #[test]
 fn a_long_title_is_cut_to_the_limit() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut client = attach(&daemon);
     client.type_line(
         "x=$(printf '%01000d' 0 | tr 0 q); printf '\\033]2;%s\\007' \"$x\"; echo set-$((40 + 2))",
@@ -125,7 +193,7 @@ fn a_long_title_is_cut_to_the_limit() {
 
 #[test]
 fn the_title_is_not_sent_again_while_nothing_changes() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut client = attach(&daemon);
     client.type_line("printf '\\033]2;steady\\007'");
     wait_title(&mut client, "steady");
@@ -154,7 +222,7 @@ fn emit(client: &mut TestClient, bytes: &str, done: &str) {
 
 #[test]
 fn a_program_can_keep_a_title_and_get_it_back_nested() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut client = attach(&daemon);
     let line = format!("{}{PUSH}{}{PUSH}{}", set("one"), set("two"), set("three"));
     emit(&mut client, &line, "nest");
@@ -171,7 +239,7 @@ fn a_program_can_keep_a_title_and_get_it_back_nested() {
 
 #[test]
 fn a_pop_can_bring_back_having_no_title() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut client = attach(&daemon);
     emit(&mut client, &format!("{PUSH}{}", set("temporary")), "tmp");
     wait_title(&mut client, "temporary");
@@ -183,7 +251,7 @@ fn a_pop_can_bring_back_having_no_title() {
 
 #[test]
 fn only_the_title_form_of_push_and_pop_counts() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut client = attach(&daemon);
     // `;1` is the icon: nothing is kept and nothing comes back.
     let line = format!("{}\\033[22;1t{}\\033[23;1t", set("keep"), set("other"));
@@ -193,7 +261,7 @@ fn only_the_title_form_of_push_and_pop_counts() {
 
 #[test]
 fn at_most_ten_titles_are_kept() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut client = attach(&daemon);
     client.type_line(&format!(
         "i=1; while [ $i -le 12 ]; do printf '{}{PUSH}' $i; i=$((i+1)); done; \
@@ -209,7 +277,7 @@ fn at_most_ten_titles_are_kept() {
 
 #[test]
 fn other_title_cases_hold() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut client = attach(&daemon);
     // OSC 1 (the icon name) is ignored; OSC 0 sets; a string terminator ends it as BEL does.
     emit(&mut client, "\\033]1;icon\\007", "icon");
@@ -224,7 +292,7 @@ fn other_title_cases_hold() {
 /// A program's title lasts as long as the program does; the shell's own stays.
 #[test]
 fn a_title_goes_when_the_program_that_set_it_ends_and_the_shells_stays() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut client = attach(&daemon);
     client.type_line(&format!(
         "sh -c \"printf '{}'; sleep 2\"; echo ended-$((40 + 2))",
@@ -256,23 +324,22 @@ fn a_title_goes_when_the_program_that_set_it_ends_and_the_shells_stays() {
 }
 
 #[test]
-fn the_title_names_the_program_and_says_the_session_once() {
+fn a_title_that_is_the_name_of_the_window_is_said_once() {
     let daemon = TestDaemon::start();
     let mut client = attach(&daemon);
-    client.type_line("sleep 35");
-    wait_title(&mut client, "sleep");
-    assert_eq!(last_title(&client), "sleep \u{b7} thu:1");
-    client.send(b"\x03");
-    // The window and the session with the same name: said once.
     run(&daemon, "window.rename", &["same"]);
-    run(&daemon, "session.rename", &["same"]);
-    wait_title(&mut client, "same:1");
-    assert_eq!(last_title(&client), "same:1");
+    wait_title(&mut client, "thu:1 same");
+    client.type_line("printf '\\033]2;same\\007'; echo done-$((40 + 2))");
+    client.wait_for_text("done-42").unwrap();
+    client.wait_until(Duration::from_millis(400), |_| false);
+    assert_eq!(last_title(&client), "thu:1 same");
+    client.type_line("printf '\\033]2;other\\007'");
+    wait_title(&mut client, "thu:1 same \u{b7} other");
 }
 
 #[test]
 fn the_title_is_sent_again_to_a_client_that_attaches() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut first = attach(&daemon);
     emit(&mut first, &set("again"), "set");
     wait_title(&mut first, "again");
@@ -284,7 +351,7 @@ fn the_title_is_sent_again_to_a_client_that_attaches() {
 
 #[test]
 fn two_sessions_started_from_one_folder_get_different_names() {
-    let daemon = TestDaemon::start();
+    let daemon = daemon();
     let mut a = daemon.attach(AttachOptions::new().size(100, 30)).unwrap();
     a.wait_for_prompt().unwrap();
     let mut b = daemon.attach(AttachOptions::new().size(100, 30)).unwrap();

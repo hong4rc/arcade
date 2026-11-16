@@ -68,7 +68,14 @@ impl Server {
                         .notices
                         .highest(w.layout.rects().into_iter().map(|(p, _)| p)),
                     key: TreeKey::Window(w.id),
-                    label: format!("{} {}", w.number, w.name),
+                    label: format!(
+                        "{} {}",
+                        w.number,
+                        super::frame::tab_text(&self.config, &self.panes, w)
+                            .into_iter()
+                            .map(|p| p.text)
+                            .collect::<String>()
+                    ),
                     parent: Some(session_at),
                     here: window_here,
                     inner: Some(TreeKey::Pane(w.focus)),
@@ -327,19 +334,22 @@ impl Server {
                 let window_id = self.next_window;
                 self.next_window += 1;
                 let moved_cwd = self.panes.get(&pane).and_then(|p| pty::process_cwd(p.pid));
-                let moved_name = self.program_name(pane);
+                let from = self.config.window_name_from;
                 let Some(destination) = self.sessions.get_mut(&dst_session) else {
                     return Err("that session is gone".to_string());
                 };
                 let cwd = moved_cwd.unwrap_or_else(|| destination.cwd.clone());
+                let moved_name = name_of_pane(&self.panes, from, pane, &cwd);
                 let (cols, rows) = window_area(destination.cols, destination.rows, status);
                 add_window(
                     destination,
                     Window {
                         id: window_id,
                         number: 0,
-                        name: moved_name.unwrap_or_else(|| directory_name(&cwd)),
+                        name: moved_name,
                         name_manual: false,
+                        program: String::new(),
+                        directory: String::new(),
                         layout: Layout::new(pane, cols, rows),
                         focus: pane,
                         last_focus: None,

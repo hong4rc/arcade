@@ -4,6 +4,7 @@
 use arcade_term::Cell;
 
 use crate::compose::{blank, fit, text_cells};
+use crate::config::NumberPosition;
 use crate::notify::Class;
 use crate::theme::{self, Role, Symbol};
 
@@ -16,10 +17,52 @@ pub struct TabSpan {
     pub to: u16,
 }
 
+/// A piece of the text of a tab; a quiet piece (the program's own title) is drawn fainter than
+/// the rest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabPiece {
+    pub text: String,
+    pub quiet: bool,
+}
+
+impl TabPiece {
+    pub fn plain(text: impl Into<String>) -> TabPiece {
+        TabPiece {
+            text: text.into(),
+            quiet: false,
+        }
+    }
+}
+
+/// The longest a program's title is on a tab, in cells; a longer one is cut with a mark.
+pub const TAB_TITLE_CELLS: usize = 24;
+
+/// A text cut to `max` cells, with the cut mark at the end when something was left out.
+pub fn cut_to_cells(text: &str, max: usize) -> String {
+    let total: usize = text.chars().map(crate::compose::char_width).sum();
+    if total <= max {
+        return text.to_string();
+    }
+    let room = max.saturating_sub(1);
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = crate::compose::char_width(c);
+        if used + w > room {
+            break;
+        }
+        used += w;
+        out.push(c);
+    }
+    out.push_str(theme::symbol(Symbol::Ellipsis));
+    out
+}
+
 pub struct Tab {
     /// The number shown, which is the window's place in the bar plus the base index.
     pub number: usize,
-    pub name: String,
+    /// What the tab says besides its number.
+    pub text: Vec<TabPiece>,
     pub current: bool,
     pub zoomed: bool,
     /// The most urgent notification among the window's panes.
@@ -47,6 +90,8 @@ pub enum CopyState {
 
 pub struct StatusInfo {
     pub session: String,
+    /// Where the number stands in a tab.
+    pub number: NumberPosition,
     pub tabs: Vec<Tab>,
     /// Waiting for the key after the prefix key.
     pub prefix: bool,
@@ -121,9 +166,26 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
         } else {
             Role::TabNumber
         });
+        let quiet_style = theme::style(if tab.current {
+            Role::TabTitleCurrent
+        } else {
+            Role::TabTitle
+        });
+        let number = tab.number.to_string();
         cells.extend(text_cells(" ", style));
-        cells.extend(text_cells(&tab.number.to_string(), number_style));
-        cells.extend(text_cells(&format!(" {}{zoom}", tab.name), style));
+        if info.number == NumberPosition::Left {
+            cells.extend(text_cells(&number, number_style));
+            cells.extend(text_cells(" ", style));
+        }
+        for piece in &tab.text {
+            let piece_style = if piece.quiet { quiet_style } else { style };
+            cells.extend(text_cells(&piece.text, piece_style));
+        }
+        cells.extend(text_cells(&zoom, style));
+        if info.number == NumberPosition::Right {
+            cells.extend(text_cells(" ", style));
+            cells.extend(text_cells(&number, number_style));
+        }
         if let Some(class) = tab.notice {
             cells.extend(text_cells(" ", style));
             cells.extend(text_cells(
@@ -220,17 +282,18 @@ mod tests {
     fn info() -> StatusInfo {
         StatusInfo {
             session: "work".into(),
+            number: NumberPosition::Left,
             tabs: vec![
                 Tab {
                     number: 1,
-                    name: "sh".into(),
+                    text: vec![TabPiece::plain("sh")],
                     current: false,
                     zoomed: false,
                     notice: None,
                 },
                 Tab {
                     number: 2,
-                    name: "vim".into(),
+                    text: vec![TabPiece::plain("vim")],
                     current: true,
                     zoomed: true,
                     notice: None,
@@ -367,7 +430,7 @@ mod tests {
         for n in 3..30 {
             i.tabs.push(Tab {
                 number: n,
-                name: "window".into(),
+                text: vec![TabPiece::plain("window")],
                 current: false,
                 zoomed: false,
                 notice: None,

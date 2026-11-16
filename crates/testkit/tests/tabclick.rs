@@ -153,3 +153,21 @@ fn a_narrow_bar_cuts_the_tabs_and_a_tab_that_is_cut_away_does_nothing() {
     click(&mut client, column_of(&bar, "1 A"), y);
     assert!(shows(&mut client, "A"));
 }
+
+#[test]
+fn the_tabs_are_where_they_are_drawn_with_the_number_on_the_right_or_not_shown() {
+    for position in [
+        arcade_daemon::config::NumberPosition::Right,
+        arcade_daemon::config::NumberPosition::Off,
+    ] {
+        let daemon = TestDaemon::start_with(move |c| c.config.tab_number = position);
+        let mut client = three_windows(&daemon, 100);
+        let (y, bar) = bar_row(&client, false);
+        // The names are A, B and C; click the middle of the tab of A, then of B.
+        click(&mut client, column_of(&bar, " A "), y);
+        assert!(shows(&mut client, "A"), "{position:?} {bar:?}");
+        let (y, bar) = bar_row(&client, false);
+        click(&mut client, column_of(&bar, " B ") + 1, y);
+        assert!(shows(&mut client, "B"), "{position:?} {bar:?}");
+    }
+}
