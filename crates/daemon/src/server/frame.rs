@@ -378,6 +378,7 @@ impl Server {
         stage_mark!(DaemonFrameStart);
         let status_position = self.config.status_position;
         let unlock_key = self.unlock_key_name();
+        let blink_dim = self.blink_dim_at(Instant::now());
         // Panes get the sizes the dragged divider gave them, once per frame.
         let stale = self
             .sessions
@@ -618,18 +619,20 @@ impl Server {
                         crate::keymap::hint_line(&self.keymap.prefix, width)
                     }
                 });
-                let (cells, prompt_cursor, spans) = status::build_with_tabs(
-                    cols,
-                    &status_info(
-                        session,
-                        &self.config,
-                        &self.panes,
-                        copy_on,
-                        unlock_key,
-                        &self.notices,
-                        hint,
-                    ),
+                let info = status_info(
+                    session,
+                    &self.config,
+                    &self.panes,
+                    copy_on,
+                    unlock_key,
+                    &self.notices,
+                    hint,
                 );
+                let dim = blink_dim;
+                let ((cells, prompt_cursor, spans), blinks) =
+                    crate::theme::drawing_the_bar(dim, || status::build_with_tabs(cols, &info));
+                session.bar_blinks = blinks;
+                session.bar_blink_dim = dim;
                 // Where the tabs are as drawn, for a click on one.
                 session.tab_bar = spans
                     .iter()
@@ -722,6 +725,9 @@ impl Server {
         session.relayout = false;
         session.chrome_dirty = false;
         stage_mark!(DaemonComposed);
+        session
+            .renderer
+            .set_bar_row(status_row(session.rows, status_position));
         let bytes = session.renderer.render(&mut session.screen, &cursor, modes);
         stage_mark!(DaemonEncoded);
         if !bytes.is_empty() {

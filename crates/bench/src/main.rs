@@ -467,7 +467,33 @@ impl Subject {
                 self.tmux(&["new-window", "-t", "bench", script])?;
                 Ok(())
             }
-            Kind::Arcade => self.arcade_session("bench", script),
+            Kind::Arcade => {
+                self.arcade_session("bench", script)?;
+                // `ARCADE_BENCH_NOTIFY=1`: the pane stands with a notification that asks for
+                // input, so its tab wears a symbol (that blinks when the configuration says so).
+                if std::env::var_os("ARCADE_BENCH_NOTIFY").is_some() {
+                    // The number of the pane is not known: the first one the daemon accepts.
+                    let stood = (1..64).any(|pane| {
+                        self.arcade(&[
+                            "notify",
+                            "--strict",
+                            "--class",
+                            "input",
+                            "--target",
+                            &pane.to_string(),
+                            "--source",
+                            "bench",
+                            "--message",
+                            "waiting",
+                        ])
+                        .is_ok()
+                    });
+                    if !stood {
+                        return Err("no pane took the notification".into());
+                    }
+                }
+                Ok(())
+            }
         }
     }
 

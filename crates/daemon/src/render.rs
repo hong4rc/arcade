@@ -175,6 +175,62 @@ pub(crate) fn push_row(out: &mut Vec<u8>, y: u16, cells: &[Cell], links: &[LinkS
     }
 }
 
+/// What brings a row that the host shows as `before` to `now` when only a few cells differ: for
+/// each run of different cells, a move to it and the cells. `None` when the rows have another
+/// width or a large part differs (the whole row is cheaper then, and simpler).
+fn changed_cells(y: u16, before: &[Cell], now: &[Cell]) -> Option<Vec<u8>> {
+    if before.len() != now.len() {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut x = 0;
+    let mut changed = 0;
+    while x < now.len() {
+        if before[x] == now[x] {
+            x += 1;
+            continue;
+        }
+        // A run starts on the first cell of a wide character and ends after its last one.
+        let mut from = x;
+        while from > 0 && now[from].width == CellWidth::SpacerTail {
+            from -= 1;
+        }
+        let mut to = x + 1;
+        loop {
+            while to < now.len() && now[to].width == CellWidth::SpacerTail {
+                to += 1;
+            }
+            if to < now.len() && before[to] != now[to] {
+                to += 1;
+            } else {
+                break;
+            }
+        }
+        changed += to - from;
+        if changed * 4 > now.len() {
+            return None;
+        }
+        out.extend_from_slice(format!("\x1b[{};{}H\x1b[0m", y + 1, from + 1).as_bytes());
+        let mut current = Style::default();
+        for cell in &now[from..to] {
+            if cell.width == CellWidth::SpacerTail {
+                continue;
+            }
+            if cell.style != current {
+                push_style_change(&mut out, &current, &cell.style);
+                current = cell.style;
+            }
+            if cell.text.is_empty() {
+                out.push(b' ');
+            } else {
+                out.extend_from_slice(cell.text.as_bytes());
+            }
+        }
+        x = to;
+    }
+    Some(out)
+}
+
 fn push_cursor(out: &mut Vec<u8>, cursor: &Cursor) {
     let shape = match (cursor.shape, cursor.blinking) {
         (CursorShape::Block | CursorShape::HollowBlock, true) => 1,
@@ -228,6 +284,10 @@ struct SentCursor {
 #[derive(Default)]
 pub struct Renderer {
     rows: Vec<Option<Vec<u8>>>,
+    /// The row of the status bar and its cells as last sent: when only a few of them change (a
+    /// symbol that blinks), only those are sent.
+    bar_row: Option<u16>,
+    bar_cells: Option<Vec<Cell>>,
     cursor: Option<SentCursor>,
     modes: Option<HostModes>,
 }
@@ -235,6 +295,14 @@ pub struct Renderer {
 impl Renderer {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Say which row is the status bar (none when it is hidden).
+    pub fn set_bar_row(&mut self, row: Option<u16>) {
+        if self.bar_row != row {
+            self.bar_row = row;
+            self.bar_cells = None;
+        }
     }
 
     /// Forget what the host shows: the next update sends everything. Used when a client
@@ -262,8 +330,20 @@ impl Renderer {
             push_row(&mut bytes, y, screen.row(y), screen.row_links(y));
             let slot = &mut self.rows[usize::from(y)];
             if slot.as_deref() != Some(bytes.as_slice()) {
-                body.extend_from_slice(&bytes);
+                let cells = screen.row(y);
+                let small = (self.bar_row == Some(y) && screen.row_links(y).is_empty())
+                    .then_some(self.bar_cells.as_deref())
+                    .flatten()
+                    .and_then(|before| changed_cells(y, before, cells))
+                    .filter(|small| small.len() < bytes.len());
+                match small {
+                    Some(small) => body.extend_from_slice(&small),
+                    None => body.extend_from_slice(&bytes),
+                }
                 *slot = Some(bytes);
+                if self.bar_row == Some(y) {
+                    self.bar_cells = Some(cells.to_vec());
+                }
             }
         }
         let sent = SentCursor {
@@ -414,5 +494,63 @@ mod link_tests {
     #[test]
     fn a_row_without_links_has_no_link_bytes() {
         assert!(!row("abc", &[]).contains("]8;"));
+    }
+}
+
+#[cfg(test)]
+mod changed_cell_tests {
+    use super::*;
+
+    fn bar(parts: &[(&str, u8)]) -> Vec<Cell> {
+        let mut cells = Vec::new();
+        for (text, shade) in parts {
+            let style = Style {
+                fg: crate::theme::parse_color(&format!("#{shade:02x}6464")).unwrap(),
+                bg: crate::theme::parse_color("#0a141e").unwrap(),
+                bold: *shade > 128,
+                ..Style::default()
+            };
+            cells.extend(crate::compose::text_cells(text, style));
+        }
+        crate::compose::fit(cells, 40, Style::default())
+    }
+
+    fn shown(rows: &[&[Cell]], extra: &[u8]) -> Vec<Vec<Cell>> {
+        let mut term = arcade_term::Term::new(arcade_term::TermConfig::new(40, 2)).unwrap();
+        for cells in rows {
+            let mut bytes = Vec::new();
+            push_row(&mut bytes, 1, cells, &[]);
+            term.feed(&bytes);
+        }
+        term.feed(extra);
+        term.screen().unwrap()
+    }
+
+    /// The short update leaves the host showing exactly what the whole row would, also next to a
+    /// wide character, and a row that changed all over is not sent in pieces.
+    #[test]
+    fn the_changed_cells_alone_bring_the_row_to_the_new_one() {
+        let before = bar(&[(" a ", 200), (" \u{4e2d} ", 50), (" b ", 200), (" end", 50)]);
+        for now in [
+            bar(&[(" a ", 100), (" \u{4e2d} ", 50), (" b ", 200), (" end", 50)]),
+            bar(&[(" a ", 200), (" \u{4e2d} ", 90), (" b ", 200), (" end", 50)]),
+            bar(&[(" a ", 200), (" \u{4e2d} ", 50), (" b ", 200), (" END", 50)]),
+        ] {
+            let small = changed_cells(1, &before, &now).expect("a few cells differ");
+            let mut whole = Vec::new();
+            push_row(&mut whole, 1, &now, &[]);
+            assert!(small.len() < whole.len());
+            assert_eq!(
+                shown(&[&before], &small),
+                shown(&[&now], &[]),
+                "{:?}",
+                String::from_utf8_lossy(&small)
+            );
+        }
+        // Nothing sent for a row that is the same; the whole row when much of it differs.
+        assert_eq!(changed_cells(1, &before, &before), Some(Vec::new()));
+        let all = bar(&[("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", 10)]);
+        assert_eq!(changed_cells(1, &before, &all), None);
+        assert_eq!(changed_cells(1, &before, &before[..10]), None);
     }
 }

@@ -1583,6 +1583,57 @@ mod tests {
         theme::set_state_look(theme::StateLook::default());
     }
 
+    /// A state that blinks alternates its colour between two values on the bar, the symbol and
+    /// the width stay, a state that does not blink never changes, and outside the bar (the lists,
+    /// the corner of a pane) nothing blinks.
+    #[test]
+    fn a_blinking_symbol_alternates_its_colour_and_nothing_else() {
+        let mut setting = theme::StateLook::default();
+        setting.set_blink(theme::StateName::Input, true);
+        theme::set_state_look(setting);
+        let mut i = info();
+        i.tabs[0].notice = Some(Class::Input);
+        i.tabs[1].notice = Some(Class::Approval);
+        let draw = |dim| theme::drawing_the_bar(dim, || build_with_tabs(120, &i)).0;
+        let (bright, _, spans_bright) = draw(false);
+        let (dim, _, spans_dim) = draw(true);
+        assert_eq!(text(&bright), text(&dim));
+        assert_eq!(
+            spans_bright
+                .iter()
+                .map(|s| (s.from, s.to))
+                .collect::<Vec<_>>(),
+            spans_dim.iter().map(|s| (s.from, s.to)).collect::<Vec<_>>()
+        );
+        let differing: Vec<usize> = (0..bright.len())
+            .filter(|n| bright[*n].style != dim[*n].style)
+            .collect();
+        // Only the block of the first tab's status cell (the symbol and the spaces round it).
+        let line = text(&bright);
+        let at = line
+            .chars()
+            .position(|c| theme::notice_symbol(Class::Input).starts_with(c) && c != ' ')
+            .unwrap();
+        assert!(differing.contains(&at), "{differing:?} {at}");
+        assert!(
+            differing.iter().all(|n| n.abs_diff(at) <= 1),
+            "{differing:?} {at}"
+        );
+        // Whether a symbol that blinks is on the bar is told.
+        assert!(theme::drawing_the_bar(false, || build_with_tabs(120, &i)).1);
+        i.tabs[0].notice = None;
+        assert!(!theme::drawing_the_bar(false, || build_with_tabs(120, &i)).1);
+        // Outside the bar the colour is always the bright one.
+        assert_eq!(
+            theme::notice_style(Class::Input),
+            theme::notice_style(Class::Input)
+        );
+        let outside = theme::notice_style(Class::Input);
+        let (_, _) = theme::drawing_the_bar(true, || ());
+        assert_eq!(theme::notice_style(Class::Input), outside);
+        theme::set_state_look(theme::StateLook::default());
+    }
+
     /// With a number a quiet tab is as narrow as it was before the status had a place of its
     /// own: the name, one cell, the number between its spaces.
     #[test]

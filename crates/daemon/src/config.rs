@@ -448,6 +448,14 @@ impl Reader<'_> {
     }
 }
 
+fn state_words() -> String {
+    let known: Vec<&str> = crate::theme::StateName::ALL
+        .iter()
+        .map(|n| n.word())
+        .collect();
+    known.join(", ")
+}
+
 /// `[status.state]`: for each state a symbol, a colour or both. A symbol is exactly one cell wide
 /// (as the pane engine measures it), a colour is `#rrggbb`; what is left out keeps its default.
 fn read_states(r: &mut Reader<'_>, states: &DeTable<'_>, look: &mut crate::theme::StateLook) {
@@ -455,12 +463,11 @@ fn read_states(r: &mut Reader<'_>, states: &DeTable<'_>, look: &mut crate::theme
     for (name, value) in states.iter() {
         let word = name.get_ref().as_ref();
         let Some(state) = StateName::parse(word) else {
-            let known: Vec<&str> = StateName::ALL.iter().map(|n| n.word()).collect();
             r.error(
                 name.span().start,
                 format!(
                     "unknown state \"{word}\" (the states are {})",
-                    known.join(", ")
+                    state_words()
                 ),
             );
             continue;
@@ -1004,6 +1011,46 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                                 }
                             }
                         }
+                        "blink" => match v.get_ref() {
+                            DeValue::Array(items) => {
+                                let mut look = config.state_look;
+                                for name in crate::theme::StateName::ALL {
+                                    look.set_blink(name, false);
+                                }
+                                for item in items.iter() {
+                                    let Some(word) = r.string("blink", item) else {
+                                        continue;
+                                    };
+                                    match crate::theme::StateName::parse(word) {
+                                        Some(state) => look.set_blink(state, true),
+                                        None => r.error(
+                                            item.span().start,
+                                            format!(
+                                                "unknown state \"{word}\" in blink (the states are {})",
+                                                state_words()
+                                            ),
+                                        ),
+                                    }
+                                }
+                                config.state_look = look;
+                            }
+                            _ => r.error(v.span().start, "blink must be a list of state names"),
+                        },
+                        "blink-interval" => {
+                            if let Some(ms) = r.integer("blink-interval", v) {
+                                if (ms as u64) < crate::theme::BLINK_MIN_MS {
+                                    r.error(
+                                        v.span().start,
+                                        format!(
+                                            "blink-interval is at least {} (milliseconds), not {ms}",
+                                            crate::theme::BLINK_MIN_MS
+                                        ),
+                                    );
+                                } else {
+                                    config.state_look.blink_ms = ms as u64;
+                                }
+                            }
+                        }
                         "state" => {
                             if let Some(states) = r.table("state", v) {
                                 read_states(&mut r, states, &mut config.state_look);
@@ -1056,6 +1103,8 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                                     "progress-expires",
                                     "state-style",
                                     "state",
+                                    "blink",
+                                    "blink-interval",
                                 ],
                             ),
                         ),
@@ -1635,7 +1684,7 @@ position = "top"
         use crate::theme::{StateName, StateStyle};
         let config = parse("").unwrap();
         assert_eq!(config.state_look, crate::theme::StateLook::default());
-        assert_eq!(config.state_look.style, StateStyle::Plain);
+        assert_eq!(config.state_look.style, StateStyle::Dark);
         for (word, style) in [
             ("plain", StateStyle::Plain),
             ("dark", StateStyle::Dark),
@@ -1692,6 +1741,36 @@ position = "top"
             ("[status.state.input]\ncolor = \"#12345\"\n", 2, "#rrggbb"),
             ("[status.state.input]\nglyph = \"x\"\n", 2, "glyph"),
             ("[status.state]\ninput = \"x\"\n", 2, "input"),
+        ] {
+            let errors = parse(text).unwrap_err();
+            assert_eq!(errors[0].line, line, "{text}: {errors:?}");
+            assert!(errors[0].message.contains(word), "{text}: {errors:?}");
+        }
+    }
+
+    #[test]
+    fn blinking_has_an_empty_list_and_half_a_second_and_refuses_what_does_not_fit() {
+        use crate::theme::StateName;
+        let config = parse("").unwrap();
+        assert!(!config.state_look.any_blink());
+        assert_eq!(config.state_look.blink_ms, 500);
+        let config =
+            parse("[status]\nblink = [\"input\", \"approval\"]\nblink-interval = 200\n").unwrap();
+        assert!(config.state_look.blinks(StateName::Input));
+        assert!(config.state_look.blinks(StateName::Approval));
+        assert!(!config.state_look.blinks(StateName::Info));
+        assert_eq!(config.state_look.blink_ms, 200);
+        assert!(
+            !parse("[status]\nblink = []\n")
+                .unwrap()
+                .state_look
+                .any_blink()
+        );
+        for (text, line, word) in [
+            ("[status]\nblink-interval = 199\n", 2, "at least 200"),
+            ("[status]\nblink-interval = \"fast\"\n", 2, "whole number"),
+            ("[status]\nblink = [\"loud\"]\n", 2, "unknown state"),
+            ("[status]\nblink = \"input\"\n", 2, "list of state names"),
         ] {
             let errors = parse(text).unwrap_err();
             assert_eq!(errors[0].line, line, "{text}: {errors:?}");

@@ -341,9 +341,9 @@ pub fn level_block(value: u8) -> &'static str {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StateStyle {
     /// The symbol in its colour on the block of the tab's name, where the number was.
-    #[default]
     Plain,
     /// A dark badge with the symbol in its colour.
+    #[default]
     Dark,
     /// The badge filled with the state's colour and a dark symbol.
     Filled,
@@ -447,16 +447,105 @@ pub struct StateSetting {
 
 /// The look of the states the settings ask for: the style of a tab, and a symbol and colour for
 /// any state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StateLook {
     pub style: StateStyle,
     settings: [StateSetting; 9],
+    /// The states whose symbol blinks on the bar (`[status] blink`), and the time of one half of
+    /// a blink in milliseconds (`[status] blink-interval`).
+    blink: [bool; 9],
+    pub blink_ms: u64,
+}
+
+/// The shortest half blink the settings allow and the default one, in milliseconds.
+pub const BLINK_MIN_MS: u64 = 200;
+pub const BLINK_DEFAULT_MS: u64 = 500;
+
+impl Default for StateLook {
+    fn default() -> Self {
+        StateLook {
+            style: StateStyle::default(),
+            settings: [StateSetting::default(); 9],
+            blink: [false; 9],
+            blink_ms: BLINK_DEFAULT_MS,
+        }
+    }
 }
 
 impl StateLook {
     pub fn set(&mut self, name: StateName, setting: StateSetting) {
         self.settings[name.index()] = setting;
     }
+
+    pub fn set_blink(&mut self, name: StateName, on: bool) {
+        self.blink[name.index()] = on;
+    }
+
+    pub fn blinks(&self, name: StateName) -> bool {
+        self.blink[name.index()]
+    }
+
+    /// Whether any state blinks at all.
+    pub fn any_blink(&self) -> bool {
+        self.blink.iter().any(|b| *b)
+    }
+}
+
+/// What the bar being drawn knows about blinking: whether it is being drawn at all, which half of
+/// a blink it is, and whether a symbol that blinks was drawn on it. Blinking is only for the
+/// status bar; the lists, the tree and the corner of a pane never take part.
+#[derive(Clone, Copy, Default)]
+struct BarBlink {
+    drawing: bool,
+    dim: bool,
+    seen: bool,
+}
+
+thread_local! {
+    static BAR: std::cell::Cell<BarBlink> = const { std::cell::Cell::new(BarBlink { drawing: false, dim: false, seen: false }) };
+}
+
+/// Draw the status bar in the given half of a blink (`dim`: the symbols that blink are in their
+/// dim colour). Returns what `f` returned and whether a symbol that blinks is on the bar.
+pub fn drawing_the_bar<R>(dim: bool, f: impl FnOnce() -> R) -> (R, bool) {
+    BAR.with(|b| {
+        b.set(BarBlink {
+            drawing: true,
+            dim,
+            seen: false,
+        })
+    });
+    let result = f();
+    let seen = BAR.with(|b| {
+        let seen = b.get().seen;
+        b.set(BarBlink::default());
+        seen
+    });
+    (result, seen)
+}
+
+/// The colour of a state's symbol as drawn now: its own, or the dim one in the dim half of a
+/// blink when the bar is being drawn and the state is one that blinks.
+fn blinked(name: StateName, colour: Color) -> Color {
+    let look = LOOK.with(std::cell::Cell::get);
+    if !look.blinks(name) {
+        return colour;
+    }
+    let bar = BAR.with(std::cell::Cell::get);
+    if !bar.drawing {
+        return colour;
+    }
+    BAR.with(|b| b.set(BarBlink { seen: true, ..bar }));
+    if bar.dim { dimmed(colour) } else { colour }
+}
+
+/// A colour a little over half way to the bar's own background: still there, plainly less bright.
+fn dimmed(colour: Color) -> Color {
+    let (Color::Rgb(r, g, b), Color::Rgb(br, bg, bb)) = (colour, palette::MANTLE) else {
+        return colour;
+    };
+    let mix = |v: u8, to: u8| ((u32::from(v) * 40 + u32::from(to) * 60) / 100) as u8;
+    Color::Rgb(mix(r, br), mix(g, bg), mix(b, bb))
 }
 
 thread_local! {
@@ -527,10 +616,12 @@ fn tint_colour(tint: Tint) -> Color {
 /// the palette's colour, made lighter only as far as it takes to read at a contrast of 4.5. A
 /// colour the settings gave is used as it is, whatever its contrast.
 pub fn cell_style(tint: Tint, block: Style) -> Style {
-    let fg = match custom_colour(StateName::of_tint(tint)) {
+    let name = StateName::of_tint(tint);
+    let fg = match custom_colour(name) {
         Some(colour) => colour,
         None => readable_on(default_tint_colour(tint), block.bg),
     };
+    let fg = blinked(name, fg);
     Style {
         fg,
         bg: block.bg,
@@ -547,7 +638,7 @@ pub fn cell_style(tint: Tint, block: Style) -> Style {
 /// - `filled` and `number`: the state's colour as the background and the dark text colour of the
 ///   bar on it (for the symbol, or for the number).
 pub fn state_badge(look: StateStyle, tint: Tint) -> Style {
-    let colour = tint_colour(tint);
+    let colour = blinked(StateName::of_tint(tint), tint_colour(tint));
     Style {
         bold: true,
         ..match look {

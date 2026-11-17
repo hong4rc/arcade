@@ -348,6 +348,10 @@ struct Session {
     relayout: bool,
     /// The dividers or the status bar must be drawn again.
     chrome_dirty: bool,
+    /// Whether the bar as last drawn has a symbol that blinks on it, and in which half of a blink
+    /// it was drawn (`[status] blink`).
+    bar_blinks: bool,
+    bar_blink_dim: bool,
     /// What the client's screen should show, and what it was last sent.
     screen: Screen,
     renderer: Renderer,
@@ -472,6 +476,8 @@ impl Session {
             need_full: true,
             relayout: true,
             chrome_dirty: true,
+            bar_blinks: false,
+            bar_blink_dim: false,
             screen: Screen::new(),
             renderer: Renderer::new(),
             last_frame: None,
@@ -825,6 +831,7 @@ impl Server {
             self.wake_name_checks();
             self.wake_running_marks();
             self.wake_progress_expiry();
+            self.wake_blink();
             self.tick_drag_scrolls();
             self.send_frames();
             self.send_titles();
@@ -898,6 +905,13 @@ impl Server {
             }
         }
         for s in self.sessions.values() {
+            // One shared deadline for every blinking symbol, and none when nothing blinks.
+            if s.client.is_some()
+                && s.bar_blinks
+                && let Some(t) = self.next_blink_change(now)
+            {
+                consider(t);
+            }
             if let Some(t) = self.frame_time(s, now) {
                 consider(t);
             }
@@ -920,6 +934,32 @@ impl Server {
             }
         }
         deadline.map(|t| t.saturating_duration_since(now))
+    }
+
+    /// Whether it is the dim half of a blink at `now`. Every blinking symbol of every bar is in
+    /// the same half, counted from the start of the daemon.
+    pub(super) fn blink_dim_at(&self, now: Instant) -> bool {
+        let half = u128::from(self.config.state_look.blink_ms.max(1));
+        (now.saturating_duration_since(self.started).as_millis() / half) % 2 == 1
+    }
+
+    /// When the next half of a blink starts.
+    fn next_blink_change(&self, now: Instant) -> Option<Instant> {
+        let half = u128::from(self.config.state_look.blink_ms.max(1));
+        let since = now.saturating_duration_since(self.started).as_millis();
+        let next = (since / half + 1) * half;
+        Some(self.started + Duration::from_millis(u64::try_from(next).ok()?))
+    }
+
+    /// A bar with a symbol that blinks is drawn again when the half of the blink has changed
+    /// since it was drawn; only the cells of the symbols differ, so only they are sent.
+    fn wake_blink(&mut self) {
+        let dim = self.blink_dim_at(Instant::now());
+        for s in self.sessions.values_mut() {
+            if s.client.is_some() && s.bar_blinks && s.bar_blink_dim != dim {
+                s.chrome_dirty = true;
+            }
+        }
     }
 
     /// A session whose names were due to be looked at gets an update, which looks at them.
