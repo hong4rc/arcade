@@ -244,6 +244,11 @@ pub struct Config {
     /// Where a window's number stands in its tab, or that it is not shown.
     pub tab_number: NumberPosition,
     pub tab_style: TabStyle,
+    /// How long a command (by the marks a shell prompt leaves, OSC 133) runs before the tab says
+    /// so, and how long it runs for its end to be left on the tab of a pane that is out of sight;
+    /// zero turns each off.
+    pub command_running_after: Duration,
+    pub command_finished_after: Duration,
     /// What a tab says besides the number (fields: name, title, program, directory).
     pub tab_format: Template,
     /// The title Arcade sets on the host terminal's window (fields: session, number, name,
@@ -281,6 +286,8 @@ impl Default for Config {
             overrides: Vec::new(),
             status_position: StatusPosition::Bottom,
             tab_number: NumberPosition::Right,
+            command_running_after: Duration::from_secs(2),
+            command_finished_after: Duration::from_secs(10),
             tab_style: TabStyle::Pill,
             tab_format: Template::parse(DEFAULT_TAB_FORMAT, TAB_FIELDS).expect("a valid default"),
             title_format: Template::parse(DEFAULT_TITLE_FORMAT, TITLE_FIELDS)
@@ -917,6 +924,16 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                             ),
                             None => {}
                         },
+                        "running-after" => {
+                            if let Some(s) = r.integer("running-after", v) {
+                                config.command_running_after = Duration::from_secs(s as u64);
+                            }
+                        }
+                        "finished-after" => {
+                            if let Some(s) = r.integer("finished-after", v) {
+                                config.command_finished_after = Duration::from_secs(s as u64);
+                            }
+                        }
                         "tab-format" => {
                             if let Some(text) = r.string("tab-format", v) {
                                 match Template::parse(text, TAB_FIELDS) {
@@ -944,6 +961,8 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                                     "tab-style",
                                     "tab-format",
                                     "title-format",
+                                    "running-after",
+                                    "finished-after",
                                 ],
                             ),
                         ),
@@ -1493,5 +1512,17 @@ position = "top"
         assert_eq!(flat.tab_number, NumberPosition::Left);
         let errors = parse("[status]\ntab-style = \"round\"\n").unwrap_err();
         assert!(errors[0].message.contains("pill or flat"), "{errors:?}");
+    }
+
+    #[test]
+    fn the_times_of_the_command_states_have_defaults_and_zero_turns_them_off() {
+        let config = parse("").unwrap();
+        assert_eq!(config.command_running_after, Duration::from_secs(2));
+        assert_eq!(config.command_finished_after, Duration::from_secs(10));
+        let config = parse("[status]\nrunning-after = 5\nfinished-after = 0\n").unwrap();
+        assert_eq!(config.command_running_after, Duration::from_secs(5));
+        assert_eq!(config.command_finished_after, Duration::ZERO);
+        let errors = parse("[status]\nrunning-after = \"soon\"\n").unwrap_err();
+        assert!(errors[0].message.contains("whole number"), "{errors:?}");
     }
 }

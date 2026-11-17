@@ -43,6 +43,44 @@ pub(super) fn tab_text(
     out
 }
 
+/// What the shells of a window's panes say about their commands, the most urgent: an error, a
+/// command that runs, then one that ended well.
+pub(super) fn window_command(
+    config: &Config,
+    panes: &HashMap<u64, Pane>,
+    w: &Window,
+) -> Option<status::CommandMark> {
+    let limits = crate::shellmarks::Thresholds {
+        running_after: config.command_running_after,
+        finished_after: config.command_finished_after,
+    };
+    let now = Instant::now();
+    w.layout
+        .rects()
+        .into_iter()
+        .filter_map(|(p, _)| panes.get(&p))
+        .filter_map(|p| pane_command(&p.command, now, limits))
+        .min_by_key(|c| match c {
+            status::CommandMark::FinishedWithError => 0,
+            status::CommandMark::Running => 1,
+            status::CommandMark::FinishedWell => 2,
+        })
+}
+
+/// What one pane says about its command.
+pub(super) fn pane_command(
+    track: &crate::shellmarks::Track,
+    now: Instant,
+    limits: crate::shellmarks::Thresholds,
+) -> Option<status::CommandMark> {
+    match track.finished {
+        Some(false) => Some(status::CommandMark::FinishedWithError),
+        _ if track.is_running(now, limits) => Some(status::CommandMark::Running),
+        Some(true) => Some(status::CommandMark::FinishedWell),
+        None => None,
+    }
+}
+
 fn status_info(
     s: &Session,
     config: &Config,
@@ -75,6 +113,7 @@ fn status_info(
                         .into_iter()
                         .find_map(|(p, _)| panes.get(&p).and_then(|p| p.progress))
                 }),
+                command: window_command(config, panes, w),
             })
             .collect(),
         prefix: s.key_state.prefix_active(),

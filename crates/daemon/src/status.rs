@@ -70,6 +70,19 @@ pub struct Tab {
     pub notice: Option<Class>,
     /// The progress report of the window's focused pane, or else of another pane of it.
     pub progress: Option<arcade_term::Progress>,
+    /// What the shells of the window's panes say about their commands (see `shellmarks`).
+    pub command: Option<CommandMark>,
+}
+
+/// What a command says on a tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandMark {
+    /// A command has been running for a while.
+    Running,
+    /// A long command ended well while nobody looked.
+    FinishedWell,
+    /// A long command ended with an error while nobody looked.
+    FinishedWithError,
 }
 
 /// A line the user types into.
@@ -227,6 +240,10 @@ pub enum Mark {
     Level { value: u8, paused: bool },
     /// A progress report with an unknown amount.
     Busy,
+    /// A command that runs.
+    Running,
+    /// A long command that ended well, or with an error.
+    Finished { ok: bool },
 }
 
 impl Mark {
@@ -236,8 +253,11 @@ impl Mark {
         match self {
             Mark::Notice(c) if c != Class::Info => class(c),
             Mark::ProgressError => 10,
+            Mark::Finished { ok: false } => 15,
             Mark::Level { .. } => 20,
             Mark::Busy => 30,
+            Mark::Running => 35,
+            Mark::Finished { ok: true } => 43,
             Mark::Notice(c) => 40 + class(c),
         }
     }
@@ -256,10 +276,16 @@ pub fn status_mark(tab: &Tab) -> Option<Mark> {
         3 => Some(Mark::Busy),
         _ => None,
     });
+    let command = tab.command.map(|c| match c {
+        CommandMark::Running => Mark::Running,
+        CommandMark::FinishedWell => Mark::Finished { ok: true },
+        CommandMark::FinishedWithError => Mark::Finished { ok: false },
+    });
     tab.notice
         .map(Mark::Notice)
         .into_iter()
         .chain(progress)
+        .chain(command)
         .min_by_key(|m| m.rank())
 }
 
@@ -277,6 +303,9 @@ fn mark_cells(mark: Mark, block: arcade_term::Style) -> Vec<Cell> {
             },
         ),
         Mark::Busy => (theme::BUSY_SYMBOL, theme::Tint::Progress),
+        Mark::Running => (theme::RUNNING_SYMBOL, theme::Tint::Progress),
+        Mark::Finished { ok: true } => (theme::notice_symbol(Class::Info), theme::Tint::Finished),
+        Mark::Finished { ok: false } => (theme::PROGRESS_ERROR_SYMBOL, theme::Tint::ProgressError),
     };
     text_cells(symbol, theme::cell_style(tint, block))
 }
@@ -439,7 +468,12 @@ fn marker_cells(
     let urgent = hidden
         .clone()
         .filter_map(|i| status_mark(&info.tabs[i]))
-        .filter(|m| matches!(m, Mark::Notice(_) | Mark::ProgressError))
+        .filter(|m| {
+            matches!(
+                m,
+                Mark::Notice(_) | Mark::ProgressError | Mark::Finished { ok: false }
+            )
+        })
         .min_by_key(|m| m.rank());
     if let Some(mark) = urgent {
         cells.extend(mark_cells(mark, bar));
@@ -723,6 +757,7 @@ mod tests {
                     zoomed: false,
                     notice: None,
                     progress: None,
+                    command: None,
                 },
                 Tab {
                     number: 2,
@@ -731,6 +766,7 @@ mod tests {
                     zoomed: true,
                     notice: None,
                     progress: None,
+                    command: None,
                 },
             ],
             prefix: false,
@@ -988,6 +1024,7 @@ mod tests {
             zoomed: false,
             notice,
             progress,
+            command: None,
         };
         let p = |state, value| Some(Progress { state, value });
         let mark = |notice, progress| status_mark(&tab(notice, progress));
@@ -1023,6 +1060,90 @@ mod tests {
         );
         // A value outranks an unknown amount only through the report itself: one report per tab.
         assert_eq!(mark(None, p(0, 0)), None);
+    }
+
+    /// The command states take their place in the order: after an error notification, a failed
+    /// report, and a command that ended with an error; before a progress value is passed by none
+    /// (a value outranks a running command), and a running command outranks a finished one and an
+    /// info notification. A tab is as wide with each of them.
+    #[test]
+    fn the_command_states_have_their_place_in_the_order_and_keep_the_tab_width() {
+        use arcade_term::Progress;
+        let p = |state, value| Some(Progress { state, value });
+        let mark = |notice, progress, command| {
+            status_mark(&Tab {
+                number: 1,
+                text: vec![],
+                current: false,
+                zoomed: false,
+                notice,
+                progress,
+                command,
+            })
+        };
+        use CommandMark::{FinishedWell, FinishedWithError, Running};
+        assert_eq!(
+            mark(Some(Class::Error), None, Some(FinishedWithError)),
+            Some(Mark::Notice(Class::Error))
+        );
+        assert_eq!(
+            mark(None, p(2, 0), Some(FinishedWithError)),
+            Some(Mark::ProgressError)
+        );
+        assert_eq!(
+            mark(None, p(1, 40), Some(FinishedWithError)),
+            Some(Mark::Finished { ok: false })
+        );
+        assert_eq!(
+            mark(None, p(1, 40), Some(Running)),
+            Some(Mark::Level {
+                value: 40,
+                paused: false
+            })
+        );
+        assert_eq!(mark(None, p(3, 0), Some(Running)), Some(Mark::Busy));
+        assert_eq!(mark(None, None, Some(Running)), Some(Mark::Running));
+        assert_eq!(
+            mark(Some(Class::Info), None, Some(Running)),
+            Some(Mark::Running)
+        );
+        assert_eq!(
+            mark(None, None, Some(FinishedWell)),
+            Some(Mark::Finished { ok: true })
+        );
+        assert_eq!(mark(None, None, None), None);
+        // The symbol is one cell and differs from the busy one; the tab keeps its width.
+        assert_eq!(crate::width::text_width(theme::RUNNING_SYMBOL), 1);
+        assert_ne!(theme::RUNNING_SYMBOL, theme::BUSY_SYMBOL);
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            for number in [
+                NumberPosition::Left,
+                NumberPosition::Right,
+                NumberPosition::Off,
+            ] {
+                let spans_with = |command| {
+                    let mut i = info();
+                    i.style = style;
+                    i.number = number;
+                    i.tabs[0].command = command;
+                    let (cells, _, spans) = build_with_tabs(120, &i);
+                    (text(&cells), spans)
+                };
+                let (_, none) = spans_with(None);
+                for command in [Running, FinishedWell, FinishedWithError] {
+                    let (line, other) = spans_with(Some(command));
+                    for (a, b) in other.iter().zip(&none) {
+                        assert_eq!((a.from, a.to), (b.from, b.to), "{style:?} {command:?}");
+                    }
+                    let symbol = match command {
+                        Running => theme::RUNNING_SYMBOL,
+                        FinishedWell => theme::notice_symbol(Class::Info),
+                        FinishedWithError => theme::PROGRESS_ERROR_SYMBOL,
+                    };
+                    assert!(line.contains(&format!("sh {symbol} ")), "{line:?}");
+                }
+            }
+        }
     }
 
     /// The eight level blocks: 0 to 12 the lowest, 88 to 100 the full block.
@@ -1077,6 +1198,7 @@ mod tests {
                 zoomed: false,
                 notice: None,
                 progress: None,
+                command: None,
             });
         }
         i.notices = [10, 0, 0, 0];
@@ -1153,6 +1275,7 @@ mod tests {
                 state: 1,
                 value: 40,
             }),
+            command: None,
         };
         for (style, number) in [
             (TabStyle::Pill, NumberPosition::Right),
@@ -1328,6 +1451,7 @@ mod tests {
             zoomed: false,
             notice,
             progress: None,
+            command: None,
         };
         let mut i = info();
         i.session = "work".into();
@@ -1636,6 +1760,7 @@ mod tests {
                     zoomed: false,
                     notice: Some(Class::Input),
                     progress: None,
+                    command: None,
                 });
                 let (cells, _) = build(60, &i);
                 let mut bytes = Vec::new();
@@ -1659,6 +1784,60 @@ mod tests {
                 )
                 .unwrap();
             }
+            // Five windows, one for each kind of what the status cell shows, at 110 columns.
+            let mut i = four_windows();
+            i.style = style;
+            let tab = |number: usize, name: &str, notice, progress| Tab {
+                number,
+                text: vec![TabPiece::plain(name)],
+                current: number == 3,
+                zoomed: false,
+                notice,
+                progress,
+                command: None,
+            };
+            let level = arcade_term::Progress {
+                state: 1,
+                value: 40,
+            };
+            let busy = arcade_term::Progress { state: 3, value: 0 };
+            i.tabs = vec![
+                tab(1, "asks-for-you", Some(Class::Input), None),
+                tab(2, "tests-at-40", None, Some(level)),
+                tab(3, "agent-working", None, Some(busy)),
+                tab(4, "finished", Some(Class::Info), None),
+                tab(5, "quiet", None, None),
+            ];
+            let (cells, _) = build(110, &i);
+            let mut bytes = Vec::new();
+            crate::render::push_row(&mut bytes, 0, &cells, &[]);
+            bytes.extend_from_slice(b"\x1b[0m\n");
+            std::fs::write(format!("{dir}/status-cell-{name}-110.bin"), bytes).unwrap();
+            let mut i = four_windows();
+            i.style = style;
+            i.tabs[0].command = Some(CommandMark::FinishedWithError);
+            i.tabs[1].command = Some(CommandMark::FinishedWell);
+            i.tabs[3].command = Some(CommandMark::Running);
+            i.tabs[3].notice = None;
+            let (command_cells, _) = build(110, &i);
+            let mut command_bytes = Vec::new();
+            crate::render::push_row(&mut command_bytes, 0, &command_cells, &[]);
+            command_bytes.extend_from_slice(b"\x1b[0m\n");
+            std::fs::write(
+                format!("{dir}/command-states-{name}-110.bin"),
+                command_bytes,
+            )
+            .unwrap();
+            std::fs::write(
+                format!("{dir}/command-states-{name}-110.txt"),
+                format!("{}\n", text(&command_cells)),
+            )
+            .unwrap();
+            std::fs::write(
+                format!("{dir}/status-cell-{name}-110.txt"),
+                format!("{}\n", text(&cells)),
+            )
+            .unwrap();
         }
     }
 }

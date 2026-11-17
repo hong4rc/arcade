@@ -181,6 +181,8 @@ struct Pane {
     /// that repeats the last one still counts, since programs repeat it to keep it shown.
     progress: Option<arcade_term::Progress>,
     progress_seq: u64,
+    /// What the shell says about the command that runs (OSC 133 marks); nothing when it sends none.
+    command: crate::shellmarks::Track,
     /// The foreground group as last asked, and when: asking is a system call on the terminal,
     /// costly while a program floods the pane with titles.
     writer_seen: Option<(Option<i32>, Instant)>,
@@ -796,6 +798,7 @@ impl Server {
             self.finish_exited_panes();
             // (4) Screen updates.
             self.wake_name_checks();
+            self.wake_running_marks();
             self.tick_drag_scrolls();
             self.send_frames();
             self.send_titles();
@@ -855,6 +858,9 @@ impl Server {
             consider(t);
         }
         for p in self.panes.values() {
+            if let Some(t) = self.running_mark_due(p) {
+                consider(t);
+            }
             if let Some(t) = p.term.stuck_deadline() {
                 consider(t);
             }
@@ -1472,6 +1478,7 @@ impl Server {
             title_stack: Vec::new(),
             progress: None,
             progress_seq: 0,
+            command: crate::shellmarks::Track::default(),
             writer_seen: None,
             capture: None,
         })
@@ -1678,6 +1685,7 @@ impl Server {
         };
         let mut ended = false;
         pane.read_pending = false;
+        let mut marks: Vec<crate::shellmarks::Mark> = Vec::new();
         let mut buf = [0u8; 16 * 1024];
         let mut total = 0;
         loop {
@@ -1691,6 +1699,7 @@ impl Server {
                 Ok(n) => {
                     stage_mark!(DaemonPtyRead);
                     pane.term.feed(&buf[..n]);
+                    pane.command.scanner.feed(&buf[..n], &mut marks);
                     stage_mark!(DaemonFed);
                     pane.dirty = true;
                     pane.rate.add(n, Instant::now());
@@ -1789,6 +1798,9 @@ impl Server {
         }
         for signal in signals {
             self.signal_pane(pane_id, signal, notices::Channel::Terminal);
+        }
+        for mark in marks {
+            self.command_mark(pane_id, mark);
         }
         ended
     }

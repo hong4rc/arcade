@@ -323,6 +323,8 @@ pub enum Tint {
     Progress,
     /// A progress report that is paused: the same block, dimmer.
     Paused,
+    /// A command that ended well while nobody looked.
+    Finished,
 }
 
 /// The symbol of the status cell for a progress report that failed. One cell wide, a shape of its
@@ -331,6 +333,10 @@ pub const PROGRESS_ERROR_SYMBOL: &str = "✗";
 
 /// The symbol of the status cell for a progress report with no amount: static, one cell wide.
 pub const BUSY_SYMBOL: &str = "⟳";
+
+/// The symbol of the status cell for a command that is running (by the marks of the shell
+/// prompt): a small mark, not the busy symbol of a progress report with no amount.
+pub const RUNNING_SYMBOL: &str = "▸";
 
 /// The eight level blocks, from a sliver to the full cell.
 const LEVEL_BLOCKS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
@@ -351,6 +357,7 @@ pub fn cell_style(tint: Tint, block: Style) -> Style {
         Tint::ProgressError => palette::RED,
         Tint::Progress => palette::BLUE,
         Tint::Paused => palette::OVERLAY2,
+        Tint::Finished => palette::GREEN,
     };
     Style {
         fg: readable_on(colour, block.bg),

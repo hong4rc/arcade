@@ -44,6 +44,7 @@ mod power;
 pub mod pty;
 mod render;
 mod server;
+mod shellmarks;
 mod snapshot;
 #[cfg(feature = "stage-timing")]
 pub mod stage;

@@ -89,6 +89,13 @@ impl Server {
                                 " ({})",
                                 crate::theme::progress_text(r)
                             ))
+                            + &w.layout
+                                .rects()
+                                .into_iter()
+                                .find_map(|(p, _)| {
+                                    self.panes.get(&p).and_then(|p| self.command_words(p))
+                                })
+                                .map_or(String::new(), |words| format!(" ({words})"))
                     ),
                     parent: Some(session_at),
                     here: window_here,
@@ -139,7 +146,30 @@ impl Server {
         if let Some(report) = p.progress {
             label.push_str(&format!(" ({})", crate::theme::progress_text(report)));
         }
+        if let Some(words) = self.command_words(p) {
+            label.push_str(&format!(" ({words})"));
+        }
         label
+    }
+
+    /// What the shell of a pane says about its command, in words (see `shellmarks`): how long it
+    /// has run, or how a long one ended while nobody looked. The marks do not carry the command's
+    /// text, so it is not named.
+    pub(super) fn command_words(&self, pane: &Pane) -> Option<String> {
+        let limits = crate::shellmarks::Thresholds {
+            running_after: self.config.command_running_after,
+            finished_after: self.config.command_finished_after,
+        };
+        let now = Instant::now();
+        match (pane.command.finished, pane.command.running_since) {
+            (Some(false), _) => Some("finished with an error".to_string()),
+            (_, Some(t)) if pane.command.is_running(now, limits) => Some(format!(
+                "running {}",
+                crate::shellmarks::duration_words(now.saturating_duration_since(t))
+            )),
+            (Some(true), _) => Some("finished well".to_string()),
+            _ => None,
+        }
     }
 
     /// Open the tree for the client of the session.

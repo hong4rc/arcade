@@ -293,6 +293,11 @@ impl Server {
     /// Before a session's screen is built: let go of what the client has looked at, and bring in
     /// the signals that waited for their second to end.
     pub(super) fn settle_notices(&mut self, session_id: u64) {
+        // What a command left on a tab is gone once the pane is looked at, as a notification of
+        // class info is.
+        if let Some(pane) = self.sessions.get(&session_id).and_then(Self::seen_pane) {
+            self.forget_finished(pane);
+        }
         if self.notices.is_empty() {
             return;
         }
@@ -320,6 +325,79 @@ impl Server {
     pub(super) fn typed_into(&mut self, pane: u64) {
         if self.notices.clear(pane) {
             self.notices_changed(pane);
+        }
+        self.forget_finished(pane);
+    }
+
+    /// The limits of the tab's command states, from the settings.
+    pub(super) fn command_limits(&self) -> crate::shellmarks::Thresholds {
+        crate::shellmarks::Thresholds {
+            running_after: self.config.command_running_after,
+            finished_after: self.config.command_finished_after,
+        }
+    }
+
+    /// A mark of the shell prompt came in `pane`.
+    pub(super) fn command_mark(&mut self, pane: u64, mark: crate::shellmarks::Mark) {
+        let Some((session_id, _)) = self.locate_pane(pane) else {
+            return;
+        };
+        let seen = self
+            .sessions
+            .get(&session_id)
+            .and_then(Self::seen_pane)
+            .is_some_and(|p| p == pane);
+        let limits = self.command_limits();
+        let Some(p) = self.panes.get_mut(&pane) else {
+            return;
+        };
+        if p.command.mark(mark, Instant::now(), seen, limits) {
+            self.bar_changed(pane);
+        }
+    }
+
+    /// When the running mark of `pane` is to show, if it has not yet.
+    pub(super) fn running_mark_due(&self, pane: &Pane) -> Option<Instant> {
+        let limits = self.command_limits();
+        pane.command
+            .running_since
+            .filter(|_| !pane.command.running_shown && !limits.running_after.is_zero())
+            .map(|t| t + limits.running_after)
+    }
+
+    /// The panes whose command has now run long enough to show: their bars are drawn again.
+    pub(super) fn wake_running_marks(&mut self) {
+        let now = Instant::now();
+        let due: Vec<u64> = self
+            .panes
+            .iter()
+            .filter(|(_, p)| self.running_mark_due(p).is_some_and(|t| t <= now))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in due {
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.command.running_shown = true;
+            }
+            self.bar_changed(id);
+        }
+    }
+
+    /// Only the bars of the sessions that hold `pane` are drawn again.
+    fn bar_changed(&mut self, pane: u64) {
+        let owner = self.locate_pane(pane).map(|(s, _)| s);
+        for s in self.sessions.values_mut() {
+            if Some(s.id) == owner {
+                s.chrome_dirty = true;
+            }
+        }
+    }
+
+    /// The end of a long command left on the tab of a pane is taken away.
+    fn forget_finished(&mut self, pane: u64) {
+        if let Some(p) = self.panes.get_mut(&pane)
+            && p.command.finished.take().is_some()
+        {
+            self.bar_changed(pane);
         }
     }
 
