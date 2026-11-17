@@ -1008,3 +1008,59 @@ fn an_upgrade_keeps_a_zoomed_window_and_its_progress_and_ends_copy_mode() {
     type_until_row_starting(&mut host, "echo still-$$", "still-");
     assert!(host.screen_text().contains("[Z]"), "{}", host.screen_text());
 }
+
+/// A program that turned the keyboard protocol on (twice, the second time with every key
+/// reported as a sequence) while the daemon was upgraded, turned it off after, and ended: the
+/// next key typed at the shell is its own letter.
+#[test]
+fn a_key_after_a_program_that_pushed_keyboard_flags_through_an_upgrade_is_its_letter() {
+    // (The old programs under `.tools/old`, 0.1.3 and 0.1.4, cannot hand their panes over at all:
+    // `arcade upgrade` tells them to restart, which ends the programs, so no pane of theirs
+    // reaches a new daemon with a program running in it.)
+    let starts = vec![PathBuf::from(ARCADE)];
+    let mut problems = Vec::new();
+    for start in starts {
+        let env = Env::new();
+        let new = env.copy_of_program("arcade-new");
+        let mut host = env.host(&start, &["new", "-s", "main"]);
+        host.wait_for_prompt().unwrap();
+        host.type_line(
+            "stty raw -echo; printf '\\033[>1u\\033[>11u'; printf 'PUSHED-%s' ON; sleep 4; \
+             printf '\\033[<u\\033[<u'; printf 'POPPED-%s' OFF; exec cat -vt",
+        );
+        wait_for_row_starting(&mut host, "PUSHED-ON");
+        let out = env.upgrade_to(&new);
+        if !out.status.success() {
+            problems.push(format!(
+                "{}: the upgrade failed: {}",
+                start.display(),
+                text(&out)
+            ));
+            continue;
+        }
+        let popped = host.wait_until(Duration::from_secs(15), |h| {
+            h.screen_text().contains("POPPED-OFF")
+        });
+        if !popped {
+            problems.push(format!(
+                "{}: the program never ended:\n{}",
+                start.display(),
+                host.screen_text()
+            ));
+            continue;
+        }
+        // The host terminal sends a plain key; `cat` shows what the pane got.
+        for _ in 0..3 {
+            host.send(b"e");
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        host.wait_until(Duration::from_secs(2), |_| false);
+        let screen = host.screen_text();
+        let after = screen.split("POPPED-OFF").nth(1).unwrap_or("");
+        let got: String = after.lines().take(3).collect();
+        if !got.contains("eee") || got.contains("^[") || got.contains("M-") || got.contains("^R") {
+            problems.push(format!("{}: the pane got {got:?}", start.display()));
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+}
