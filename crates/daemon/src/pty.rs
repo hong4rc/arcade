@@ -141,13 +141,31 @@ pub fn spawn(spec: &SpawnSpec) -> io::Result<Spawned> {
         .stdin(Stdio::from(slave.try_clone()?))
         .stdout(Stdio::from(slave.try_clone()?))
         .stderr(Stdio::from(slave.try_clone()?));
-    // SAFETY: the closure runs in the child between fork and exec and only calls setsid and
-    // ioctl, which are async-signal-safe.
+    // SAFETY: the closure runs in the child between fork and exec and only calls setsid, signal,
+    // sigprocmask and ioctl, which are async-signal-safe.
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() < 0 {
                 return Err(io::Error::last_os_error());
             }
+            // A signal that was ignored where the daemon was started (a `&` job of a script,
+            // `nohup`) stays ignored in what it starts, and then ^C would not stop anything in
+            // the pane. Give the shell the default of each and an empty mask.
+            for signal in [
+                libc::SIGINT,
+                libc::SIGQUIT,
+                libc::SIGTERM,
+                libc::SIGHUP,
+                libc::SIGTSTP,
+                libc::SIGTTIN,
+                libc::SIGTTOU,
+                libc::SIGPIPE,
+            ] {
+                libc::signal(signal, libc::SIG_DFL);
+            }
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut mask);
+            libc::sigprocmask(libc::SIG_SETMASK, &mask, std::ptr::null_mut());
             // Make the terminal on standard input this session's controlling terminal, so the
             // shell has job control and ^C reaches the foreground job.
             if libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
