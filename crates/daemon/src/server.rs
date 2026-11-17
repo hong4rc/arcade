@@ -1336,7 +1336,11 @@ impl Server {
             session.host_keyboard = known_host;
             session.host_probe = known_host.is_none().then_some(false);
             if let Some(message) = self.startup_message.take() {
-                session.key_state.show_message(message, Instant::now());
+                session.key_state.show_message(
+                    message,
+                    crate::status::MessageKind::Error,
+                    Instant::now(),
+                );
             }
             session.need_full = true;
             session.sent_title = None;

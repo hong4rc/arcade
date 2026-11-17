@@ -6,7 +6,7 @@ use crate::copy::JumpKey;
 use crate::keymap::{self, Binding, Keymap, typed_name};
 use crate::keytools;
 use crate::picker::PickerKind;
-use crate::status::Prompt;
+use crate::status::{MessageKind, Prompt};
 use arcade_term::Mods;
 
 use super::treeview::TreeStart;
@@ -98,6 +98,8 @@ pub(super) struct KeyState {
     /// A line shown in place of the status bar until the next key, or until `message_until`.
     pub message: Option<String>,
     pub message_until: Option<Instant>,
+    /// Whether the line is news or an error, which sets its colour.
+    pub message_kind: MessageKind,
     /// When the key hint shows, while the prefix is waiting for a key and it is not showing yet.
     pub hint_at: Option<Instant>,
     /// The hint of the keys is on the screen.
@@ -111,6 +113,7 @@ impl KeyState {
             locked: false,
             prompt: None,
             message: None,
+            message_kind: MessageKind::default(),
             message_until: None,
             hint_at: None,
             hint_shown: false,
@@ -127,8 +130,9 @@ impl KeyState {
     }
 
     /// Show a line on the status bar for `MESSAGE_LIFETIME`, or until the next key.
-    pub fn show_message(&mut self, text: String, now: Instant) {
+    pub fn show_message(&mut self, text: String, kind: MessageKind, now: Instant) {
         self.message = Some(text);
+        self.message_kind = kind;
         self.message_until = Some(now + MESSAGE_LIFETIME);
     }
 
@@ -155,6 +159,7 @@ impl KeyState {
         self.prompt.as_ref().map(|p| Prompt {
             label: p.label.clone(),
             text: p.text.clone(),
+            question: p.kind == PromptKind::ClosePane,
         })
     }
 }
@@ -254,7 +259,7 @@ impl Server {
                     c.host_keyboard = Some(host);
                 }
                 if let Some(line) = self.key_warning_line(session_id) {
-                    self.set_message(session_id, &line);
+                    self.set_error(session_id, &line);
                 }
             }
         }
@@ -303,8 +308,18 @@ impl Server {
     }
 
     pub(super) fn set_message(&mut self, session_id: u64, text: &str) {
+        self.show(session_id, text, MessageKind::Information);
+    }
+
+    /// A line on the status bar that says something did not work.
+    pub(super) fn set_error(&mut self, session_id: u64, text: &str) {
+        self.show(session_id, text, MessageKind::Error);
+    }
+
+    fn show(&mut self, session_id: u64, text: &str, kind: MessageKind) {
         if let Some(s) = self.sessions.get_mut(&session_id) {
-            s.key_state.show_message(text.to_string(), Instant::now());
+            s.key_state
+                .show_message(text.to_string(), kind, Instant::now());
             s.chrome_dirty = true;
         }
     }
@@ -466,10 +481,7 @@ impl Server {
                     }
                     None => {
                         self.set_prefix(session_id, next);
-                        self.set_message(
-                            session_id,
-                            &format!("no binding for {}", typed_name(key)),
-                        );
+                        self.set_error(session_id, &format!("no binding for {}", typed_name(key)));
                     }
                 }
                 true
@@ -515,12 +527,12 @@ impl Server {
                         let (ok, output) =
                             self.run_command(&format!("pane.swap-{d}"), &[], Some(pane));
                         if !ok {
-                            self.set_message(session_id, &output);
+                            self.set_error(session_id, &output);
                         }
                     }
                     None => {
                         self.set_prefix(session_id, next);
-                        self.set_message(
+                        self.set_error(
                             session_id,
                             &format!("{} is not a direction", typed_name(key)),
                         );
@@ -604,7 +616,7 @@ impl Server {
         };
         if let Some(start) = tree_start.filter(|_| binding.args.is_empty()) {
             if let Err(message) = self.open_tree(session_id, start) {
-                self.set_message(session_id, &message);
+                self.set_error(session_id, &message);
             }
             return;
         }
@@ -619,7 +631,7 @@ impl Server {
         };
         if let Some(kind) = picker {
             if let Err(message) = self.open_picker(session_id, kind) {
-                self.set_message(session_id, &message);
+                self.set_error(session_id, &message);
             }
             return;
         }
@@ -641,7 +653,9 @@ impl Server {
             return;
         }
         let (ok, output) = self.run_command(&binding.command, &binding.args, Some(pane));
-        if !ok || binding.command == "arcade.reload-config" {
+        if !ok {
+            self.set_error(session_id, &output);
+        } else if binding.command == "arcade.reload-config" {
             self.set_message(session_id, &output);
         }
     }
@@ -719,7 +733,7 @@ impl Server {
         };
         let (ok, output) = self.run_command(name, &args, Some(pane));
         if !ok {
-            self.set_message(session_id, &output);
+            self.set_error(session_id, &output);
         }
     }
 

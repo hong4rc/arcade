@@ -523,7 +523,7 @@ impl Server {
                     .unwrap_or_else(crate::links::default_opener);
                 match crate::links::open(&opener, &uri) {
                     Ok(()) => self.set_message(ctx.session, &format!("opening {uri}")),
-                    Err(e) => self.set_message(
+                    Err(e) => self.set_error(
                         ctx.session,
                         &format!(
                             "cannot run {}: {e}",
@@ -551,7 +551,7 @@ impl Server {
         match copy.search(&pane.term, text, forward) {
             Ok(false) => {}
             Ok(true) => self.set_message(session_id, "search wrapped around"),
-            Err(message) => self.set_message(session_id, &message),
+            Err(message) => self.set_error(session_id, &message),
         }
     }
 

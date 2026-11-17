@@ -132,6 +132,7 @@ fn status_info(
             crate::config::StatusCount::OtherSessions => notices.counts_outside(&s.all_panes()),
         },
         message: s.key_state.message.clone(),
+        message_kind: s.key_state.message_kind,
         prompt: s.key_state.status_prompt(),
         hint,
     }

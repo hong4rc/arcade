@@ -33,7 +33,7 @@ fn config_file(text: &str) -> PathBuf {
 #[test]
 fn a_terminal_with_old_key_codes_gets_one_line_about_the_bindings_it_cannot_send() {
     let daemon = TestDaemon::start();
-    let mut client = daemon.attach_shell();
+    let mut client = daemon.attach(AttachOptions::new().size(160, 30)).unwrap();
     client.wait_for_prompt().unwrap();
     client.send(LEGACY_ANSWER);
     assert!(
@@ -43,13 +43,12 @@ fn a_terminal_with_old_key_codes_gets_one_line_about_the_bindings_it_cannot_send
     );
     let line = bar(&client);
     assert!(line.contains("(first: "), "{line}");
-    assert!(line.contains("arcade keys list"), "{line}");
 }
 
 #[test]
 fn a_terminal_with_the_protocol_gets_no_line() {
     let daemon = TestDaemon::start();
-    let mut client = daemon.attach_shell();
+    let mut client = daemon.attach(AttachOptions::new().size(160, 30)).unwrap();
     client.wait_for_prompt().unwrap();
     client.send(KITTY_ANSWER);
     // The answer was taken, so the keyboard is working with the next thing typed.
@@ -61,7 +60,7 @@ fn a_terminal_with_the_protocol_gets_no_line() {
 #[test]
 fn the_answers_do_not_reach_the_program_in_the_pane() {
     let daemon = TestDaemon::start();
-    let mut client = daemon.attach_shell();
+    let mut client = daemon.attach(AttachOptions::new().size(160, 30)).unwrap();
     client.wait_for_prompt().unwrap();
     client.type_line("cat -v");
     client.send(KITTY_ANSWER);
@@ -77,7 +76,7 @@ fn the_answers_do_not_reach_the_program_in_the_pane() {
 #[test]
 fn a_sequence_like_an_answer_is_the_programs_when_nothing_is_being_asked() {
     let daemon = TestDaemon::start();
-    let mut client = daemon.attach_shell();
+    let mut client = daemon.attach(AttachOptions::new().size(160, 30)).unwrap();
     client.wait_for_prompt().unwrap();
     client.send(KITTY_ANSWER);
     client.type_line("cat -v");
@@ -95,7 +94,7 @@ fn reloading_the_configuration_names_the_bindings_that_cannot_work() {
     let path = file.clone();
     let daemon = TestDaemon::start_with(move |c| c.config_path = Some(path));
     let mut client = daemon
-        .attach(AttachOptions::new().size(100, 30).named("work"))
+        .attach(AttachOptions::new().size(160, 30).named("work"))
         .unwrap();
     client.wait_for_prompt().unwrap();
     client.send(LEGACY_ANSWER);
@@ -142,7 +141,7 @@ fn a_terminal_that_has_not_answered_is_not_blamed() {
     );
     let path = file.clone();
     let daemon = TestDaemon::start_with(move |c| c.config_path = Some(path));
-    let mut client = daemon.attach_shell();
+    let mut client = daemon.attach(AttachOptions::new().size(160, 30)).unwrap();
     client.wait_for_prompt().unwrap();
     client.send(b"\x1b[103;5ur");
     assert!(client.wait_until(WAIT, |c| bar(c).contains("configuration reloaded")));

@@ -104,7 +104,7 @@ fn the_count_at_the_right_end_is_for_the_other_sessions() {
     assert!(
         client.wait_until(WAIT, |c| c
             .status_row()
-            .trim_end()
+            .trim_end_matches([' ', '\u{e0b4}'])
             .ends_with(&format!("{INPUT_MARK}1"))),
         "{}",
         client.status_row()

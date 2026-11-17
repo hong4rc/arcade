@@ -89,6 +89,19 @@ pub enum CommandMark {
 pub struct Prompt {
     pub label: String,
     pub text: String,
+    /// The prompt asks a question that is answered with one key (close this pane?), so its label
+    /// is drawn like any question.
+    pub question: bool,
+}
+
+/// What a line that replaces the bar for a moment says, which sets its colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MessageKind {
+    /// A result or a piece of news.
+    #[default]
+    Information,
+    /// Something that did not work.
+    Error,
 }
 
 /// What copy mode is doing, for the word on the bar.
@@ -125,6 +138,7 @@ pub struct StatusInfo {
     pub notices: [usize; 4],
     /// A line shown in place of the bar until the next key.
     pub message: Option<String>,
+    pub message_kind: MessageKind,
     pub prompt: Option<Prompt>,
     /// The key hint, shown in place of the bar while the prefix is waiting for a key.
     pub hint: Option<String>,
@@ -486,30 +500,185 @@ fn marker_cells(
     (cells, nearest)
 }
 
+/// A piece of the bar that is not a tab: blocks of text, each in its own colours with a cell of
+/// padding inside the ends of the piece, and in the pill style round ends. `room` is the most
+/// cells it may take; the text of the last block, when it does not fit, is cut at its end with
+/// the cut mark.
+fn piece_cells(style: TabStyle, blocks: &[(&str, arcade_term::Style)], room: usize) -> Vec<Cell> {
+    let ends = if style == TabStyle::Pill { 2 } else { 0 };
+    let mut budget = room.saturating_sub(ends + 2);
+    let last = blocks.len() - 1;
+    let mut cells = Vec::new();
+    for (n, (text, block)) in blocks.iter().enumerate() {
+        let text = if n == last {
+            cut_to_cells(text, budget)
+        } else {
+            (*text).to_string()
+        };
+        budget = budget.saturating_sub(crate::width::text_width(&text));
+        let padded = match (n == 0, n == last) {
+            (true, true) => format!(" {text} "),
+            (true, false) => format!(" {text}"),
+            (false, true) => format!("{text} "),
+            (false, false) => text,
+        };
+        cells.extend(text_cells(&padded, *block));
+    }
+    let first = blocks[0].1;
+    capped(
+        style,
+        cells,
+        cap(Symbol::PillCapLeft, first),
+        cap(Symbol::PillCapRight, blocks[last].1),
+    )
+}
+
+/// The least a message piece is worth drawing at: a symbol and one character.
+fn message_fits(style: TabStyle, room: usize) -> bool {
+    room >= if style == TabStyle::Pill { 9 } else { 7 }
+}
+
+/// What a message or a prompt draws at the right end of the bar in at most `room` cells, and
+/// for a prompt where the cursor is in them. Nothing when there is none or no room.
+fn message_cells(info: &StatusInfo, room: usize) -> (Vec<Cell>, Option<usize>) {
+    if let Some(prompt) = &info.prompt {
+        if room < if info.style == TabStyle::Pill { 7 } else { 5 } {
+            return (Vec::new(), None);
+        }
+        let (cells, cursor) = prompt_piece(info.style, prompt, room);
+        return (cells, Some(cursor));
+    }
+    let Some(message) = &info.message else {
+        return (Vec::new(), None);
+    };
+    if !message_fits(info.style, room) {
+        return (Vec::new(), None);
+    }
+    let (mark, accent) = match info.message_kind {
+        MessageKind::Information => (Symbol::MessageInformation, Role::MessageInfo),
+        MessageKind::Error => (Symbol::MessageError, Role::MessageError),
+    };
+    let mark = format!("{} ", theme::symbol(mark));
+    let cells = piece_cells(
+        info.style,
+        &[
+            (mark.as_str(), theme::style(accent)),
+            (message.as_str(), theme::style(Role::PromptText)),
+        ],
+        room,
+    );
+    (cells, None)
+}
+
+fn words_len_of(words: &[(&str, Role)], style: TabStyle) -> usize {
+    word_pieces(style, words, usize::MAX).len()
+}
+
+/// The least room the session label (`label` cells with the gap after it) and the current tab
+/// need beside each other: the tab compact (`current_tab` cells) and the markers for the tabs
+/// that are hidden at either end.
+fn tabs_needed(info: &StatusInfo, label: usize, current_tab: usize) -> usize {
+    let Some(current) = info.tabs.iter().position(|t| t.current) else {
+        return label;
+    };
+    let tabs = info.tabs.len();
+    let before = if current > 0 {
+        marker_cells(0..=current - 1, true, MarkerLevel::Short, info)
+            .0
+            .len()
+            + 1
+    } else {
+        0
+    };
+    let after = if current + 1 < tabs {
+        marker_cells(current + 1..=tabs - 1, false, MarkerLevel::Short, info)
+            .0
+            .len()
+    } else {
+        0
+    };
+    label + before + after + current_tab
+}
+
+/// The indicator words side by side, a cell of the bar between two, in at most `room` cells: a
+/// word that does not fit whole is cut, and the ones after it are left out.
+fn word_pieces(style: TabStyle, words: &[(&str, Role)], room: usize) -> Vec<Cell> {
+    let bar = theme::style(Role::StatusBar);
+    let mut cells: Vec<Cell> = Vec::new();
+    for (word, role) in words {
+        let gap = usize::from(!cells.is_empty());
+        let left = room.saturating_sub(cells.len() + gap);
+        if left < 5 {
+            break;
+        }
+        if gap == 1 {
+            cells.push(blank(bar));
+        }
+        cells.extend(piece_cells(style, &[(*word, theme::style(*role))], left));
+    }
+    cells
+}
+
+/// The prompt as a piece: its label on the colour of a question, what was typed after it on a
+/// surface; the cells it takes (at most `room`), and where the cursor goes in them. What was typed
+/// is shown from its end when it is longer than the room, so the cursor stays on the bar; the
+/// label is cut only when the room is very small.
+fn prompt_piece(style: TabStyle, prompt: &Prompt, room: usize) -> (Vec<Cell>, usize) {
+    const LEAST_TYPED: usize = 3;
+    let label_role = if prompt.question {
+        Role::MessageQuestion
+    } else {
+        Role::PromptLabel
+    };
+    let label = if prompt.label.ends_with(' ') {
+        prompt.label.clone()
+    } else {
+        format!("{} ", prompt.label)
+    };
+    let ends = usize::from(style == TabStyle::Pill);
+    // One cell of padding before the label, one after what was typed, which is where the cursor is.
+    let body = room.saturating_sub(ends * 2 + 2);
+    let label_room = crate::width::text_width(&label).min(body.saturating_sub(LEAST_TYPED).max(1));
+    let label = cut_to_cells(&label, label_room);
+    let typed_room = body.saturating_sub(crate::width::text_width(&label));
+    let mut typed = prompt.text.clone();
+    if crate::width::text_width(&typed) > typed_room {
+        let mut kept = String::new();
+        let mut used = 0;
+        for unit in crate::width::units(&typed).iter().rev() {
+            if used + unit.width > typed_room {
+                break;
+            }
+            used += unit.width;
+            kept.insert_str(0, unit.text);
+        }
+        typed = kept;
+    }
+    let label_style = theme::style(label_role);
+    let typed_style = theme::style(Role::PromptText);
+    let mut cells = text_cells(&format!(" {label}"), label_style);
+    let typed_cells = text_cells(&typed, typed_style);
+    let cursor = ends + cells.len() + typed_cells.len();
+    cells.extend(typed_cells);
+    cells.extend(text_cells(" ", typed_style));
+    let cells = capped(
+        style,
+        cells,
+        cap(Symbol::PillCapLeft, label_style),
+        cap(Symbol::PillCapRight, typed_style),
+    );
+    (cells, cursor)
+}
+
 /// The cells of the bar, where the cursor goes when it is a line to type into, and where each
 /// tab that shows (whole or in part) is. A bar that a prompt, a hint or a message replaces has
 /// no tabs.
 pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>, Vec<TabSpan>) {
     let width = usize::from(cols);
     let bar = theme::style(Role::StatusBar);
-    if let Some(prompt) = &info.prompt {
-        let style = theme::style(Role::Prompt);
-        let mut cells = text_cells(&format!("{}{}", prompt.label, prompt.text), style);
-        let cursor = cells.len().min(width.saturating_sub(1));
-        cells = fit(cells, width, style);
-        return (cells, Some(cursor as u16), Vec::new());
-    }
+    // The key hint is a line made to fit the whole width of the bar, so it takes the whole row.
     if let Some(hint) = &info.hint {
-        let style = theme::style(Role::StatusBar);
-        return (fit(text_cells(hint, style), width, style), None, Vec::new());
-    }
-    if let Some(message) = &info.message {
-        let style = theme::style(Role::Message);
-        return (
-            fit(text_cells(&format!(" {message}"), style), width, style),
-            None,
-            Vec::new(),
-        );
+        return (fit(text_cells(hint, bar), width, bar), None, Vec::new());
     }
     let mut words: Vec<String> = Vec::new();
     if info.prefix {
@@ -535,39 +704,112 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
         Some(CopyState::VisualLine) => select_word = Some("V-LINE".to_string()),
         Some(CopyState::Jump(typed)) => select_word = Some(format!("JUMP {typed}")),
     }
-    let mut right: Vec<Cell> = Vec::new();
-    for (class, count) in Class::BY_URGENCY.iter().zip(info.notices) {
-        if count > 0 {
-            right.push(blank(bar));
-            right.extend(text_cells(
-                &format!("{}{count}", theme::notice_symbol(*class)),
-                theme::notice_style(*class),
-            ));
+    // The counters are one piece of the bar's style, the most urgent class first: the symbol of
+    // each class in its colour and the count in the bar's text colour, on a tab's surface.
+    let mut counters: Vec<Cell> = Vec::new();
+    {
+        let name = theme::style(Role::PillName);
+        let mut inner: Vec<Cell> = Vec::new();
+        for (class, count) in Class::BY_URGENCY.iter().zip(info.notices) {
+            if count > 0 {
+                inner.extend(text_cells(if inner.is_empty() { " " } else { "  " }, name));
+                inner.extend(text_cells(
+                    theme::notice_symbol(*class),
+                    theme::notice_style(*class),
+                ));
+                inner.extend(text_cells(&count.to_string(), name));
+            }
+        }
+        if !inner.is_empty() {
+            inner.extend(text_cells(" ", name));
+            counters = capped(
+                info.style,
+                inner,
+                cap(Symbol::PillCapLeft, name),
+                cap(Symbol::PillCapRight, name),
+            );
+            counters.insert(0, blank(bar));
+            counters.push(blank(bar));
         }
     }
-    if !right.is_empty() {
+    let mut shown_words: Vec<(&str, Role)> = words
+        .iter()
+        .map(|w| (w.as_str(), Role::Indicator))
+        .collect();
+    if let Some(word) = &select_word {
+        shown_words.push((word.as_str(), Role::IndicatorSelect));
+    }
+    let words_cells = word_pieces(info.style, &shown_words, usize::MAX);
+    let label = session_label(info);
+    let current_tab = info
+        .tabs
+        .iter()
+        .position(|t| t.current)
+        .map_or(0, |i| Fitting::new(info).compact(i));
+    // A message or a prompt stands at the right, left of the indicator words, in at most half
+    // the bar together with them; it also leaves the session label and the current tab their
+    // room, so it is the first to give way.
+    let gap = usize::from(!words_cells.is_empty());
+    let half = width / 2;
+    let left_needed = tabs_needed(info, label.len() + 1, current_tab);
+    // A question that is asked takes its room before the current tab does; a message does not.
+    let kept_for_tabs = if info.prompt.is_some() {
+        label.len() + 1
+    } else {
+        left_needed
+    };
+    let message_room = half
+        .saturating_sub(words_cells.len() + gap)
+        .min(width.saturating_sub(kept_for_tabs + counters.len() + words_cells.len() + gap));
+    let (message, message_cursor) = message_cells(info, message_room);
+    let mut right = counters.clone();
+    let message_at = right.len();
+    right.extend(message.iter().cloned());
+    if !message.is_empty() && gap == 1 {
         right.push(blank(bar));
     }
-    right.extend(
-        words
-            .iter()
-            .flat_map(|w| text_cells(&format!(" {w} "), theme::style(Role::Indicator))),
-    );
-    if let Some(word) = select_word {
-        right.extend(text_cells(
-            &format!(" {word} "),
-            theme::style(Role::IndicatorSelect),
-        ));
+    right.extend(words_cells);
+    // The counters and the indicators keep their place at the right; the tabs give way. When
+    // there is not room for the session label and the current tab beside them, the tabs give way
+    // altogether, and the indicators are cut (the counters first) rather than the label.
+    if !right.is_empty() && width < right.len() + left_needed {
+        let available = width.saturating_sub(label.len() + 1);
+        let words = if counters.len() + words_len_of(&shown_words, info.style) <= available {
+            right[message_at + message.len() + usize::from(gap == 1 && !message.is_empty())..]
+                .to_vec()
+        } else {
+            word_pieces(info.style, &shown_words, available)
+        };
+        // A prompt that is open keeps its place beside the words; a message gives way.
+        let (message, message_cursor) = if info.prompt.is_some() {
+            let gap = usize::from(!words.is_empty());
+            let room = half
+                .saturating_sub(words.len() + gap)
+                .min(available.saturating_sub(words.len() + gap));
+            message_cells(info, room)
+        } else {
+            (Vec::new(), None)
+        };
+        let mut cells = label;
+        cells.push(blank(bar));
+        let from = width.saturating_sub(
+            words.len() + message.len() + usize::from(!words.is_empty() && !message.is_empty()),
+        );
+        cells = fit(cells, from, bar);
+        let cursor = message_cursor.map(|c| (cells.len() + c).min(width.saturating_sub(1)) as u16);
+        cells.extend(message);
+        if !words.is_empty() && cells.len() < width && cells.len() + words.len() < width {
+            cells.push(blank(bar));
+        }
+        cells.extend(words);
+        return (fit(cells, width, bar), cursor, Vec::new());
     }
-    // The counters and the indicators keep their place at the right; the tabs give way.
-    let room = if right.len() < width {
-        width - right.len()
-    } else {
-        width
-    };
+    let room = width - right.len();
     let (mut cells, spans) = lay_out_tabs(room, info);
     cells = fit(cells, room, bar);
     cells.extend(right.into_iter().take(width - room));
+    let cursor =
+        message_cursor.map(|c| (room + message_at + c).min(width.saturating_sub(1)) as u16);
     // What was cut away cannot be clicked, and a tab cut in two is clickable where it shows.
     let spans = spans
         .into_iter()
@@ -579,7 +821,7 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
             marker,
         })
         .collect();
-    (cells, None, spans)
+    (cells, cursor, spans)
 }
 
 /// The session's label and the tabs in `room` cells: as they are when they fit; with the longest
@@ -776,6 +1018,7 @@ mod tests {
             copy: None,
             notices: [0; 4],
             message: None,
+            message_kind: MessageKind::Information,
             prompt: None,
             hint: None,
         }
@@ -824,10 +1067,11 @@ mod tests {
         let (_, _, narrower) = build_with_tabs(12, &info());
         assert_eq!(narrower.last().map(|t| t.index), Some(1));
         assert!(narrower.iter().all(|t| t.to <= 12));
-        // A message, a hint or a prompt in place of the bar leaves no tabs.
+        // A message leaves the tabs where they are, as far as the room goes; a hint in place
+        // of the bar leaves none.
         let mut m = info();
         m.message = Some("hello".into());
-        assert!(build_with_tabs(60, &m).2.is_empty());
+        assert_eq!(build_with_tabs(60, &m).2, build_with_tabs(60, &info()).2);
         let mut h = info();
         h.hint = Some("hint".into());
         assert!(build_with_tabs(60, &h).2.is_empty());
@@ -870,7 +1114,10 @@ mod tests {
         i.locked = true;
         i.copy = Some(CopyState::Normal);
         let line = text(&build(60, &i).0);
-        assert!(line.trim_end().ends_with("PREFIX  LOCK  COPY"), "{line:?}");
+        assert!(
+            line.trim_end().ends_with("PREFIX   LOCK   COPY"),
+            "{line:?}"
+        );
         let quiet = text(&build(60, &info()).0);
         assert!(!quiet.contains("PREFIX") && !quiet.contains("LOCK") && !quiet.contains("COPY"));
     }
@@ -888,19 +1135,247 @@ mod tests {
     }
 
     #[test]
-    fn a_message_or_a_prompt_replaces_the_bar() {
+    fn a_message_or_a_prompt_stands_at_the_right_and_the_tabs_stay() {
         let mut i = info();
         i.message = Some("no room to split".into());
-        let line = text(&build(40, &i).0);
-        assert!(line.contains("no room to split") && !line.contains("work"));
+        let line = text(&build(60, &i).0);
+        assert!(line.contains(" work ") && line.contains(" vim"), "{line:?}");
+        assert!(line.trim_end().ends_with("no room to split"), "{line:?}");
         let mut i = info();
         i.prompt = Some(Prompt {
             label: "rename: ".into(),
             text: "abc".into(),
+            question: false,
         });
-        let (cells, cursor) = build(40, &i);
-        assert!(text(&cells).starts_with("rename: abc"));
-        assert_eq!(cursor, Some(11));
+        let (cells, cursor) = build(60, &i);
+        let line = text(&cells);
+        assert!(
+            line.starts_with(" work ") && line.contains(" vim"),
+            "{line:?}"
+        );
+        assert!(line.contains(" rename: abc "), "{line:?}");
+        // The cursor stands right after what was typed.
+        assert_eq!(cursor, Some((line.find("abc").unwrap() + 3) as u16));
+    }
+
+    /// Every state that is not the tabs, for one style: its name and the bar's info.
+    fn lines_to_try(style: TabStyle) -> Vec<(&'static str, StatusInfo)> {
+        let base = || {
+            let mut i = info();
+            i.style = style;
+            i
+        };
+        let mut states = Vec::new();
+        let mut i = base();
+        i.message = Some("opening https://example.com/a/long/address/to/open".into());
+        states.push(("information", i));
+        let mut i = base();
+        i.message = Some("line 3: unknown setting `tab-stile` in the [status] table".into());
+        i.message_kind = MessageKind::Error;
+        states.push(("error", i));
+        let mut i = base();
+        i.prompt = Some(Prompt {
+            label: "Close this pane? (y/n) ".into(),
+            text: String::new(),
+            question: true,
+        });
+        states.push(("question", i));
+        let mut i = base();
+        i.prompt = Some(Prompt {
+            label: "Window name: ".into(),
+            text: "build and test the whole workspace".into(),
+            question: false,
+        });
+        states.push(("prompt", i));
+        let mut i = base();
+        i.hint = Some(" | split   - split down   c new window   x close".into());
+        states.push(("hint", i));
+        let mut i = base();
+        i.prefix = true;
+        states.push(("prefix", i));
+        let mut i = base();
+        i.locked = true;
+        i.unlock_key = Some("ctrl+alt+g".into());
+        states.push(("lock", i));
+        let mut i = base();
+        i.recording = true;
+        states.push(("recording", i));
+        let mut i = base();
+        i.prefix = true;
+        i.message = Some("no binding for z".into());
+        i.message_kind = MessageKind::Error;
+        states.push(("message-and-prefix", i));
+        states
+    }
+
+    /// Every state keeps the session label first and the bar's background everywhere (no cell
+    /// with the terminal's default black), in both styles and at wide, medium and narrow bars.
+    #[test]
+    fn every_state_of_the_bar_keeps_the_session_label_and_the_bar_background() {
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            for width in [150u16, 80, 40] {
+                for (name, i) in lines_to_try(style) {
+                    // The line of key hints is made to fit the whole row, label included.
+                    if name == "hint" {
+                        continue;
+                    }
+                    let (cells, cursor) = build(width, &i);
+                    let label = session_label(&i);
+                    let line = text(&cells);
+                    let context = format!("{name} {style:?} {width}: {line:?}");
+                    assert_eq!(cells.len(), usize::from(width), "{context}");
+                    assert_eq!(cells[..label.len()], label[..], "{context}");
+                    for (n, cell) in cells.iter().enumerate() {
+                        assert_ne!(
+                            cell.style.bg,
+                            arcade_term::Color::Default,
+                            "{context} at {n}"
+                        );
+                    }
+                    assert_eq!(cursor.is_some(), name == "question" || name == "prompt");
+                    if let Some(at) = cursor {
+                        assert!(usize::from(at) < usize::from(width), "{context}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// How many cells at the right end of the row belong to one piece that is not a tab: the
+    /// run of cells with a colour of their own, round ends included, up to the bar's own cell.
+    fn piece_width_at_the_right(cells: &[Cell]) -> usize {
+        let bar = theme::style(Role::StatusBar).bg;
+        let caps = [
+            theme::symbol(Symbol::PillCapLeft),
+            theme::symbol(Symbol::PillCapRight),
+        ];
+        cells
+            .iter()
+            .rev()
+            .take_while(|c| c.style.bg != bar || caps.contains(&c.text.as_str()))
+            .count()
+    }
+
+    /// A message or a prompt, with nothing else at the right, is never wider than half the screen,
+    /// at every width from 20 to 200, and the current tab shows while it is up whenever it
+    /// shows without it.
+    #[test]
+    fn a_message_never_takes_more_than_half_the_screen_and_the_current_tab_stays() {
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            for (name, i) in lines_to_try(style) {
+                if !matches!(name, "information" | "error" | "question" | "prompt") {
+                    continue;
+                }
+                for width in 20u16..=200 {
+                    let (cells, _, spans) = build_with_tabs(width, &i);
+                    let context = format!("{name} {style:?} {width}: {:?}", text(&cells));
+                    assert_eq!(cells.len(), usize::from(width), "{context}");
+                    let piece = piece_width_at_the_right(&cells);
+                    assert!(piece <= usize::from(width) / 2, "{piece} cells: {context}");
+                    let mut quiet = info();
+                    quiet.style = style;
+                    let (_, _, quiet_spans) = build_with_tabs(width, &quiet);
+                    let shows = |spans: &[TabSpan]| spans.iter().any(|s| !s.marker && s.index == 1);
+                    // A prompt takes its room before the current tab does.
+                    if shows(&quiet_spans) && name != "question" && name != "prompt" {
+                        assert!(shows(&spans), "the current tab is gone: {context}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// With a mode word too, the word is at the far right, the message left of it, and together
+    /// they keep to half the screen.
+    #[test]
+    fn a_message_stands_left_of_the_mode_word_and_both_keep_to_half_the_screen() {
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            let (_, i) = lines_to_try(style).swap_remove(8);
+            for width in 40u16..=200 {
+                let (cells, _) = build(width, &i);
+                let line = text(&cells);
+                assert!(
+                    line.trim_end_matches('\u{e0b4}')
+                        .trim_end()
+                        .ends_with("PREFIX"),
+                    "{width}: {line:?}"
+                );
+                if let (Some(m), Some(p)) = (line.find("no binding"), line.find("PREFIX")) {
+                    assert!(m < p, "{width}: {line:?}");
+                    // From the start of the message to the end of the row.
+                    let from = line[..m].chars().count();
+                    assert!(
+                        usize::from(width) - from <= usize::from(width) / 2 + 4,
+                        "{width}: {line:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The pill style rounds the ends of a message, a prompt and a mode mark as it does a tab;
+    /// the flat style has a block with a cell of padding.
+    #[test]
+    fn a_message_is_a_pill_in_the_pill_style_and_a_block_in_the_flat_one() {
+        let round = theme::symbol(Symbol::PillCapRight);
+        for (name, i) in lines_to_try(TabStyle::Pill) {
+            if name == "hint" {
+                continue;
+            }
+            let (cells, _) = build(150, &i);
+            let right_of_tabs = text(&cells[cells.len() / 2..]);
+            assert!(right_of_tabs.contains(round), "{name}: {right_of_tabs:?}");
+        }
+        for (name, i) in lines_to_try(TabStyle::Flat) {
+            let line = text(&build(150, &i).0);
+            assert!(!line.contains(round), "{name}: {line:?}");
+        }
+    }
+
+    #[test]
+    fn the_colour_of_a_message_says_what_kind_it_is() {
+        let at = |i: &StatusInfo, role| {
+            build(150, i)
+                .0
+                .iter()
+                .any(|c| c.style == theme::style(role) && !c.text.is_empty())
+        };
+        let states = lines_to_try(TabStyle::Flat);
+        let find = |n: &str| &states.iter().find(|(name, _)| *name == n).unwrap().1;
+        assert!(at(find("information"), Role::MessageInfo));
+        assert!(at(find("information"), Role::PromptText));
+        assert!(at(find("error"), Role::MessageError));
+        assert!(at(find("question"), Role::MessageQuestion));
+        assert!(at(find("prompt"), Role::PromptLabel));
+        assert!(at(find("prompt"), Role::PromptText));
+        assert!(at(find("prefix"), Role::Indicator));
+    }
+
+    /// A message longer than its room is cut at its end with the cut mark, so a configuration
+    /// error keeps its start; what is typed in a prompt is shown from its end, so the cursor
+    /// stays on the bar.
+    #[test]
+    fn a_long_message_keeps_its_start_and_a_long_prompt_keeps_its_end() {
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            let mut i = info();
+            i.style = style;
+            i.message = Some("line 12: the key `copy.yank` is not a command that exists".into());
+            i.message_kind = MessageKind::Error;
+            let line = text(&build(80, &i).0);
+            assert!(line.contains("line 12: the"), "{line:?}");
+            assert!(line.contains(theme::symbol(Symbol::Ellipsis)), "{line:?}");
+            let mut i = info();
+            i.style = style;
+            i.prompt = Some(Prompt {
+                label: "Window name: ".into(),
+                text: "a very long name that does not fit on the bar at all, ending here".into(),
+                question: false,
+            });
+            let (cells, cursor) = build(80, &i);
+            let line = text(&cells);
+            assert!(line.contains("ending here"), "{line:?}");
+            assert!(usize::from(cursor.unwrap()) < 80, "{line:?}");
+        }
     }
 
     /// A tab that says nothing, and the same tab with a mark of every kind.
@@ -1222,7 +1697,7 @@ mod tests {
         assert!(line.contains(&format!("sh {approval} ")), "{line}");
         assert!(
             line.trim_end()
-                .ends_with(&format!("{approval}2 {error}1 {dot}3")),
+                .ends_with(&format!("{approval}2  {error}1  {dot}3")),
             "{line:?}"
         );
         let at = |needle: &str| cells[line[..line.find(needle).unwrap()].chars().count()].style;
@@ -1246,6 +1721,45 @@ mod tests {
         }
         let quiet = text(&build(80, &info()).0);
         assert!(!quiet.contains(approval) && !quiet.contains(dot));
+    }
+
+    /// The counters are one piece on the surface of a tab's name, in both styles: the symbol of
+    /// each class in its colour, the count in the bar's text colour, and no cell with the colour
+    /// of a class as its background. The bar is as wide as it was.
+    #[test]
+    fn the_counters_are_one_piece_on_a_surface_and_never_a_block_of_a_class_colour() {
+        let surface = theme::style(Role::PillName);
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            for width in [150u16, 80, 40] {
+                let mut i = info();
+                i.style = style;
+                i.notices = [2, 0, 1, 3];
+                let (cells, _) = build(width, &i);
+                assert_eq!(cells.len(), usize::from(width));
+                let line = text(&cells);
+                let counted = format!(
+                    "{}2  {}1  {}3",
+                    theme::notice_symbol(Class::Approval),
+                    theme::notice_symbol(Class::Error),
+                    theme::notice_symbol(Class::Info)
+                );
+                assert!(line.contains(&counted) || width < 80, "{line:?}");
+                for class in Class::BY_URGENCY {
+                    let mark = theme::notice_style(class);
+                    for cell in &cells {
+                        assert_ne!(cell.style.bg, mark.fg, "{class:?} {style:?} {width}");
+                    }
+                }
+                if width >= 80 {
+                    let at = line.find(theme::notice_symbol(Class::Approval)).unwrap();
+                    let from = line[..at].chars().count();
+                    // The symbol in its colour on the surface, then the count in the text colour.
+                    assert_eq!(cells[from].style, theme::notice_style(Class::Approval));
+                    assert_eq!(cells[from].style.bg, surface.bg);
+                    assert_eq!(cells[from + 1].style, surface);
+                }
+            }
+        }
     }
 
     #[test]
@@ -1767,6 +2281,49 @@ mod tests {
                 crate::render::push_row(&mut bytes, 0, &cells, &[]);
                 bytes.extend_from_slice(b"\x1b[0m\n");
                 std::fs::write(format!("{dir}/bar-{name}-{place}.bin"), bytes).unwrap();
+            }
+            // A bar with the counters at the right, at 110 columns.
+            {
+                let mut i = info();
+                i.style = style;
+                i.notices = [1, 0, 2, 3];
+                let (cells, _) = build(110, &i);
+                let mut bytes = Vec::new();
+                crate::render::push_row(&mut bytes, 0, &cells, &[]);
+                bytes.extend_from_slice(b"\x1b[0m\n");
+                std::fs::write(format!("{dir}/counters-{name}-110.bin"), bytes).unwrap();
+            }
+            // The top row of a window of two panes whose left pane wears the mark of an info
+            // notification in its corner (the cell the frame draws with `notice_style`).
+            {
+                let plain = arcade_term::Style::default();
+                let mut row = text_cells("$ ls", plain);
+                row = fit(row, 54, plain);
+                row.extend(text_cells(
+                    theme::notice_symbol(Class::Info),
+                    theme::notice_style(Class::Info),
+                ));
+                row.extend(text_cells("\u{2502}", theme::style(Role::Divider)));
+                row.extend(text_cells("$ ", plain));
+                let row = fit(row, 110, plain);
+                let mut bytes = Vec::new();
+                crate::render::push_row(&mut bytes, 0, &row, &[]);
+                bytes.extend_from_slice(b"\x1b[0m\n");
+                std::fs::write(format!("{dir}/corner-mark-{name}-110.bin"), bytes).unwrap();
+            }
+            // Each line that replaces the tabs, at 110 columns.
+            for (state, mut i) in lines_to_try(style) {
+                i.style = style;
+                let (cells, _) = build(110, &i);
+                let mut bytes = Vec::new();
+                crate::render::push_row(&mut bytes, 0, &cells, &[]);
+                bytes.extend_from_slice(b"\x1b[0m\n");
+                std::fs::write(format!("{dir}/line-{state}-{name}-110.bin"), bytes).unwrap();
+                std::fs::write(
+                    format!("{dir}/line-{state}-{name}-110.txt"),
+                    format!("{}\n", text(&cells)),
+                )
+                .unwrap();
             }
             // The four windows of the narrow-bar case at three widths, as the host receives them
             // (`.bin`, with the colours) and as plain text (`.txt`).

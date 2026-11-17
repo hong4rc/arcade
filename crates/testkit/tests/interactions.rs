@@ -68,6 +68,34 @@ fn the_position_mark_ends_before_the_notification_mark_in_the_corner() {
     assert!(left.contains(&mark[mark.rfind('[').unwrap()..]), "{left}");
 }
 
+/// The mark in the corner is the symbol of its class in colour on the surface the bar's names
+/// stand on (one cell), not a solid block of the class colour, and not the same colour as the
+/// symbol.
+#[test]
+fn the_corner_mark_is_a_symbol_on_the_bars_surface_and_not_a_block_of_the_class_colour() {
+    let daemon = TestDaemon::start();
+    let mut client = start(&daemon, 100);
+    let first = client.focused_pane_id();
+    client.send(PREFIX);
+    client.send(b"|");
+    assert!(client.wait_until(WAIT, |c| c.screen_text().contains('│')));
+    notify(&daemon, first, "input");
+    assert!(
+        client.wait_until(WAIT, |c| c.screen_rows()[0].contains('◆')),
+        "{}",
+        client.screen_rows()[0]
+    );
+    let row = client.screen_rows()[0].clone();
+    let col = row.chars().position(|c| c == '◆').unwrap() as u16;
+    let mark = client.style_at(0, col);
+    // The surface of a tab's name: the session's name on the bar stands on it.
+    let bar = client.status_row();
+    let name = bar.chars().position(|c| c == 'w').unwrap() as u16;
+    let surface = client.style_at(client.screen_rows().len() as u16 - 1, name);
+    assert_eq!(mark.bg, surface.bg);
+    assert_ne!(mark.fg, mark.bg);
+}
+
 // ---- A divider drag while a pane is in copy mode or scrolled ----
 
 fn drag(client: &mut TestClient, from: (u16, u16), to: (u16, u16)) {

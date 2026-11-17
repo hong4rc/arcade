@@ -22,10 +22,14 @@ pub enum Role {
     /// The program's own title in a tab, fainter than the name.
     /// The words at the right end of the status bar (`PREFIX`, `LOCK`, `COPY`).
     Indicator,
-    /// A line of text that replaces the status bar for a moment (an error, a result).
-    Message,
-    /// A line the user types into, in place of the status bar.
-    Prompt,
+    /// A line that replaces the tabs for a moment: news or a result, an error, a question.
+    MessageInfo,
+    MessageError,
+    MessageQuestion,
+    /// The label of a line the user types into.
+    PromptLabel,
+    /// The text of a message, and what was typed in a prompt.
+    PromptText,
     /// A divider between two panes.
     Divider,
     /// The part of a divider that touches the focused pane.
@@ -59,11 +63,6 @@ pub enum Role {
     PillBadgeCurrent,
     SessionBadge,
     SessionName,
-    /// The mark of a notification, one role for each class.
-    NoticeApproval,
-    NoticeInput,
-    NoticeError,
-    NoticeInfo,
 }
 
 /// The palette of the bar's tabs (Catppuccin Frappe, as the author's tmux bar has it).
@@ -200,16 +199,23 @@ pub fn style(role: Role) -> Style {
             bold: true,
             ..Style::default()
         },
-        Role::Message => Style {
-            fg: Color::Indexed(0),
-            bg: Color::Indexed(3),
-            ..Style::default()
+        // A message is a small block of the accent colour (the dark of the bar's text on a
+        // pastel: green for news, red for an error, yellow for a question, as the mode words)
+        // and its text on the surface of a tab's name; each reads at a contrast of 4.5 or more
+        // (a test checks it). What is typed in a prompt is on the same surface.
+        Role::MessageInfo => Style {
+            bold: true,
+            ..on(palette::CRUST, palette::GREEN)
         },
-        Role::Prompt => Style {
-            fg: Color::Indexed(15),
-            bg: Color::Indexed(0),
-            ..Style::default()
+        Role::MessageError => Style {
+            bold: true,
+            ..on(palette::CRUST, palette::RED)
         },
+        Role::MessageQuestion | Role::PromptLabel => Style {
+            bold: true,
+            ..on(palette::CRUST, palette::YELLOW)
+        },
+        Role::PromptText => on(palette::TEXT, palette::SURFACE0),
         Role::Divider => fg(8),
         Role::DividerFocus => Style {
             bold: true,
@@ -263,41 +269,15 @@ pub fn style(role: Role) -> Style {
             bg: Color::Indexed(6),
             ..Style::default()
         },
-        Role::NoticeApproval => Style {
-            fg: Color::Indexed(0),
-            bg: Color::Indexed(1),
-            bold: true,
-            ..Style::default()
-        },
-        Role::NoticeInput => Style {
-            fg: Color::Indexed(0),
-            bg: Color::Indexed(3),
-            bold: true,
-            ..Style::default()
-        },
-        Role::NoticeError => Style {
-            fg: Color::Indexed(0),
-            bg: Color::Indexed(5),
-            bold: true,
-            ..Style::default()
-        },
-        Role::NoticeInfo => Style {
-            fg: Color::Indexed(0),
-            bg: Color::Indexed(6),
-            ..Style::default()
-        },
     }
 }
 
-/// How the mark of a class of notification looks: a colour and, because a colour alone is not
-/// enough on a terminal with few of them, a symbol of its own.
+/// How the mark of a class of notification looks wherever it is drawn outside a tab (the counter
+/// at the right of the bar, the corner of a pane, the lists): the symbol in the colour of its
+/// class on the surface of a tab's name, as the status cell of a tab draws it, never a solid
+/// block of the class colour.
 pub fn notice_style(class: crate::notify::Class) -> Style {
-    style(match class {
-        crate::notify::Class::Approval => Role::NoticeApproval,
-        crate::notify::Class::Input => Role::NoticeInput,
-        crate::notify::Class::Error => Role::NoticeError,
-        crate::notify::Class::Info => Role::NoticeInfo,
-    })
+    cell_style(Tint::Class(class), style(Role::PillName))
 }
 
 /// The mark of a class: one cell wide wherever it is drawn (tab, count, pane, lists), a shape of
@@ -421,6 +401,9 @@ pub enum Symbol {
     PickerNoMatch,
     /// Ends a line that was cut because it did not fit.
     Ellipsis,
+    /// In the coloured block in front of a message: news, or an error.
+    MessageInformation,
+    MessageError,
     /// After a key of the key list that this terminal cannot send.
     KeyUnavailable,
     /// Between a mode word on the status bar and what it tells the user to do.
@@ -465,6 +448,8 @@ pub fn symbol(symbol: Symbol) -> &'static str {
         Symbol::PickerFilterMark => "/ ",
         Symbol::PickerNoMatch => "no match",
         Symbol::Ellipsis => "…",
+        Symbol::MessageInformation => "●",
+        Symbol::MessageError => "✗",
         Symbol::KeyUnavailable => "!",
         Symbol::HintSeparator => " · ",
         Symbol::TreeOpen => "▾ ",
@@ -492,22 +477,22 @@ mod tests {
     }
 
     #[test]
-    fn every_notification_mark_is_one_cell_and_a_solid_chip_on_any_tab() {
+    fn every_notification_mark_is_one_cell_in_its_colour_on_a_surface_and_never_a_solid_block() {
         use crate::notify::Class;
-        let tab = style(Role::TabCurrent);
-        let plain_tab = style(Role::Tab);
+        let surface = style(Role::PillName).bg;
         for class in Class::BY_URGENCY {
             let cells = crate::compose::text_cells(notice_symbol(class), Style::default());
             assert_eq!(cells.len(), 1, "{class:?}: {:?}", notice_symbol(class));
-            // The mark carries a pair of colours of its own, so it reads the same on the blue of
-            // the current tab and on the others.
             let mark = notice_style(class);
             assert_ne!(mark.fg, mark.bg, "{class:?}");
-            assert_ne!(mark.bg, tab.bg, "{class:?}");
-            assert_ne!(mark.bg, plain_tab.bg, "{class:?}");
-            for role in [Role::PillName, Role::PillNameCurrent] {
-                assert_ne!(mark.bg, style(role).bg, "{class:?} on {role:?}");
-            }
+            // The surface of a tab's name, not a colour of a class.
+            assert_eq!(mark.bg, surface, "{class:?}");
+            assert!(contrast(mark) >= 4.5, "{class:?}");
+            // The same colour as the tab's own status cell.
+            assert_eq!(
+                mark.fg,
+                cell_style(Tint::Class(class), style(Role::PillName)).fg
+            );
         }
     }
 
@@ -549,13 +534,12 @@ mod tests {
             Role::TabNumber,
             Role::TabNumberCurrent,
             Role::Indicator,
-            Role::Message,
-            Role::Prompt,
+            Role::MessageInfo,
+            Role::MessageError,
+            Role::MessageQuestion,
+            Role::PromptLabel,
+            Role::PromptText,
             Role::PickerSelected,
-            Role::NoticeApproval,
-            Role::NoticeInput,
-            Role::NoticeError,
-            Role::NoticeInfo,
         ] {
             let s = style(role);
             assert_ne!(s.fg, s.bg, "{role:?}");
@@ -575,6 +559,11 @@ mod tests {
             Role::PillBadgeCurrent,
             Role::SessionBadge,
             Role::SessionName,
+            Role::MessageInfo,
+            Role::MessageError,
+            Role::MessageQuestion,
+            Role::PromptLabel,
+            Role::PromptText,
         ] {
             let ratio = contrast(style(role));
             assert!(ratio >= 4.5, "{role:?}: {ratio:.2}");

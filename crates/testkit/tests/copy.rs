@@ -34,7 +34,7 @@ fn quiet_daemon() -> TestDaemon {
 
 fn client(daemon: &TestDaemon) -> TestClient {
     let mut client = daemon
-        .attach(AttachOptions::new().size(100, 30).named("copy"))
+        .attach(AttachOptions::new().size(160, 30).named("copy"))
         .unwrap();
     client.wait_for_prompt().unwrap();
     client

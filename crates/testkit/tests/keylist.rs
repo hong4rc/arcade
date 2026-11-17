@@ -438,7 +438,7 @@ fn a_key_this_terminal_cannot_send_is_marked_on_its_row() {
         .unwrap();
     client.wait_for_prompt().unwrap();
     client.send(LEGACY_ANSWER);
-    assert!(client.wait_until(WAIT, |c| c.status_row().contains("cannot work here")));
+    assert!(client.wait_until(WAIT, |c| c.status_row().contains("key bind")));
     open_list(&mut client);
     // Ctrl with a digit does not exist on the old key codes: the number keys are marked.
     let row = row_of(&client, "go to window N");
@@ -503,7 +503,7 @@ fn a_narrow_key_line_drops_the_hints_that_matter_least_and_keeps_close_and_the_m
         .unwrap();
     client.wait_for_prompt().unwrap();
     client.send(LEGACY_ANSWER);
-    assert!(client.wait_until(WAIT, |c| c.status_row().contains("cannot work here")));
+    assert!(client.wait_until(WAIT, |c| c.status_row().contains("key bind")));
     open_list(&mut client);
     let rows = box_rows(&client);
     let line = inner(&rows[rows.len() - 2]);
