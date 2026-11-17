@@ -225,6 +225,7 @@ impl Server {
                             continue;
                         }
                         self.typed_into(pane);
+                        self.note_stray(pane, None, &raw, &raw, flags);
                         self.write_to_pane(pane, &raw);
                     }
                 }
@@ -806,6 +807,7 @@ impl Server {
         // way exactly as it came: nothing is lost, even for bytes no key stands for.
         let kitty_form = raw.starts_with(b"\x1b[") && raw.ends_with(b"u");
         if modes.kitty_flags == 0 && matches!(key.code, Code::Char(_)) && !kitty_form {
+            self.note_stray(pane_id, Some(key), raw, raw, modes.kitty_flags);
             self.write_to_pane(pane_id, raw);
             return;
         }
@@ -813,7 +815,36 @@ impl Server {
         if bytes.is_empty() && !kitty_form {
             bytes = raw.to_vec();
         }
+        self.note_stray(pane_id, Some(key), raw, &bytes, modes.kitty_flags);
         self.write_to_pane(pane_id, &bytes);
+    }
+
+    /// Count, and keep one line about, bytes that go to a pane for a key and that no key stands
+    /// for (see `crate::keys::stray_bytes`). Only such a key is recorded, never what is typed
+    /// otherwise; `arcade keys stray` reads it.
+    pub(super) fn note_stray(
+        &mut self,
+        pane_id: u64,
+        key: Option<Key>,
+        host: &[u8],
+        written: &[u8],
+        kitty_flags: u8,
+    ) {
+        if !crate::keys::stray_bytes(key, written, kitty_flags) {
+            return;
+        }
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let line = format!(
+            "{}s\tpane {pane_id}\tflags {kitty_flags}\thost {}\twrote {}",
+            self.started.elapsed().as_secs(),
+            hex(host),
+            hex(written)
+        );
+        self.stray_keys.0 += 1;
+        if self.stray_keys.1.len() >= 20 {
+            self.stray_keys.1.pop_front();
+        }
+        self.stray_keys.1.push_back(line);
     }
 
     /// Give pasted text to a pane, between the paste markers when its program asked for them.

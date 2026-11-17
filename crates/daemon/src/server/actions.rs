@@ -199,6 +199,10 @@ impl Server {
             "notify.clear" => return self.notify_clear(args),
             "notify.log" => return self.notify_log(),
             "notify.list" => return self.notify_list(),
+            "keys.stray" => {
+                let lines: Vec<&str> = self.stray_keys.1.iter().map(String::as_str).collect();
+                return (true, format!("{}\n{}", self.stray_keys.0, lines.join("\n")));
+            }
             "server.kill" => {
                 self.stopping = Some(Instant::now() + KILL_GRACE);
                 for p in self.panes.values() {

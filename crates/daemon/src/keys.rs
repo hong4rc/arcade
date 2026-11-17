@@ -541,6 +541,67 @@ fn starts_a_character(bytes: &[u8]) -> bool {
     bytes.len() < need && bytes[1..].iter().all(|b| (0x80..=0xbf).contains(b))
 }
 
+/// Whether the bytes written to a pane for a key are wrong for it: not valid text, or, for a
+/// plain printable key (no Ctrl, Alt or Super), holding a control byte. A key report in the kitty
+/// form is right for a plain key only when the program asked for the protocol. Nothing about the
+/// key is kept by the caller unless this says so.
+pub fn stray_bytes(key: Option<Key>, written: &[u8], kitty_flags: u8) -> bool {
+    if written.is_empty() {
+        return false;
+    }
+    if std::str::from_utf8(written).is_err() {
+        return true;
+    }
+    let Some(Key {
+        code: Code::Char(c),
+        mods,
+    }) = key
+    else {
+        return false;
+    };
+    if mods.ctrl || mods.alt || mods.super_key || c.is_control() {
+        return false;
+    }
+    let report = written.starts_with(b"\x1b[") && written.ends_with(b"u");
+    if report {
+        return kitty_flags == 0;
+    }
+    written.iter().any(|b| *b < 0x20 || *b == 0x7f)
+}
+
+/// Whether what the terminal writes back to a program (one or more answers, one after the other)
+/// holds anything that is not a whole answer: bytes that are not text, a byte outside a
+/// sequence, or a sequence cut short. Only the answer's bytes are looked at.
+pub fn stray_answers(bytes: &[u8]) -> bool {
+    if std::str::from_utf8(bytes).is_err() {
+        return true;
+    }
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != 0x1b || at + 1 >= bytes.len() {
+            return true;
+        }
+        let rest = &bytes[at + 2..];
+        let used = match bytes[at + 1] {
+            b'[' | b'O' => rest
+                .iter()
+                .position(|b| (0x40..=0x7e).contains(b))
+                .map(|p| p + 1),
+            b']' | b'P' => rest
+                .iter()
+                .enumerate()
+                .find(|(n, b)| **b == 0x07 || (**b == 0x1b && rest.get(n + 1) == Some(&b'\\')))
+                .map(|(n, b)| n + if *b == 0x07 { 1 } else { 2 }),
+            _ => None,
+        };
+        match used {
+            Some(n) => at += 2 + n,
+            None => return true,
+        }
+    }
+    false
+}
+
 /// Whether bytes of the host terminal that are not a key Arcade knows may go to a pane's
 /// program. What a pane gets must mean what the key means: a byte that is not valid UTF-8, a
 /// C1 control (the single-byte or the encoded form), and a key report whose code is no key
@@ -869,5 +930,62 @@ mod tests {
                 assert_eq!(back, bytes);
             }
         }
+    }
+
+    fn plain(c: char) -> Option<Key> {
+        Some(Key {
+            code: Code::Char(c),
+            mods: Mods::NONE,
+        })
+    }
+
+    #[test]
+    fn a_malformed_answer_is_told_from_whole_ones() {
+        assert!(!stray_answers(b""));
+        assert!(!stray_answers(b"\x1b[?62;22c"));
+        assert!(!stray_answers(b"\x1b[?1u\x1b[?62;22c"));
+        assert!(!stray_answers(b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\\x1b[0n"));
+        assert!(!stray_answers(b"\x1bP1$r0m\x1b\\"));
+        assert!(stray_answers(b"\x12"));
+        assert!(stray_answers(b"\xff"));
+        assert!(stray_answers(b"\x1b[?62;"));
+        assert!(stray_answers(b"\x1b[0n\x12"));
+        assert!(stray_answers(b"[?62c"));
+    }
+
+    #[test]
+    fn bytes_that_no_key_stands_for_are_told_from_a_key_and_its_reports() {
+        // The letter itself, a shifted one, a symbol, text of several bytes, nothing.
+        assert!(!stray_bytes(plain('e'), b"e", 0));
+        assert!(!stray_bytes(plain('E'), b"E", 0));
+        assert!(!stray_bytes(plain('é'), "é".as_bytes(), 0));
+        assert!(!stray_bytes(plain('e'), b"", 0));
+        // A key report is the right form for a program that asked for the protocol, and only it.
+        assert!(!stray_bytes(plain('e'), b"\x1b[101u", 1));
+        assert!(!stray_bytes(plain('e'), b"\x1b[101;;101u", 31));
+        assert!(stray_bytes(plain('e'), b"\x1b[101u", 0));
+        // A byte that is not text, or a control byte for a printable key, is a stray.
+        assert!(stray_bytes(plain('e'), b"\xff", 0));
+        assert!(stray_bytes(plain('e'), b"\x12", 0));
+        assert!(stray_bytes(plain('e'), b"e\x12", 3));
+        assert!(stray_bytes(None, b"\xc3", 0));
+        // A control key makes control bytes, and Alt an escape prefix.
+        let ctrl = Some(Key {
+            code: Code::Char('r'),
+            mods: Mods {
+                ctrl: true,
+                ..Mods::NONE
+            },
+        });
+        assert!(!stray_bytes(ctrl, b"\x12", 0));
+        let alt = Some(Key {
+            code: Code::Char('e'),
+            mods: Mods {
+                alt: true,
+                ..Mods::NONE
+            },
+        });
+        assert!(!stray_bytes(alt, b"\x1be", 0));
+        assert!(!stray_bytes(None, b"\x1b[?62;22c", 0));
     }
 }

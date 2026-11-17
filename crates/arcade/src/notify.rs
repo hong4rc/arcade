@@ -341,3 +341,28 @@ fn log(socket: &Path) -> u8 {
         }
     }
 }
+
+/// `arcade keys stray`: the key bytes the daemon wrote to a pane that no key stands for.
+pub fn stray(socket: &Path) -> u8 {
+    match exchange(socket, "keys.stray", Vec::new(), MANUAL_BUDGET) {
+        Ok((true, output)) => {
+            let mut lines = output.lines();
+            let count = lines.next().unwrap_or("0");
+            if count == "0" {
+                println!("no stray key bytes since the daemon started");
+                return 0;
+            }
+            println!(
+                "{count} stray key bytes since the daemon started; the latest (seconds since it started, pane, keyboard flags of the pane, the bytes the host sent for that key, the bytes written, in hexadecimal):"
+            );
+            for line in lines.filter(|l| !l.is_empty()) {
+                println!("  {line}");
+            }
+            0
+        }
+        Ok((false, why)) | Err(why) => {
+            eprintln!("arcade: keys stray: {}", why.trim_end());
+            1
+        }
+    }
+}

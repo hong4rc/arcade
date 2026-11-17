@@ -382,3 +382,15 @@ fn notify_list_prints_what_waits_and_nothing_when_nothing_does() {
     let o = run(daemon.socket(), None, &["notify", "list", "--bogus"]);
     assert_eq!(o.status.code(), Some(1));
 }
+
+/// `arcade keys stray` says that nothing odd was written to a pane, after ordinary typing.
+#[test]
+fn keys_stray_reports_none_after_ordinary_typing() {
+    let daemon = TestDaemon::start();
+    let (mut client, _first) = two_panes(&daemon);
+    client.type_line("echo typed-$((1+2))");
+    client.wait_for_text("typed-3").unwrap();
+    let o = run(daemon.socket(), None, &["keys", "stray"]);
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert!(out(&o).contains("no stray key bytes"), "{}", out(&o));
+}

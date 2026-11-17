@@ -591,6 +591,9 @@ struct Server {
     notices: crate::notify::Store,
     /// What became of the latest signals, for `arcade notify log`.
     notice_log: std::collections::VecDeque<notices::LogEntry>,
+    /// Key bytes written to a pane that no key stands for, for `arcade keys stray`: how many,
+    /// and the latest few (the host bytes of that one key and what was written).
+    stray_keys: (u64, std::collections::VecDeque<String>),
     stopping: Option<Instant>,
     killed_hard: bool,
     ever_had_session: bool,
@@ -670,6 +673,7 @@ fn new_server(config: &DaemonConfig, mut listener: UnixListener) -> io::Result<S
         pending_clipboard: HashMap::new(),
         notices: crate::notify::Store::default(),
         notice_log: notices::new_log(),
+        stray_keys: (0, std::collections::VecDeque::new()),
         stopping: None,
         killed_hard: false,
         ever_had_session: false,
@@ -1869,6 +1873,19 @@ impl Server {
                 }
             }
             if !replies.is_empty() {
+                // The answers of the terminal are written whole, one after the other: any one
+                // that is not whole is told in `arcade keys stray`.
+                if crate::keys::stray_answers(&replies) {
+                    let hex: String = replies.iter().map(|x| format!("{x:02x}")).collect();
+                    self.stray_keys.0 += 1;
+                    if self.stray_keys.1.len() >= 20 {
+                        self.stray_keys.1.pop_front();
+                    }
+                    self.stray_keys.1.push_back(format!(
+                        "{}s\tpane {pane_id}\tanswer of the terminal\twrote {hex}",
+                        self.started.elapsed().as_secs()
+                    ));
+                }
                 queue_pane_input(pane, &replies);
             }
         }
