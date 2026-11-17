@@ -351,8 +351,50 @@ impl Server {
         let Some(p) = self.panes.get_mut(&pane) else {
             return;
         };
-        if p.command.mark(mark, Instant::now(), seen, limits) {
+        let mut changed = p.command.mark(mark, Instant::now(), seen, limits);
+        // A new prompt, or the end of a command, means the program that made a progress report is
+        // gone, whether or not it took the report away.
+        if matches!(
+            mark,
+            crate::shellmarks::Mark::PromptStart | crate::shellmarks::Mark::CommandEnd(_)
+        ) && p.progress.is_some()
+        {
+            p.progress = None;
+            p.progress_at = None;
+            p.progress_seq += 1;
+            changed = true;
+        }
+        if changed {
             self.bar_changed(pane);
+        }
+    }
+
+    /// When the progress report of `pane` is to go if nothing repeats it, if it is shown and
+    /// expiry is on.
+    pub(super) fn progress_expiry_due(&self, pane: &Pane) -> Option<Instant> {
+        let after = self.config.progress_expires;
+        pane.progress_at
+            .filter(|_| !after.is_zero())
+            .map(|t| t + after)
+    }
+
+    /// Take away the reports that nothing has repeated for `[status] progress-expires` seconds;
+    /// the bar is drawn again and the host terminal's own bar follows (`send_progress`).
+    pub(super) fn wake_progress_expiry(&mut self) {
+        let now = Instant::now();
+        let due: Vec<u64> = self
+            .panes
+            .iter()
+            .filter(|(_, p)| self.progress_expiry_due(p).is_some_and(|t| t <= now))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in due {
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.progress = None;
+                p.progress_at = None;
+                p.progress_seq += 1;
+            }
+            self.bar_changed(id);
         }
     }
 

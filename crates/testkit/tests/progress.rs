@@ -184,3 +184,167 @@ fn a_report_that_says_the_same_again_does_not_redraw_the_bar() {
         "the bar's row was written {with_reports} times with reports and {without} without"
     );
 }
+
+// ---- A report that nothing takes away ----
+
+fn with_expiry(seconds: u64) -> TestDaemon {
+    TestDaemon::start_with(move |c| {
+        c.config.progress_expires = Duration::from_secs(seconds);
+    })
+}
+
+fn tab_says_running(client: &mut TestClient) -> bool {
+    client.status_row().contains('\u{25b8}')
+}
+
+/// A program that says "working" once and nothing more, as one that was ended or killed does:
+/// the report goes after `progress-expires` seconds, on the tab and on the host terminal's bar.
+#[test]
+fn a_report_that_nothing_repeats_expires_on_the_tab_and_on_the_host_bar() {
+    let daemon = with_expiry(1);
+    let mut client = start(&daemon);
+    client.type_line(&report(3, 0));
+    assert!(shows(&mut client, p(3, 0)));
+    assert!(client.wait_until(WAIT, tab_says_running));
+    // It goes by itself (a deadline wake-up, no key and no output needed), and the host's own
+    // bar is cleared with it.
+    assert!(
+        client.wait_until(WAIT, |c| !tab_says_running(c)),
+        "{}",
+        client.status_row()
+    );
+    assert!(client.wait_until(WAIT, |c| last(c) == Some(p(0, 0))));
+}
+
+/// A program that repeats its report keeps it shown for as long as it repeats; when it stops
+/// the report goes.
+#[test]
+fn a_report_that_is_repeated_is_kept_and_goes_when_the_repeats_stop() {
+    let daemon = with_expiry(1);
+    let mut client = start(&daemon);
+    client.type_line(&format!(
+        "i=0; while [ $i -lt 12 ]; do {}; sleep 0.25; i=$((i+1)); done; echo repeats-over",
+        report(3, 0)
+    ));
+    assert!(client.wait_until(WAIT, tab_says_running));
+    // Three seconds of repeats, three times the limit: still shown.
+    client.wait_for_text("repeats-over").ok();
+    client.read_more(std::time::Instant::now() + Duration::from_millis(100));
+    assert!(tab_says_running(&mut client), "{}", client.status_row());
+    assert!(
+        client.wait_until(WAIT, |c| !tab_says_running(c)),
+        "{}",
+        client.status_row()
+    );
+}
+
+/// Zero turns the expiry off: the report stays until the program takes it away.
+#[test]
+fn zero_turns_the_expiry_off() {
+    let daemon = with_expiry(0);
+    let mut client = start(&daemon);
+    client.type_line(&report(3, 0));
+    assert!(client.wait_until(WAIT, tab_says_running));
+    client.wait_until(Duration::from_millis(2500), |_| false);
+    assert!(tab_says_running(&mut client), "{}", client.status_row());
+    client.type_line(&report(0, 0));
+    assert!(client.wait_until(WAIT, |c| !tab_says_running(c)));
+}
+
+/// The program that sent a report is gone when the shell shows its next prompt (mark A) or the
+/// command ends (mark D): the report goes then, with the expiry off.
+#[test]
+fn a_new_prompt_or_the_end_of_a_command_takes_the_report_away() {
+    for mark in ["A", "D;0"] {
+        let daemon = with_expiry(0);
+        let mut client = start(&daemon);
+        client.type_line(&report(3, 0));
+        assert!(client.wait_until(WAIT, tab_says_running), "{mark}");
+        client.type_line(&format!("printf '\\033]133;{mark}\\007'"));
+        assert!(
+            client.wait_until(WAIT, |c| !tab_says_running(c)),
+            "{mark}: {}",
+            client.status_row()
+        );
+        assert!(
+            client.wait_until(WAIT, |c| last(c) == Some(p(0, 0))),
+            "{mark}"
+        );
+    }
+}
+
+/// A report made inside the alternate screen is still there after the program leaves it without
+/// taking the report away (nothing about the screen switch clears it); the expiry does.
+#[test]
+fn a_report_made_in_the_alternate_screen_outlives_it_until_it_expires() {
+    let daemon = with_expiry(2);
+    let mut client = start(&daemon);
+    client.type_line(&format!(
+        "printf '\\033[?1049h'; {}; sleep 0.3; printf '\\033[?1049l'; echo left-$((1+1))",
+        report(3, 0)
+    ));
+    assert!(
+        client.wait_until(WAIT, tab_says_running),
+        "never shown: {}",
+        client.status_row()
+    );
+    client.wait_for_text("left-2").unwrap();
+    assert!(
+        tab_says_running(&mut client),
+        "gone on leaving: {}",
+        client.status_row()
+    );
+    assert!(
+        client.wait_until(WAIT, |c| !tab_says_running(c)),
+        "{}",
+        client.status_row()
+    );
+}
+
+/// A window moved to another session takes its report with it: the other session shows it, and
+/// the session it left does not.
+#[test]
+fn a_report_moves_with_its_window_and_is_not_left_behind() {
+    let daemon = TestDaemon::start();
+    let mut alpha = daemon
+        .attach(AttachOptions::new().size(100, 30).named("alpha"))
+        .unwrap();
+    alpha.wait_for_prompt().unwrap();
+    let mut beta = daemon
+        .attach(AttachOptions::new().size(100, 30).named("beta"))
+        .unwrap();
+    beta.wait_for_prompt().unwrap();
+    assert!(daemon.command("window.new", &[]).is_ok());
+    // The window that was made has the focus of alpha or beta; ask each client where it stands.
+    let before = alpha.status_row();
+    let _ = before;
+    let (ok, why) = daemon
+        .command_from(Some(alpha.focused_pane_id()), "window.new", &[])
+        .unwrap();
+    assert!(ok, "{why}");
+    alpha.type_line(&report(3, 0));
+    assert!(alpha.wait_until(WAIT, tab_says_running));
+    let pane = alpha.focused_pane_id();
+    let (ok, why) = daemon
+        .command_from(Some(pane), "window.move-to-session", &["beta"])
+        .unwrap();
+    assert!(ok, "{why}");
+    // The window is gone from alpha, and so is its mark.
+    assert!(
+        alpha.wait_until(WAIT, |c| !tab_says_running(c)),
+        "{}",
+        alpha.status_row()
+    );
+    // Beta has the window with the report once, not twice.
+    assert!(
+        beta.wait_until(WAIT, tab_says_running),
+        "{}",
+        beta.status_row()
+    );
+    assert_eq!(
+        beta.status_row().matches('\u{25b8}').count(),
+        1,
+        "{}",
+        beta.status_row()
+    );
+}

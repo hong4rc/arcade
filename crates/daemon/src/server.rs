@@ -181,6 +181,10 @@ struct Pane {
     /// that repeats the last one still counts, since programs repeat it to keep it shown.
     progress: Option<arcade_term::Progress>,
     progress_seq: u64,
+    /// When the last report that is still shown came in: a report that nothing repeats goes
+    /// after `[status] progress-expires` seconds, since the program may be gone without having
+    /// taken it away.
+    progress_at: Option<Instant>,
     /// What the shell says about the command that runs (OSC 133 marks); nothing when it sends none.
     command: crate::shellmarks::Track,
     /// The foreground group as last asked, and when: asking is a system call on the terminal,
@@ -799,6 +803,7 @@ impl Server {
             // (4) Screen updates.
             self.wake_name_checks();
             self.wake_running_marks();
+            self.wake_progress_expiry();
             self.tick_drag_scrolls();
             self.send_frames();
             self.send_titles();
@@ -859,6 +864,9 @@ impl Server {
         }
         for p in self.panes.values() {
             if let Some(t) = self.running_mark_due(p) {
+                consider(t);
+            }
+            if let Some(t) = self.progress_expiry_due(p) {
                 consider(t);
             }
             if let Some(t) = p.term.stuck_deadline() {
@@ -1482,6 +1490,7 @@ impl Server {
             title_stack: Vec::new(),
             progress: None,
             progress_seq: 0,
+            progress_at: None,
             command: crate::shellmarks::Track::default(),
             writer_seen: None,
             capture: None,
@@ -1766,6 +1775,7 @@ impl Server {
                     }
                     TermEvent::Progress(report) => {
                         pane.progress = Some(report).filter(|r| r.state != 0);
+                        pane.progress_at = pane.progress.map(|_| Instant::now());
                         pane.progress_seq += 1;
                     }
                     TermEvent::Bell => signals.push(crate::notify::Signal::new(

@@ -249,6 +249,9 @@ pub struct Config {
     /// zero turns each off.
     pub command_running_after: Duration,
     pub command_finished_after: Duration,
+    /// How long a progress report (`OSC 9;4`) is kept when the program does not repeat it or take
+    /// it away; zero keeps it until it is taken away.
+    pub progress_expires: Duration,
     /// What a tab says besides the number (fields: name, title, program, directory).
     pub tab_format: Template,
     /// The title Arcade sets on the host terminal's window (fields: session, number, name,
@@ -286,6 +289,7 @@ impl Default for Config {
             overrides: Vec::new(),
             status_position: StatusPosition::Bottom,
             tab_number: NumberPosition::Right,
+            progress_expires: Duration::from_secs(30),
             command_running_after: Duration::from_secs(2),
             command_finished_after: Duration::from_secs(10),
             tab_style: TabStyle::Pill,
@@ -929,6 +933,11 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                                 config.command_running_after = Duration::from_secs(s as u64);
                             }
                         }
+                        "progress-expires" => {
+                            if let Some(s) = r.integer("progress-expires", v) {
+                                config.progress_expires = Duration::from_secs(s as u64);
+                            }
+                        }
                         "finished-after" => {
                             if let Some(s) = r.integer("finished-after", v) {
                                 config.command_finished_after = Duration::from_secs(s as u64);
@@ -963,6 +972,7 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                                     "title-format",
                                     "running-after",
                                     "finished-after",
+                                    "progress-expires",
                                 ],
                             ),
                         ),
@@ -1523,6 +1533,17 @@ position = "top"
         assert_eq!(config.command_running_after, Duration::from_secs(5));
         assert_eq!(config.command_finished_after, Duration::ZERO);
         let errors = parse("[status]\nrunning-after = \"soon\"\n").unwrap_err();
+        assert!(errors[0].message.contains("whole number"), "{errors:?}");
+    }
+
+    #[test]
+    fn a_progress_report_expires_after_thirty_seconds_by_default_and_zero_turns_it_off() {
+        assert_eq!(parse("").unwrap().progress_expires, Duration::from_secs(30));
+        let config = parse("[status]\nprogress-expires = 90\n").unwrap();
+        assert_eq!(config.progress_expires, Duration::from_secs(90));
+        let config = parse("[status]\nprogress-expires = 0\n").unwrap();
+        assert_eq!(config.progress_expires, Duration::ZERO);
+        let errors = parse("[status]\nprogress-expires = \"never\"\n").unwrap_err();
         assert!(errors[0].message.contains("whole number"), "{errors:?}");
     }
 }

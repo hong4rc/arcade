@@ -581,6 +581,9 @@ impl Server {
                         .progress
                         .map(|(state, value)| arcade_term::Progress { state, value }),
                     progress_seq: u64::from(p.progress.is_some()),
+                    // A program that is still reporting says so again before the time is up; one
+                    // that is not goes then.
+                    progress_at: p.progress.map(|_| Instant::now()),
                     command: crate::shellmarks::Track::default(),
                     writer_seen: None,
                     capture: None,
