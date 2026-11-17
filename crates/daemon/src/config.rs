@@ -1749,7 +1749,7 @@ position = "top"
     }
 
     #[test]
-    fn blinking_has_an_empty_list_and_half_a_second_and_refuses_what_does_not_fit() {
+    fn blinking_defaults_to_approval_and_input_and_checks_its_settings() {
         use crate::theme::StateName;
         // By default the states that wait for a person blink; an empty list turns that off.
         let config = parse("").unwrap();

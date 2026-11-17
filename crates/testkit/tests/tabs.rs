@@ -180,11 +180,18 @@ fn the_number_stands_left_or_right_of_the_name_or_is_not_shown_with_a_colour_of_
             continue;
         }
         // The number is a badge in colours of its own (the accent ones, the tab shown being the
-        // current one), apart from the name's.
-        let at = match position {
-            NumberPosition::Left => column_of(&line, "1  nm"),
-            _ => column_of(&line, "nm  1") + 6,
-        };
+        // current one), apart from the name's. Find the cell that holds the digit itself.
+        let name_at = column_of(&line, "nm");
+        let grid = client.screen.screen().expect("read the screen");
+        let row = &grid[usize::from(y)];
+        let at = (0..row.len() as u16)
+            .filter(|x| row[usize::from(*x)].text == "1")
+            .find(|x| match position {
+                NumberPosition::Left => *x < name_at,
+                _ => *x > name_at,
+            })
+            .unwrap_or_else(|| panic!("the digit of the tab for {position:?} in {line:?}"));
+        assert_eq!(row[usize::from(at)].text, "1", "{position:?}");
         let number = client.screen.style_at(y, at);
         assert_ne!(number.fg, name.fg, "{position:?}");
         assert_ne!(number.bg, name.bg, "{position:?}");

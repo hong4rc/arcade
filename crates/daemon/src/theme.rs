@@ -71,7 +71,6 @@ mod palette {
     pub const MANTLE: Color = Color::Rgb(0x29, 0x2c, 0x3c);
     pub const CRUST: Color = Color::Rgb(0x23, 0x26, 0x34);
     pub const SURFACE0: Color = Color::Rgb(0x41, 0x45, 0x59);
-    pub const SURFACE1: Color = Color::Rgb(0x51, 0x57, 0x6d);
     pub const OVERLAY2: Color = Color::Rgb(0x94, 0x9c, 0xbb);
     pub const TEXT: Color = Color::Rgb(0xc6, 0xd0, 0xf5);
     pub const SUBTEXT0: Color = Color::Rgb(0xb5, 0xbf, 0xe2);
@@ -155,19 +154,22 @@ pub fn style(role: Role) -> Style {
     match role {
         Role::StatusBar => on(palette::SUBTEXT0, palette::MANTLE),
         Role::PillName => on(palette::TEXT, palette::SURFACE0),
+        // The current tab's name is a block of the accent, with the dark text of the bar on it.
         Role::PillNameCurrent => Style {
             bold: true,
-            ..on(palette::TEXT, palette::SURFACE1)
+            ..on(palette::CRUST, palette::MAUVE)
         },
         Role::PillQuiet => on(palette::SUBTEXT0, palette::SURFACE0),
-        Role::PillQuietCurrent => on(palette::TEXT, palette::SURFACE1),
+        Role::PillQuietCurrent => on(palette::CRUST, palette::MAUVE),
         Role::PillBadge => Style {
             bold: true,
             ..on(palette::CRUST, palette::OVERLAY2)
         },
+        // The number of the current tab: the accent on the dark badge, so it does not merge with
+        // the accent block of the name beside it.
         Role::PillBadgeCurrent => Style {
             bold: true,
-            ..on(palette::CRUST, palette::MAUVE)
+            ..on(palette::MAUVE, palette::CRUST)
         },
         Role::SessionBadge => Style {
             bold: true,
@@ -674,6 +676,13 @@ pub fn state_badge(look: StateStyle, tint: Tint) -> Style {
 /// `state_badge` for a tab that is `current` or not.
 pub fn state_badge_on(look: StateStyle, tint: Tint, current: bool) -> Style {
     let colour = blinked(StateName::of_tint(tint), tint_colour_on(tint, current));
+    // A quiet state on the current tab is the accent: a filled badge would take the colour of the
+    // accent block beside it, so it is the dark badge whatever the look.
+    let look = if current && quiet_tint(tint) {
+        StateStyle::Dark
+    } else {
+        look
+    };
     Style {
         bold: true,
         ..match look {
@@ -804,6 +813,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_current_tab_name_is_the_accent_block_with_dark_text_and_its_number_is_the_accent_on_dark()
+     {
+        assert_eq!(
+            style(Role::PillNameCurrent),
+            Style {
+                bold: true,
+                ..on(palette::CRUST, palette::MAUVE)
+            }
+        );
+        assert_eq!(
+            style(Role::PillBadgeCurrent),
+            Style {
+                bold: true,
+                ..on(palette::MAUVE, palette::CRUST)
+            }
+        );
+    }
+
+    #[test]
     fn the_number_of_the_current_tab_uses_only_the_colours_of_its_tab_and_stays_readable() {
         let tab = style(Role::TabCurrent);
         let number = style(Role::TabNumberCurrent);
@@ -838,20 +866,19 @@ mod tests {
     fn the_mark_on_a_block_reads_at_a_contrast_of_four_and_a_half_on_every_block_of_the_bar() {
         use crate::notify::Class;
         for class in Class::BY_URGENCY {
-            for role in [
-                Role::StatusBar,
-                Role::PillName,
-                Role::PillNameCurrent,
-                Role::PillBadge,
-            ] {
+            for role in [Role::StatusBar, Role::PillName] {
                 let on_block = cell_style(Tint::Class(class), style(role));
-                if role == Role::PillBadge {
-                    continue;
-                }
                 assert_eq!(on_block.bg, style(role).bg);
                 let ratio = contrast(on_block);
                 assert!(ratio >= 4.5, "{class:?} on {role:?}: {ratio:.2}");
             }
+            // On the current tab the symbol sits on the dark badge: the accent block carries none.
+            let on_badge = state_badge_on(StateStyle::Dark, Tint::Class(class), true);
+            let ratio = contrast(on_badge);
+            assert!(
+                ratio >= 4.5,
+                "{class:?} on the current tab's badge: {ratio:.2}"
+            );
         }
     }
 
@@ -879,7 +906,7 @@ mod tests {
     /// 4.5 or more and never darker than the class colour itself.
     #[test]
     fn the_symbol_of_a_state_is_never_darker_than_its_colour_and_reads_on_the_tab() {
-        for role in [Role::PillName, Role::PillNameCurrent, Role::StatusBar] {
+        for role in [Role::PillName, Role::StatusBar] {
             let block = style(role);
             for tint in TINTS {
                 let drawn = cell_style(tint, block);
@@ -890,6 +917,15 @@ mod tests {
                     "{tint:?} on {role:?}: the symbol is darker than its class colour"
                 );
             }
+        }
+        // On the current tab the symbol sits on the dark badge.
+        for tint in TINTS {
+            let drawn = state_badge_on(StateStyle::Dark, tint, true);
+            assert_eq!(drawn.bg, palette::CRUST, "{tint:?}");
+            assert!(
+                contrast(drawn) >= 4.5,
+                "{tint:?} on the current tab's badge"
+            );
         }
     }
 

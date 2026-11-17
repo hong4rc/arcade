@@ -387,7 +387,14 @@ fn mark_parts(mark: Mark) -> (&'static str, theme::Tint) {
 /// The cell of a mark on the block it stands on, in the mark's colour.
 fn mark_cells(mark: Mark, block: arcade_term::Style, current: bool) -> Vec<Cell> {
     let (symbol, tint) = mark_parts(mark);
-    text_cells(symbol, theme::cell_style_on(tint, block, current))
+    // The accent block of the current tab cannot carry a symbol, so there the symbol goes on the
+    // dark badge, as the state's badge does.
+    let style = if current {
+        theme::state_badge_on(theme::StateStyle::Dark, tint, true)
+    } else {
+        theme::cell_style_on(tint, block, false)
+    };
+    text_cells(symbol, style)
 }
 
 /// The badge of a tab and its colours: the number on the grey badge (the accent one for the
@@ -409,10 +416,16 @@ fn badge_cells(
     let look = theme::state_style();
     let padded = format!(" {symbol}{} ", " ".repeat(digits - 1));
     match look {
-        theme::StateStyle::Plain => (
-            text_cells(&padded, theme::cell_style_on(tint, name, tab.current)),
+        theme::StateStyle::Plain if !tab.current => (
+            text_cells(&padded, theme::cell_style_on(tint, name, false)),
             name,
         ),
+        // The accent block of the current tab cannot carry a symbol, so there the Plain look
+        // draws the state as the Dark look does: the same padded text on the dark badge.
+        theme::StateStyle::Plain => {
+            let badge = theme::state_badge_on(theme::StateStyle::Dark, tint, true);
+            (text_cells(&padded, badge), badge)
+        }
         theme::StateStyle::Number => {
             let badge = theme::state_badge_on(look, tint, tab.current);
             (text_cells(&format!(" {} ", tab.number), badge), badge)
@@ -1187,6 +1200,123 @@ mod tests {
     }
 
     #[test]
+    fn the_current_tab_is_the_accent_block_in_both_tab_styles() {
+        for tab_style in [TabStyle::Pill, TabStyle::Flat] {
+            let mut i = info();
+            i.style = tab_style;
+            let (cells, _) = build(60, &i);
+            let line = text(&cells);
+            let at = |needle: &str| cells[line[..line.find(needle).unwrap()].chars().count()].style;
+            assert_eq!(
+                at("vim"),
+                theme::style(Role::PillNameCurrent),
+                "{tab_style:?}"
+            );
+            assert_eq!(at("sh"), theme::style(Role::PillName), "{tab_style:?}");
+        }
+        // The name block of the current tab is the accent, and its number is the accent on the
+        // dark badge.
+        let name = theme::style(Role::PillNameCurrent);
+        assert_eq!(name.bg, theme::style(Role::PillBadgeCurrent).fg);
+        assert_eq!(theme::style(Role::PillBadgeCurrent).bg, name.fg);
+    }
+
+    /// Every look, every place of the number (and none), both tab styles, every state a tab can
+    /// show: the state's symbol on the current tab is never on the accent block, and the tab is
+    /// as wide as it is without the state.
+    #[test]
+    fn no_state_symbol_on_the_current_tab_sits_on_the_accent_block_and_no_state_changes_the_width()
+    {
+        use arcade_term::Progress;
+        let accent = theme::style(Role::PillNameCurrent).bg;
+        // Each state as (notification, progress report, command mark) on the current tab.
+        let mut states: Vec<(Option<Class>, Option<Progress>, Option<CommandMark>)> = Vec::new();
+        for class in Class::BY_URGENCY {
+            states.push((Some(class), None, None));
+        }
+        for progress in [
+            Progress {
+                state: 1,
+                value: 50,
+            },
+            Progress {
+                state: 4,
+                value: 50,
+            },
+            Progress { state: 2, value: 0 },
+            Progress { state: 3, value: 0 },
+        ] {
+            states.push((None, Some(progress), None));
+        }
+        for command in [
+            CommandMark::Running,
+            CommandMark::FinishedWell,
+            CommandMark::FinishedWithError,
+        ] {
+            states.push((None, None, Some(command)));
+        }
+        for look in [
+            theme::StateStyle::Plain,
+            theme::StateStyle::Dark,
+            theme::StateStyle::Filled,
+            theme::StateStyle::Number,
+        ] {
+            let mut setting = theme::StateLook::default();
+            setting.style = look;
+            theme::set_state_look(setting);
+            for position in [
+                NumberPosition::Left,
+                NumberPosition::Right,
+                NumberPosition::Off,
+            ] {
+                for tab_style in [TabStyle::Pill, TabStyle::Flat] {
+                    let mut i = info();
+                    i.number = position;
+                    i.style = tab_style;
+                    let current = i.tabs.iter().position(|t| t.current).unwrap();
+                    let plain_width = {
+                        let (_, _, spans) = build_with_tabs(120, &i);
+                        spans[current].to - spans[current].from
+                    };
+                    for &(notice, progress, command) in &states {
+                        let mut j = i.clone();
+                        j.tabs[current].notice = notice;
+                        j.tabs[current].progress = progress;
+                        j.tabs[current].command = command;
+                        let mark = status_mark(&j.tabs[current]).unwrap();
+                        let symbol = mark_parts(mark).0;
+                        let (cells, _, spans) = build_with_tabs(120, &j);
+                        let span = &spans[current];
+                        assert_eq!(
+                            span.to - span.from,
+                            plain_width,
+                            "{look:?} {position:?} {tab_style:?} {mark:?}: the tab changed width"
+                        );
+                        let mut found = 0;
+                        for cell in &cells[usize::from(span.from)..usize::from(span.to)] {
+                            if cell.text == symbol.chars().next().unwrap().to_string() {
+                                found += 1;
+                                assert_ne!(
+                                    cell.style.bg, accent,
+                                    "{look:?} {position:?} {tab_style:?} {mark:?}: a symbol on the accent block"
+                                );
+                            }
+                        }
+                        // The number look draws no symbol on the tab; the others must draw one.
+                        if look != theme::StateStyle::Number {
+                            assert!(
+                                found >= 1,
+                                "{look:?} {position:?} {tab_style:?} {mark:?}: no symbol drawn"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        theme::set_state_look(theme::StateLook::default());
+    }
+
+    #[test]
     fn each_tab_knows_the_columns_it_covers_as_drawn_and_a_replaced_bar_has_none() {
         let (cells, _, spans) = build_with_tabs(60, &info());
         let line = text(&cells);
@@ -1924,7 +2054,11 @@ mod tests {
                 } else {
                     Role::PillName
                 });
+                // On the current tab the Plain look draws the state as the Dark look does.
                 let want = match look {
+                    theme::StateStyle::Plain if current => {
+                        theme::state_badge_on(theme::StateStyle::Dark, tint, true)
+                    }
                     theme::StateStyle::Plain => theme::cell_style(tint, name),
                     other => theme::state_badge(other, tint),
                 };
@@ -2870,7 +3004,7 @@ mod tests {
     /// the settings give wins.
     #[test]
     fn a_quiet_state_on_the_current_tab_takes_the_accent_colour() {
-        let accent = theme::style(Role::PillBadgeCurrent).bg;
+        let accent = theme::style(Role::PillBadgeCurrent).fg;
         let symbol_style = |mark: &str,
                             look: theme::StateStyle,
                             setting: &theme::StateLook,
@@ -2897,18 +3031,14 @@ mod tests {
             // The symbol is the accent on the current tab (made readable on its block), and the
             // palette's running colour on the others.
             assert_ne!(on.fg, off.fg, "{look:?}");
-            let block = theme::style(if look == theme::StateStyle::Plain {
-                Role::PillNameCurrent
-            } else {
-                Role::PillBadge
-            });
             if look == theme::StateStyle::Dark {
                 assert_eq!(on.fg, accent, "{look:?}");
                 assert_ne!(off.fg, accent, "{look:?}");
             } else {
+                // The Plain look draws it on the dark badge on the current tab, as the Dark look does.
                 assert_eq!(
                     on.fg,
-                    theme::cell_style_on(theme::Tint::Running, block, true).fg
+                    theme::state_badge_on(theme::StateStyle::Dark, theme::Tint::Running, true).fg
                 );
             }
             // What asks for the user keeps its colour on the current tab.
@@ -2929,8 +3059,13 @@ mod tests {
             if look == theme::StateStyle::Dark {
                 assert_eq!(a_on.fg, a_off.fg, "{look:?}");
             } else {
-                // On its own block, the colour of the class and no other.
-                let own = theme::cell_style(theme::Tint::Class(Class::Approval), block);
+                // On the current tab the Plain look draws the class on the dark badge, in the colour
+                // of the class and no other.
+                let own = theme::state_badge_on(
+                    theme::StateStyle::Dark,
+                    theme::Tint::Class(Class::Approval),
+                    true,
+                );
                 assert_eq!(a_on.fg, own.fg, "{look:?}");
             }
         }
