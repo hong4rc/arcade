@@ -232,7 +232,7 @@ fn tab_cells_with(tab: &Tab, pieces: &[TabPiece], info: &StatusInfo) -> Vec<Cell
         }
         text.extend(text_cells(" ", name));
     }
-    let number = badge_cells(tab, badge);
+    let (number, badge) = badge_cells(tab, badge);
     let (first, last, blocks) = match info.number {
         NumberPosition::Left => (badge, name, [number, text].concat()),
         NumberPosition::Right => (name, badge, [text, number].concat()),
@@ -332,19 +332,18 @@ fn mark_cells(mark: Mark, block: arcade_term::Style) -> Vec<Cell> {
     text_cells(symbol, theme::cell_style(tint, block))
 }
 
-/// The badge of a tab: the number, or when the window has a state that state's symbol in its
-/// colour in place of the number, padded to the width of the number so that the badge does not
-/// change.
-fn badge_cells(tab: &Tab, badge: arcade_term::Style) -> Vec<Cell> {
+/// The badge of a tab and its colours: the number on the grey badge (the accent one for the
+/// current tab), or when the window has a state that state's symbol in place of the number on
+/// the colour of the state, padded to the width of the number so that the badge does not change.
+fn badge_cells(tab: &Tab, quiet: arcade_term::Style) -> (Vec<Cell>, arcade_term::Style) {
     let digits = tab.number.to_string().len();
     let Some(mark) = status_mark(tab) else {
-        return text_cells(&format!(" {} ", tab.number), badge);
+        return (text_cells(&format!(" {} ", tab.number), quiet), quiet);
     };
     let (symbol, tint) = mark_parts(mark);
-    let mut cells = text_cells(" ", badge);
-    cells.extend(text_cells(symbol, theme::badge_cell_style(tint, badge)));
-    cells.extend(text_cells(&" ".repeat(digits), badge));
-    cells
+    let badge = theme::state_badge(tint);
+    let cells = text_cells(&format!(" {symbol}{} ", " ".repeat(digits - 1)), badge);
+    (cells, badge)
 }
 
 /// A laid-out bar: its cells and, for each tab or marker, its index (for a marker the nearest
@@ -680,6 +679,18 @@ fn prompt_piece(style: TabStyle, prompt: &Prompt, room: usize) -> (Vec<Cell>, us
     let label_style = theme::style(label_role);
     let typed_style = theme::style(Role::PromptText);
     let mut cells = text_cells(&format!(" {label}"), label_style);
+    // A question answered by one key has nothing typed after it: the piece is the coloured block
+    // alone, ended in its own colour, with the cursor on its last cell.
+    if prompt.question {
+        let cursor = ends + cells.len() - 1;
+        let cells = capped(
+            style,
+            cells,
+            cap(Symbol::PillCapLeft, label_style),
+            cap(Symbol::PillCapRight, label_style),
+        );
+        return (cells, cursor);
+    }
     let typed_cells = text_cells(&typed, typed_style);
     let cursor = ends + cells.len() + typed_cells.len();
     cells.extend(typed_cells);
@@ -1336,6 +1347,39 @@ mod tests {
         }
     }
 
+    /// The round ends of a piece are its colour on the bar's background, never on the default
+    /// black: a mode word, a message, a question that is only a coloured block (its end in
+    /// that colour) and a state badge.
+    #[test]
+    fn the_round_ends_of_every_piece_are_on_the_bars_background() {
+        let bar = theme::style(Role::StatusBar).bg;
+        let left = theme::symbol(Symbol::PillCapLeft);
+        let right = theme::symbol(Symbol::PillCapRight);
+        for (name, i) in lines_to_try(TabStyle::Pill) {
+            if name == "hint" {
+                continue;
+            }
+            let (cells, _) = build(150, &i);
+            for (n, c) in cells.iter().enumerate() {
+                if c.text == left || c.text == right {
+                    assert_eq!(c.style.bg, bar, "{name} cap at {n}");
+                    assert_ne!(c.style.fg, bar, "{name} cap at {n}");
+                }
+            }
+        }
+        // A question has only its coloured block: both ends are in its colour.
+        let (_, i) = lines_to_try(TabStyle::Pill)
+            .into_iter()
+            .find(|(n, _)| *n == "question")
+            .unwrap();
+        let cells = build(150, &i).0;
+        let yellow = theme::style(Role::MessageQuestion).bg;
+        let last_cap = cells.iter().rposition(|c| c.text == right).unwrap();
+        assert_eq!(cells[last_cap].style.fg, yellow);
+        // PREFIX and the question are the same yellow.
+        assert_eq!(theme::style(Role::Indicator).bg, yellow);
+    }
+
     /// The pill style rounds the ends of a message, a prompt and a mode mark as it does a tab;
     /// the flat style has a block with a cell of padding.
     #[test]
@@ -1539,8 +1583,24 @@ mod tests {
         let line = text(&cells);
         let at = line.find(theme::notice_symbol(Class::Approval)).unwrap();
         let style = cells[line[..at].chars().count()].style;
-        assert_eq!(style.bg, theme::style(Role::PillBadge).bg);
+        // The badge takes the colour of the state, the symbol in the bar's dark text; the quiet
+        // tab beside it keeps its grey badge with its number.
+        let state = theme::state_badge(theme::Tint::Class(Class::Approval));
+        assert_eq!((style.bg, style.fg), (state.bg, state.fg));
         assert!(line.contains(" 2 "), "{line:?}");
+        let two = cells[line[..line.find(" 2 ").unwrap() + 1].chars().count()].style;
+        assert_eq!(two.bg, theme::style(Role::PillBadgeCurrent).bg);
+        // The current tab with a state takes the state's colour too.
+        let mut current = info();
+        current.tabs[1].notice = Some(Class::Approval);
+        let (cells, _, spans) = build_with_tabs(120, &current);
+        let at = shown_text(&cells, &spans[1])
+            .find(theme::notice_symbol(Class::Approval))
+            .unwrap();
+        let from = spans[1].from as usize;
+        let tab = shown_text(&cells, &spans[1]);
+        let col = from + tab[..at].chars().count();
+        assert_eq!(cells[col].style.bg, state.bg);
         // The colours: a level in the progress colour, a pause dimmer, a failure and an
         // approval notification red, each readable on the tab.
         let block = theme::style(Role::PillName);

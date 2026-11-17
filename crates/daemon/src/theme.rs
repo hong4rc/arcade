@@ -194,10 +194,8 @@ pub fn style(role: Role) -> Style {
             ..style(Role::TabCurrent)
         },
         Role::Indicator => Style {
-            fg: Color::Indexed(0),
-            bg: Color::Indexed(3),
             bold: true,
-            ..Style::default()
+            ..on(palette::CRUST, palette::YELLOW)
         },
         // A message is a small block of the accent colour (the dark of the bar's text on a
         // pastel: green for news, red for an error, yellow for a question, as the mode words)
@@ -239,10 +237,8 @@ pub fn style(role: Role) -> Style {
             ..Style::default()
         },
         Role::IndicatorSelect => Style {
-            fg: Color::Indexed(0),
-            bg: Color::Indexed(5),
             bold: true,
-            ..Style::default()
+            ..on(palette::CRUST, palette::MAUVE)
         },
         Role::ScrollPosition => Style {
             fg: Color::Indexed(0),
@@ -347,40 +343,23 @@ pub fn cell_style(tint: Tint, block: Style) -> Style {
     }
 }
 
-/// The symbol in the badge of a tab (where the number stands): the state's colour, made lighter
-/// or else darker only as far as it takes to read at a contrast of 4.5 on the badge's own
-/// background, which is mid-grey or the accent; a colour that cannot be made to read on it gives
-/// way to the dark text colour of the badge.
-pub fn badge_cell_style(tint: Tint, badge: Style) -> Style {
-    let colour = tint_colour(tint);
-    let Color::Rgb(r, g, b) = colour else {
-        return Style {
-            fg: colour,
-            ..badge
-        };
+/// The badge of a tab that has a state: the state's colour as the background and the dark text
+/// colour of the bar for the symbol (as in the accent block of a message). Green for something
+/// that finished well and for news, yellow for a window that asks for you, red for an error or a
+/// failure, blue for a progress level and for something that runs, a quieter grey for a pause.
+/// The dark text reads on each of them at a contrast of 4.5 (a test checks it).
+pub fn state_badge(tint: Tint) -> Style {
+    use crate::notify::Class;
+    let colour = match tint {
+        Tint::Class(Class::Approval | Class::Input) => palette::YELLOW,
+        Tint::Class(Class::Error) | Tint::ProgressError => palette::RED,
+        Tint::Class(Class::Info) | Tint::Finished => palette::GREEN,
+        Tint::Progress => palette::BLUE,
+        Tint::Paused => palette::OVERLAY2,
     };
-    let reads = |c: Color| {
-        contrast(Style {
-            fg: c,
-            bg: badge.bg,
-            ..Style::default()
-        }) >= 4.5
-    };
-    let toward = |target: i64| {
-        (0..=100u32).find_map(|step| {
-            let mix = |v: u8| {
-                let v = i64::from(v);
-                (v + (target - v) * i64::from(step) / 100) as u8
-            };
-            let candidate = Color::Rgb(mix(r), mix(g), mix(b));
-            reads(candidate).then_some(candidate)
-        })
-    };
-    let fg = toward(255).or_else(|| toward(0)).unwrap_or(badge.fg);
     Style {
-        fg,
         bold: true,
-        ..badge
+        ..on(palette::CRUST, colour)
     }
 }
 
@@ -554,10 +533,10 @@ mod tests {
         }
     }
 
-    /// A state's symbol in the badge of a tab reads at a contrast of 4.5 on the badge of every
-    /// tab, the accent badge of the current one included, and the badge keeps its background.
+    /// The badge of a tab with a state has the state's colour as its background and the dark text
+    /// colour of the bar on it, at a contrast of 4.5 or more for every state.
     #[test]
-    fn the_symbol_of_a_state_in_a_badge_reads_on_both_badges() {
+    fn the_badge_of_a_state_reads_at_a_contrast_of_four_and_a_half() {
         use crate::notify::Class;
         let tints = [
             Tint::Class(Class::Approval),
@@ -569,15 +548,22 @@ mod tests {
             Tint::Paused,
             Tint::Finished,
         ];
-        for role in [Role::PillBadge, Role::PillBadgeCurrent] {
-            let badge = style(role);
-            for tint in tints {
-                let on_badge = badge_cell_style(tint, badge);
-                assert_eq!(on_badge.bg, badge.bg);
-                let ratio = contrast(on_badge);
-                assert!(ratio >= 4.5, "{tint:?} on {role:?}: {ratio:.2}");
-            }
+        for tint in tints {
+            let badge = state_badge(tint);
+            assert_eq!(badge.fg, palette::CRUST, "{tint:?}");
+            let ratio = contrast(badge);
+            assert!(ratio >= 4.5, "{tint:?}: {ratio:.2}");
         }
+        // Something that asks for you, an error, news, a level and a pause are told apart.
+        assert_ne!(
+            state_badge(Tint::Class(Class::Input)).bg,
+            state_badge(Tint::Class(Class::Error)).bg
+        );
+        assert_ne!(
+            state_badge(Tint::Progress).bg,
+            state_badge(Tint::Finished).bg
+        );
+        assert_ne!(state_badge(Tint::Progress).bg, style(Role::PillBadge).bg);
     }
 
     #[test]
