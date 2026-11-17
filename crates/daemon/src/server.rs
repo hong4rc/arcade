@@ -324,6 +324,14 @@ impl Window {
     }
 }
 
+/// The bar of a session as it was drawn in each half of a blink.
+struct BarCache {
+    /// The cells of the bar's row, by half (`dim as usize`).
+    rows: [Vec<arcade_term::Cell>; 2],
+    /// Where the cursor of an open prompt is, by half.
+    prompt_cursor: [Option<u16>; 2],
+}
+
 struct Session {
     id: u64,
     name: String,
@@ -352,6 +360,12 @@ struct Session {
     /// it was drawn (`[status] blink`).
     bar_blinks: bool,
     bar_blink_dim: bool,
+    /// The half of a blink changed since the bar was drawn: only the bar is drawn again, from
+    /// `bar_cache`.
+    blink_due: bool,
+    /// The bar as drawn in each half of a blink, so that a blink draws it again without building
+    /// it (`None` while nothing blinks).
+    bar_cache: Option<BarCache>,
     /// What the client's screen should show, and what it was last sent.
     screen: Screen,
     renderer: Renderer,
@@ -481,6 +495,8 @@ impl Session {
             chrome_dirty: true,
             bar_blinks: false,
             bar_blink_dim: false,
+            blink_due: false,
+            bar_cache: None,
             screen: Screen::new(),
             renderer: Renderer::new(),
             last_frame: None,
@@ -965,7 +981,7 @@ impl Server {
         let dim = self.blink_dim_at(Instant::now());
         for s in self.sessions.values_mut() {
             if s.client.is_some() && s.bar_blinks && s.bar_blink_dim != dim {
-                s.chrome_dirty = true;
+                s.blink_due = true;
             }
         }
     }

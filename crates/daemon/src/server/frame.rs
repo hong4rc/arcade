@@ -338,7 +338,7 @@ impl Server {
                 heavy |= pane.copy.is_none() && !pane.rate.is_light();
             }
         }
-        if !(dirty || s.need_full || s.relayout || s.chrome_dirty) {
+        if !(dirty || s.need_full || s.relayout || s.chrome_dirty || s.blink_due) {
             return None;
         }
         // The 60 per second limit is for floods. A light update (an echoed key) goes out at
@@ -407,80 +407,93 @@ impl Server {
         let panes_dirty = visible
             .iter()
             .any(|(p, _)| self.panes.get(p).is_some_and(Pane::wants_frame));
-        if !(panes_dirty || session.need_full || session.relayout || session.chrome_dirty) {
+        if !(panes_dirty
+            || session.need_full
+            || session.relayout
+            || session.chrome_dirty
+            || session.blink_due)
+        {
             return;
         }
+        // Only a blink is due when nothing else changed and the bar was drawn before: the bar is
+        // then taken from its cache, and nothing else is built.
+        let blink_only =
+            !(panes_dirty || session.need_full || session.relayout || session.chrome_dirty)
+                && session.bar_cache.is_some();
         // The names of the windows come from the panes' directories. They are looked at only
         // now, when an update is going out anyway, and at most once a second. A look that is
         // skipped for being too soon leaves one deadline for the loop, at the moment a second
         // is full, so a directory changed in the meantime is seen then; no deadline is left
         // once the names have been looked at.
-        let now = Instant::now();
-        match session.names_checked {
-            Some(t) if now.duration_since(t) < NAME_CHECK_INTERVAL => {
-                session.names_due = Some(t + NAME_CHECK_INTERVAL);
-            }
-            _ => {
-                session.names_checked = Some(now);
-                session.names_due = None;
-                // A title lasts as long as the program that set it, and so does a progress
-                // report.
-                for window in &session.windows {
-                    for (pane_id, _) in window.layout.rects() {
-                        if let Some(pane) = self.panes.get_mut(&pane_id)
-                            && (pane.title_owner.is_some() || !pane.title_stack.is_empty())
-                        {
-                            pane.expire_titles();
-                        }
-                        if let Some(pane) = self.panes.get_mut(&pane_id)
-                            && pane.expire_progress_owner()
-                        {
-                            session.chrome_dirty = true;
+        if !blink_only {
+            let now = Instant::now();
+            match session.names_checked {
+                Some(t) if now.duration_since(t) < NAME_CHECK_INTERVAL => {
+                    session.names_due = Some(t + NAME_CHECK_INTERVAL);
+                }
+                _ => {
+                    session.names_checked = Some(now);
+                    session.names_due = None;
+                    // A title lasts as long as the program that set it, and so does a progress
+                    // report.
+                    for window in &session.windows {
+                        for (pane_id, _) in window.layout.rects() {
+                            if let Some(pane) = self.panes.get_mut(&pane_id)
+                                && (pane.title_owner.is_some() || !pane.title_stack.is_empty())
+                            {
+                                pane.expire_titles();
+                            }
+                            if let Some(pane) = self.panes.get_mut(&pane_id)
+                                && pane.expire_progress_owner()
+                            {
+                                session.chrome_dirty = true;
+                            }
                         }
                     }
-                }
-                // The program and the directory of each window, for the formats that use them.
-                let wants_program = self.config.tab_format.uses(Field::Program)
-                    || self.config.title_format.uses(Field::Program);
-                let wants_directory = self.config.tab_format.uses(Field::Directory)
-                    || self.config.title_format.uses(Field::Directory);
-                if wants_program || wants_directory {
-                    for window in session.windows.iter_mut() {
-                        let Some(p) = self.panes.get(&window.focus) else {
-                            continue;
-                        };
-                        let program = if wants_program {
-                            pty::foreground_program(p.master.as_raw_fd(), p.pid).unwrap_or_default()
-                        } else {
-                            String::new()
-                        };
-                        let directory = if wants_directory {
-                            pty::process_cwd(p.pid)
-                                .map(|c| dir_label(&c))
-                                .unwrap_or_default()
-                        } else {
-                            String::new()
-                        };
-                        if program != window.program || directory != window.directory {
-                            window.program = program;
-                            window.directory = directory;
-                            session.chrome_dirty = true;
+                    // The program and the directory of each window, for the formats that use them.
+                    let wants_program = self.config.tab_format.uses(Field::Program)
+                        || self.config.title_format.uses(Field::Program);
+                    let wants_directory = self.config.tab_format.uses(Field::Directory)
+                        || self.config.title_format.uses(Field::Directory);
+                    if wants_program || wants_directory {
+                        for window in session.windows.iter_mut() {
+                            let Some(p) = self.panes.get(&window.focus) else {
+                                continue;
+                            };
+                            let program = if wants_program {
+                                pty::foreground_program(p.master.as_raw_fd(), p.pid)
+                                    .unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
+                            let directory = if wants_directory {
+                                pty::process_cwd(p.pid)
+                                    .map(|c| dir_label(&c))
+                                    .unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
+                            if program != window.program || directory != window.directory {
+                                window.program = program;
+                                window.directory = directory;
+                                session.chrome_dirty = true;
+                            }
                         }
                     }
-                }
-                // The automatic name goes on following its source only when the configuration
-                // says so; otherwise it was given when the window was made.
-                if self.config.window_name_follow {
-                    for window in session.windows.iter_mut().filter(|w| !w.name_manual) {
-                        let name = name_of_pane(
-                            &self.panes,
-                            self.config.window_name_from,
-                            window.focus,
-                            &session.cwd,
-                        );
-                        if name != window.name {
-                            window.name = name;
-                            session.chrome_dirty = true;
+                    // The automatic name goes on following its source only when the configuration
+                    // says so; otherwise it was given when the window was made.
+                    if self.config.window_name_follow {
+                        for window in session.windows.iter_mut().filter(|w| !w.name_manual) {
+                            let name = name_of_pane(
+                                &self.panes,
+                                self.config.window_name_from,
+                                window.focus,
+                                &session.cwd,
+                            );
+                            if name != window.name {
+                                window.name = name;
+                                session.chrome_dirty = true;
+                            }
                         }
                     }
                 }
@@ -503,88 +516,90 @@ impl Server {
                 .then(|| theme::style(theme::Role::LinkUnderline)),
         );
         let mut failed = Vec::new();
-        let wearing = panes_wearing_a_mark(
-            &self.config,
-            &self.notices,
-            session.current_window().focus,
-            &visible,
-        );
-        for (pane_id, rect) in &visible {
-            let Some(pane) = self.panes.get_mut(pane_id) else {
-                continue;
-            };
-            // A pane in copy mode shows its view of the rows, not what the program draws; what
-            // the program draws is read again when copy mode ends.
-            if let Some(copy) = pane.copy.as_mut() {
-                pane.dirty = false;
-                // The mark of the place in the history is drawn again only when a number moved.
-                copy.show_position = self.config.scroll_position;
-                // The corner belongs to the mark of a notification; the position mark gives way.
-                let gap = u16::from(wearing.contains(pane_id));
-                if copy.right_gap != gap {
-                    copy.right_gap = gap;
-                    copy.dirty = true;
-                }
-                let position = copy.position(&pane.term);
-                if copy.show_position && copy.drawn_position != Some(position) {
-                    copy.dirty = true;
-                }
-                copy.drawn_position = Some(position);
-                if relayout || copy.dirty {
-                    copy.dirty = false;
-                    let (view, links) = copy.view_with_links(&pane.term);
-                    let rows = view
-                        .into_iter()
-                        .zip(links)
-                        .enumerate()
-                        .map(|(y, (cells, links))| arcade_term::RowUpdate {
-                            y: y as u16,
-                            cells,
-                            links,
-                        })
-                        .collect();
-                    session.screen.blit(
-                        *rect,
-                        arcade_term::Frame {
-                            cols: rect.w,
-                            rows_total: rect.h,
-                            damage: arcade_term::Damage::Full,
-                            rows,
-                            cursor: pane.last_cursor,
-                        },
-                    );
-                }
-                continue;
-            }
-            if !(relayout || pane.dirty) {
-                continue;
-            }
-            match pane.term.snapshot(relayout) {
-                Ok(frame) => {
-                    pane.last_cursor = frame.cursor;
-                    pane.dirty = false;
-                    session.screen.blit(*rect, frame);
-                }
-                Err(e) => {
-                    pane.exit_note = Some(format!("[{e}]"));
-                    pty::signal_group(pane.pid, libc::SIGKILL);
-                    failed.push(*pane_id);
-                }
-            }
-        }
-        stage_mark!(DaemonSnapshot);
-        // A pane out of focus, in a window of several panes, wears the mark of its notification in
-        // one cell at the top right (with one pane the tab says it, and the pane in focus is
-        // being looked at). It covers that cell of what the program drew.
-        {
+        if !blink_only {
+            let wearing = panes_wearing_a_mark(
+                &self.config,
+                &self.notices,
+                session.current_window().focus,
+                &visible,
+            );
             for (pane_id, rect) in &visible {
-                if wearing.contains(pane_id)
-                    && let Some(n) = self.notices.get(*pane_id)
-                {
-                    let mark =
-                        text_cells(theme::notice_symbol(n.class), theme::notice_style(n.class));
-                    let x = rect.x + rect.w - mark.len() as u16;
-                    session.screen.overlay(x, rect.y, &[mark]);
+                let Some(pane) = self.panes.get_mut(pane_id) else {
+                    continue;
+                };
+                // A pane in copy mode shows its view of the rows, not what the program draws; what
+                // the program draws is read again when copy mode ends.
+                if let Some(copy) = pane.copy.as_mut() {
+                    pane.dirty = false;
+                    // The mark of the place in the history is drawn again only when a number moved.
+                    copy.show_position = self.config.scroll_position;
+                    // The corner belongs to the mark of a notification; the position mark gives way.
+                    let gap = u16::from(wearing.contains(pane_id));
+                    if copy.right_gap != gap {
+                        copy.right_gap = gap;
+                        copy.dirty = true;
+                    }
+                    let position = copy.position(&pane.term);
+                    if copy.show_position && copy.drawn_position != Some(position) {
+                        copy.dirty = true;
+                    }
+                    copy.drawn_position = Some(position);
+                    if relayout || copy.dirty {
+                        copy.dirty = false;
+                        let (view, links) = copy.view_with_links(&pane.term);
+                        let rows = view
+                            .into_iter()
+                            .zip(links)
+                            .enumerate()
+                            .map(|(y, (cells, links))| arcade_term::RowUpdate {
+                                y: y as u16,
+                                cells,
+                                links,
+                            })
+                            .collect();
+                        session.screen.blit(
+                            *rect,
+                            arcade_term::Frame {
+                                cols: rect.w,
+                                rows_total: rect.h,
+                                damage: arcade_term::Damage::Full,
+                                rows,
+                                cursor: pane.last_cursor,
+                            },
+                        );
+                    }
+                    continue;
+                }
+                if !(relayout || pane.dirty) {
+                    continue;
+                }
+                match pane.term.snapshot(relayout) {
+                    Ok(frame) => {
+                        pane.last_cursor = frame.cursor;
+                        pane.dirty = false;
+                        session.screen.blit(*rect, frame);
+                    }
+                    Err(e) => {
+                        pane.exit_note = Some(format!("[{e}]"));
+                        pty::signal_group(pane.pid, libc::SIGKILL);
+                        failed.push(*pane_id);
+                    }
+                }
+            }
+            stage_mark!(DaemonSnapshot);
+            // A pane out of focus, in a window of several panes, wears the mark of its notification in
+            // one cell at the top right (with one pane the tab says it, and the pane in focus is
+            // being looked at). It covers that cell of what the program drew.
+            {
+                for (pane_id, rect) in &visible {
+                    if wearing.contains(pane_id)
+                        && let Some(n) = self.notices.get(*pane_id)
+                    {
+                        let mark =
+                            text_cells(theme::notice_symbol(n.class), theme::notice_style(n.class));
+                        let x = rect.x + rect.w - mark.len() as u16;
+                        session.screen.overlay(x, rect.y, &[mark]);
+                    }
                 }
             }
         }
@@ -647,9 +662,39 @@ impl Server {
                     .filter(|t| !t.counter)
                     .filter_map(|t| Some((session.windows.get(t.index)?.id, t.from, t.to)))
                     .collect();
+                session.bar_cache = if blinks {
+                    let other = !dim;
+                    let ((other_cells, other_cursor, _), _) =
+                        crate::theme::drawing_the_bar(other, || {
+                            status::build_with_tabs(cols, &info)
+                        });
+                    let mut rows = [Vec::new(), Vec::new()];
+                    rows[usize::from(dim)] = cells.clone();
+                    rows[usize::from(other)] = other_cells;
+                    let mut prompt_cursor_of = [None, None];
+                    prompt_cursor_of[usize::from(dim)] = prompt_cursor;
+                    prompt_cursor_of[usize::from(other)] = other_cursor;
+                    Some(BarCache {
+                        rows,
+                        prompt_cursor: prompt_cursor_of,
+                    })
+                } else {
+                    None
+                };
                 session.screen.set_row(y, cells);
                 cursor_override = prompt_cursor.map(|x| (x, y));
             }
+        } else if blink_only {
+            if let (Some(y), Some(cache)) = (
+                status_row(rows, status_position),
+                session.bar_cache.as_ref(),
+            ) {
+                session
+                    .screen
+                    .set_row(y, cache.rows[usize::from(blink_dim)].clone());
+                cursor_override = cache.prompt_cursor[usize::from(blink_dim)].map(|x| (x, y));
+            }
+            session.bar_blink_dim = blink_dim;
         }
         // The floating list is drawn over everything on every update.
         let picker_open = session.picker.is_some() || session.tree.is_some();
@@ -733,6 +778,7 @@ impl Server {
         session.need_full = false;
         session.relayout = false;
         session.chrome_dirty = false;
+        session.blink_due = false;
         stage_mark!(DaemonComposed);
         session
             .renderer
