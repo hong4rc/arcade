@@ -185,6 +185,9 @@ struct Pane {
     /// after `[status] progress-expires` seconds, since the program may be gone without having
     /// taken it away.
     progress_at: Option<Instant>,
+    /// The foreground process group that made the report; `None` when the shell did (or none
+    /// could be found). The report goes at once when that group is gone.
+    progress_owner: Option<i32>,
     /// What the shell says about the command that runs (OSC 133 marks); nothing when it sends none.
     command: crate::shellmarks::Track,
     /// The foreground group as last asked, and when: asking is a system call on the terminal,
@@ -249,6 +252,22 @@ impl Pane {
         }
         self.title_stack.retain(|s| !gone(s.by));
         self.title != before
+    }
+
+    /// Take the progress report away when the program that made it is gone (it ended without
+    /// saying so, and the shell or another program is in front). Returns whether it went.
+    fn expire_progress_owner(&mut self) -> bool {
+        let Some(owner) = self.progress_owner else {
+            return false;
+        };
+        if self.progress.is_none() || pty::group_alive(owner) {
+            return false;
+        }
+        self.progress = None;
+        self.progress_at = None;
+        self.progress_owner = None;
+        self.progress_seq += 1;
+        true
     }
 
     /// Something about the pane has to be drawn again.
@@ -1491,6 +1510,7 @@ impl Server {
             progress: None,
             progress_seq: 0,
             progress_at: None,
+            progress_owner: None,
             command: crate::shellmarks::Track::default(),
             writer_seen: None,
             capture: None,
@@ -1776,6 +1796,7 @@ impl Server {
                     TermEvent::Progress(report) => {
                         pane.progress = Some(report).filter(|r| r.state != 0);
                         pane.progress_at = pane.progress.map(|_| Instant::now());
+                        pane.progress_owner = writer.filter(|_| pane.progress.is_some());
                         pane.progress_seq += 1;
                     }
                     TermEvent::Bell => signals.push(crate::notify::Signal::new(

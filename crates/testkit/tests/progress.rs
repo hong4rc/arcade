@@ -348,3 +348,30 @@ fn a_report_moves_with_its_window_and_is_not_left_behind() {
         beta.status_row()
     );
 }
+
+/// With no prompt marks and the expiry turned off, a report goes at once when the program that
+/// made it ends and the shell is back, and stays for as long as that program is in front.
+#[test]
+fn a_report_goes_when_the_program_that_made_it_ends_and_stays_while_it_runs() {
+    let daemon = with_expiry(0);
+    let mut client = start(&daemon);
+    client.type_line(&format!(
+        "sh -c \"{}; sleep 2\"; echo back-$((1+1))",
+        report(3, 0)
+    ));
+    assert!(
+        client.wait_until(WAIT, tab_says_running),
+        "{}",
+        client.status_row()
+    );
+    // Still in front after a second: the report is still there.
+    client.wait_until(Duration::from_millis(1000), |_| false);
+    assert!(tab_says_running(&mut client), "{}", client.status_row());
+    // Gone when the program ends, without any prompt mark and with the expiry off.
+    assert!(
+        client.wait_until(WAIT, |c| !tab_says_running(c)),
+        "{}",
+        client.status_row()
+    );
+    assert!(client.wait_until(WAIT, |c| last(c) == Some(p(0, 0))));
+}

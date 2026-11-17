@@ -420,13 +420,19 @@ impl Server {
             _ => {
                 session.names_checked = Some(now);
                 session.names_due = None;
-                // A title lasts as long as the program that set it.
+                // A title lasts as long as the program that set it, and so does a progress
+                // report.
                 for window in &session.windows {
                     for (pane_id, _) in window.layout.rects() {
                         if let Some(pane) = self.panes.get_mut(&pane_id)
                             && (pane.title_owner.is_some() || !pane.title_stack.is_empty())
                         {
                             pane.expire_titles();
+                        }
+                        if let Some(pane) = self.panes.get_mut(&pane_id)
+                            && pane.expire_progress_owner()
+                        {
+                            session.chrome_dirty = true;
                         }
                     }
                 }

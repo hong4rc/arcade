@@ -584,6 +584,7 @@ impl Server {
                     // A program that is still reporting says so again before the time is up; one
                     // that is not goes then.
                     progress_at: p.progress.map(|_| Instant::now()),
+                    progress_owner: None,
                     command: crate::shellmarks::Track::default(),
                     writer_seen: None,
                     capture: None,
