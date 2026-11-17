@@ -280,6 +280,10 @@ pub fn notice_style(class: crate::notify::Class) -> Style {
 /// its own so that colour is not all that tells the classes apart, and a shape that text does
 /// not use, so that a line of a list can be searched for it.
 pub fn notice_symbol(class: crate::notify::Class) -> &'static str {
+    custom_symbol(StateName::of_class(class)).unwrap_or_else(|| default_notice_symbol(class))
+}
+
+fn default_notice_symbol(class: crate::notify::Class) -> &'static str {
     match class {
         crate::notify::Class::Approval => "▲",
         crate::notify::Class::Input => "◆",
@@ -295,21 +299,34 @@ pub enum Tint {
     Class(crate::notify::Class),
     /// A progress report that failed.
     ProgressError,
-    /// A progress report with a value, or with an unknown amount.
+    /// A progress report with a value.
     Progress,
+    /// Something that runs: a progress report with no amount, or a command.
+    Running,
     /// A progress report that is paused: the same block, dimmer.
     Paused,
     /// A command that ended well while nobody looked.
     Finished,
 }
 
-/// The symbol of the status cell for a progress report that failed. One cell wide, a shape of its
-/// own (the notification marks are filled shapes).
-pub const PROGRESS_ERROR_SYMBOL: &str = "✗";
+/// The symbol of the status cell for a progress report or a command that failed. One cell wide,
+/// a shape of its own (the notification marks are filled shapes).
+pub fn failed_symbol() -> &'static str {
+    custom_symbol(StateName::Failed).unwrap_or("✗")
+}
 
 /// The symbol of the status for something that is running: a command (by the marks of the shell
 /// prompt) and a progress report with no amount both show it.
-pub const RUNNING_SYMBOL: &str = "▸";
+pub fn running_symbol() -> &'static str {
+    custom_symbol(StateName::Running).unwrap_or("▸")
+}
+
+/// The symbol of a command that ended well while nobody looked: the mark of news, unless the
+/// setting for `finished` gives another.
+pub fn finished_symbol() -> &'static str {
+    custom_symbol(StateName::Finished)
+        .unwrap_or_else(|| default_notice_symbol(crate::notify::Class::Info))
+}
 
 /// The eight level blocks, from a sliver to the full cell.
 const LEVEL_BLOCKS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
@@ -319,47 +336,226 @@ pub fn level_block(value: u8) -> &'static str {
     LEVEL_BLOCKS[(usize::from(value.min(100)) * 8 / 100).min(7)]
 }
 
-fn tint_colour(tint: Tint) -> Color {
+/// How a tab that has a state looks (`[status] state-style`). The width of a tab is the same in
+/// every one of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StateStyle {
+    /// The symbol in its colour on the block of the tab's name, where the number was.
+    #[default]
+    Plain,
+    /// A dark badge with the symbol in its colour.
+    Dark,
+    /// The badge filled with the state's colour and a dark symbol.
+    Filled,
+    /// The badge keeps the window's number and takes the state's colour as its background.
+    Number,
+}
+
+impl StateStyle {
+    pub fn parse(word: &str) -> Option<StateStyle> {
+        match word {
+            "plain" => Some(StateStyle::Plain),
+            "dark" => Some(StateStyle::Dark),
+            "filled" => Some(StateStyle::Filled),
+            "number" => Some(StateStyle::Number),
+            _ => None,
+        }
+    }
+}
+
+/// The states whose symbol and colour can be set (`[status.state]`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StateName {
+    Approval,
+    Input,
+    Error,
+    Info,
+    Running,
+    Progress,
+    Failed,
+    Finished,
+    Paused,
+}
+
+impl StateName {
+    pub const ALL: [StateName; 9] = [
+        StateName::Approval,
+        StateName::Input,
+        StateName::Error,
+        StateName::Info,
+        StateName::Running,
+        StateName::Progress,
+        StateName::Failed,
+        StateName::Finished,
+        StateName::Paused,
+    ];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            StateName::Approval => "approval",
+            StateName::Input => "input",
+            StateName::Error => "error",
+            StateName::Info => "info",
+            StateName::Running => "running",
+            StateName::Progress => "progress",
+            StateName::Failed => "failed",
+            StateName::Finished => "finished",
+            StateName::Paused => "paused",
+        }
+    }
+
+    pub fn parse(word: &str) -> Option<StateName> {
+        StateName::ALL.into_iter().find(|n| n.word() == word)
+    }
+
+    /// The level block is the symbol of these two, so a symbol is not taken for them.
+    pub fn has_symbol(self) -> bool {
+        !matches!(self, StateName::Progress | StateName::Paused)
+    }
+
+    fn index(self) -> usize {
+        StateName::ALL.iter().position(|n| *n == self).unwrap_or(0)
+    }
+
+    fn of_class(class: crate::notify::Class) -> StateName {
+        match class {
+            crate::notify::Class::Approval => StateName::Approval,
+            crate::notify::Class::Input => StateName::Input,
+            crate::notify::Class::Error => StateName::Error,
+            crate::notify::Class::Info => StateName::Info,
+        }
+    }
+
+    fn of_tint(tint: Tint) -> StateName {
+        match tint {
+            Tint::Class(class) => StateName::of_class(class),
+            Tint::ProgressError => StateName::Failed,
+            Tint::Progress => StateName::Progress,
+            Tint::Running => StateName::Running,
+            Tint::Paused => StateName::Paused,
+            Tint::Finished => StateName::Finished,
+        }
+    }
+}
+
+/// What the settings give for one state: either part may be left out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StateSetting {
+    pub symbol: Option<&'static str>,
+    pub color: Option<Color>,
+}
+
+/// The look of the states the settings ask for: the style of a tab, and a symbol and colour for
+/// any state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StateLook {
+    pub style: StateStyle,
+    settings: [StateSetting; 9],
+}
+
+impl StateLook {
+    pub fn set(&mut self, name: StateName, setting: StateSetting) {
+        self.settings[name.index()] = setting;
+    }
+}
+
+thread_local! {
+    // The server runs on one thread and draws on it, so the look it was given is read there; a
+    // test draws on its own thread with its own look.
+    static LOOK: std::cell::Cell<StateLook> = std::cell::Cell::new(StateLook::default());
+}
+
+/// Give the thread the look of the states from the configuration (at start and on reload).
+pub fn set_state_look(look: StateLook) {
+    LOOK.with(|l| l.set(look));
+}
+
+pub fn state_style() -> StateStyle {
+    LOOK.with(|l| l.get().style)
+}
+
+fn custom_symbol(name: StateName) -> Option<&'static str> {
+    LOOK.with(|l| l.get().settings[name.index()].symbol)
+}
+
+fn custom_colour(name: StateName) -> Option<Color> {
+    LOOK.with(|l| l.get().settings[name.index()].color)
+}
+
+/// A symbol kept for the life of the program, so that a look can be copied around freely; the
+/// same text is kept once.
+pub fn intern(text: &str) -> &'static str {
+    static KEPT: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(found) = kept.iter().find(|k| **k == text) {
+        return found;
+    }
+    let leaked: &'static str = Box::leak(text.to_string().into_boxed_str());
+    kept.push(leaked);
+    leaked
+}
+
+/// A colour written as `#rrggbb`.
+pub fn parse_color(text: &str) -> Option<Color> {
+    let hex = text.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let part = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some(Color::Rgb(part(0)?, part(2)?, part(4)?))
+}
+
+fn default_tint_colour(tint: Tint) -> Color {
     match tint {
         Tint::Class(crate::notify::Class::Approval) => palette::RED,
         Tint::Class(crate::notify::Class::Input) => palette::YELLOW,
         Tint::Class(crate::notify::Class::Error) => palette::PINK,
         Tint::Class(crate::notify::Class::Info) => palette::TEAL,
         Tint::ProgressError => palette::RED,
-        Tint::Progress => palette::BLUE,
+        Tint::Progress | Tint::Running => palette::BLUE,
         Tint::Paused => palette::OVERLAY2,
         Tint::Finished => palette::GREEN,
     }
 }
 
+/// The colour of a state: the one the settings give, or the palette's.
+fn tint_colour(tint: Tint) -> Color {
+    custom_colour(StateName::of_tint(tint)).unwrap_or_else(|| default_tint_colour(tint))
+}
+
 /// The status cell's symbol in a colour on the block it stands on, as the marks of the classes:
-/// the palette's colour, made lighter only as far as it takes to read at a contrast of 4.5.
+/// the palette's colour, made lighter only as far as it takes to read at a contrast of 4.5. A
+/// colour the settings gave is used as it is, whatever its contrast.
 pub fn cell_style(tint: Tint, block: Style) -> Style {
+    let fg = match custom_colour(StateName::of_tint(tint)) {
+        Some(colour) => colour,
+        None => readable_on(default_tint_colour(tint), block.bg),
+    };
     Style {
-        fg: readable_on(tint_colour(tint), block.bg),
+        fg,
         bg: block.bg,
         bold: true,
         ..Style::default()
     }
 }
 
-/// The badge of a tab that has a state: the state's colour as the background and the dark text
-/// colour of the bar for the symbol (as in the accent block of a message). Green for something
-/// that finished well and for news, yellow for a window that asks for you, red for an error or a
-/// failure, blue for a progress level and for something that runs, a quieter grey for a pause.
-/// The dark text reads on each of them at a contrast of 4.5 (a test checks it).
-pub fn state_badge(tint: Tint) -> Style {
-    use crate::notify::Class;
-    let colour = match tint {
-        Tint::Class(Class::Approval | Class::Input) => palette::YELLOW,
-        Tint::Class(Class::Error) | Tint::ProgressError => palette::RED,
-        Tint::Class(Class::Info) | Tint::Finished => palette::GREEN,
-        Tint::Progress => palette::BLUE,
-        Tint::Paused => palette::OVERLAY2,
-    };
+/// The badge of a tab that has a state, in the three looks that give the badge a colour of its
+/// own (`plain` has none: the symbol stands on the name's block, see `cell_style`):
+/// - `dark`: the darkest base of the palette (the bar's own background is MANTLE and the name's
+///   surface is lighter, so CRUST is the dark that stands apart from both) with the state's
+///   colour for the symbol;
+/// - `filled` and `number`: the state's colour as the background and the dark text colour of the
+///   bar on it (for the symbol, or for the number).
+pub fn state_badge(look: StateStyle, tint: Tint) -> Style {
+    let colour = tint_colour(tint);
     Style {
         bold: true,
-        ..on(palette::CRUST, colour)
+        ..match look {
+            StateStyle::Dark => on(colour, palette::CRUST),
+            StateStyle::Plain | StateStyle::Filled | StateStyle::Number => {
+                on(palette::CRUST, colour)
+            }
+        }
     }
 }
 
@@ -533,37 +729,96 @@ mod tests {
         }
     }
 
-    /// The badge of a tab with a state has the state's colour as its background and the dark text
-    /// colour of the bar on it, at a contrast of 4.5 or more for every state.
+    const TINTS: [Tint; 9] = [
+        Tint::Class(crate::notify::Class::Approval),
+        Tint::Class(crate::notify::Class::Input),
+        Tint::Class(crate::notify::Class::Error),
+        Tint::Class(crate::notify::Class::Info),
+        Tint::ProgressError,
+        Tint::Progress,
+        Tint::Running,
+        Tint::Paused,
+        Tint::Finished,
+    ];
+
+    fn black_contrast(colour: Color) -> f64 {
+        contrast(Style {
+            fg: colour,
+            bg: Color::Rgb(0, 0, 0),
+            ..Style::default()
+        })
+    }
+
+    /// In the default look the symbol stands on the name's block in its class colour, readable at
+    /// 4.5 or more and never darker than the class colour itself.
     #[test]
-    fn the_badge_of_a_state_reads_at_a_contrast_of_four_and_a_half() {
-        use crate::notify::Class;
-        let tints = [
-            Tint::Class(Class::Approval),
-            Tint::Class(Class::Input),
-            Tint::Class(Class::Error),
-            Tint::Class(Class::Info),
-            Tint::ProgressError,
-            Tint::Progress,
-            Tint::Paused,
-            Tint::Finished,
-        ];
-        for tint in tints {
-            let badge = state_badge(tint);
-            assert_eq!(badge.fg, palette::CRUST, "{tint:?}");
-            let ratio = contrast(badge);
-            assert!(ratio >= 4.5, "{tint:?}: {ratio:.2}");
+    fn the_symbol_of_a_state_is_never_darker_than_its_colour_and_reads_on_the_tab() {
+        for role in [Role::PillName, Role::PillNameCurrent, Role::StatusBar] {
+            let block = style(role);
+            for tint in TINTS {
+                let drawn = cell_style(tint, block);
+                assert_eq!(drawn.bg, block.bg, "{tint:?}");
+                assert!(contrast(drawn) >= 4.5, "{tint:?} on {role:?}");
+                assert!(
+                    black_contrast(drawn.fg) >= black_contrast(default_tint_colour(tint)) - 1e-9,
+                    "{tint:?} on {role:?}: the symbol is darker than its class colour"
+                );
+            }
+        }
+    }
+
+    /// The three looks with a badge of their own: the dark base with the bright colour, or the
+    /// colour filled with the dark text; each reads at 4.5 or more for every state.
+    #[test]
+    fn the_badge_of_a_state_reads_in_every_style() {
+        let bar = style(Role::StatusBar).bg;
+        for tint in TINTS {
+            let dark = state_badge(StateStyle::Dark, tint);
+            assert_eq!(dark.bg, palette::CRUST, "{tint:?}");
+            assert_eq!(dark.fg, tint_colour(tint), "{tint:?}");
+            assert_ne!(dark.bg, bar);
+            assert_ne!(dark.bg, style(Role::PillName).bg);
+            assert!(contrast(dark) >= 4.5, "{tint:?}");
+            for look in [StateStyle::Filled, StateStyle::Number] {
+                let filled = state_badge(look, tint);
+                assert_eq!(filled.bg, tint_colour(tint), "{tint:?}");
+                assert_eq!(filled.fg, palette::CRUST, "{tint:?}");
+                assert!(contrast(filled) >= 4.5, "{tint:?} {look:?}");
+            }
         }
         // Something that asks for you, an error, news, a level and a pause are told apart.
         assert_ne!(
-            state_badge(Tint::Class(Class::Input)).bg,
-            state_badge(Tint::Class(Class::Error)).bg
+            tint_colour(Tint::Class(crate::notify::Class::Input)),
+            tint_colour(Tint::Class(crate::notify::Class::Error))
         );
-        assert_ne!(
-            state_badge(Tint::Progress).bg,
-            state_badge(Tint::Finished).bg
+        assert_ne!(tint_colour(Tint::Progress), tint_colour(Tint::Finished));
+    }
+
+    /// A colour from the settings is used as given, a symbol from the settings replaces the
+    /// default one, and both go back with the default look.
+    #[test]
+    fn the_settings_change_the_symbol_and_colour_of_a_state() {
+        let mut look = StateLook::default();
+        look.set(
+            StateName::Finished,
+            StateSetting {
+                symbol: Some(intern("X")),
+                color: parse_color("#102030"),
+            },
         );
-        assert_ne!(state_badge(Tint::Progress).bg, style(Role::PillBadge).bg);
+        set_state_look(look);
+        let drawn = cell_style(Tint::Finished, style(Role::PillName));
+        assert_eq!(drawn.fg, Color::Rgb(0x10, 0x20, 0x30));
+        assert_eq!(finished_symbol(), "X");
+        set_state_look(StateLook::default());
+        assert_ne!(finished_symbol(), "X");
+        assert_eq!(
+            cell_style(Tint::Finished, style(Role::PillName)).fg,
+            readable_on(palette::GREEN, style(Role::PillName).bg)
+        );
+        assert_eq!(parse_color("#12345"), None);
+        assert_eq!(parse_color("123456"), None);
+        assert_eq!(parse_color("#12345g"), None);
     }
 
     #[test]

@@ -1093,6 +1093,7 @@ impl Server {
         if let Some(lines) = new.scrollback_lines {
             self.scrollback_lines = lines;
         }
+        crate::theme::set_state_look(new.state_look);
         self.config = new;
         self.sync_sleep_guard();
         for s in self.sessions.values_mut() {

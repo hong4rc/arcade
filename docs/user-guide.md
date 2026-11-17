@@ -297,6 +297,8 @@ TOML format. A misspelled key is reported with a suggestion ("did you mean ...")
 | `[status] title-format` | The title Arcade sets on the outer terminal's window, with the fields `{session}`, `{number}`, `{name}`, `{title}`, `{program}` and `{directory}`; an empty text means Arcade sets none | `"{session}:{number} {name} · {title}"` |
 | `[status] running-after` | How many seconds a command (by the shell prompt marks, section 5.15) runs before its tab shows `▸`; `0` turns it off | `2` |
 | `[status] progress-expires` | How many seconds a progress report (`OSC 9;4`, section 5.8) stays when it is not repeated; `0` keeps it until the program takes it away | `30` |
+| `[status] state-style` | How a tab with a state looks (section 5.8): `"plain"` (the symbol in its colour on the name, no badge), `"dark"` (a very dark badge, symbol in its colour), `"filled"` (a badge filled with the colour of the state) or `"number"` (the number stays, on the colour of the state) | `"plain"` |
+| `[status.state.<state>]` | A `symbol` and/or a `color` of your own for a state. The states are `approval`, `input`, `error`, `info`, `running`, `progress`, `failed`, `finished` and `paused`. A symbol is exactly one cell wide (a two-cell or empty one is refused); a colour is written `"#rrggbb"` and is used as given, without any change for contrast. `progress` has no symbol of its own (it is the rising block that shows the value), so only its colour counts, and so for `paused`. What is left out keeps its default. A reload applies it without a restart; a wrong entry is refused with its line by `arcade config check` and by the reload | none |
 | `[status] finished-after` | How many seconds a command has to run for its end to stay on the tab of a pane you are not looking at (`●` ended well, `✗` ended with an error); `0` turns it off | `10` |
 | `[window] name-from` | Where the automatic name of a window comes from: `"directory"`, `"program"` or `"title"` (section 5.3) | `"directory"` |
 | `[window] name-follow` | Whether the automatic name goes on following its source after the window was made | `false` |
@@ -331,6 +333,18 @@ How to bind a key in the `[keys.*]` tables:
 "x" = false                                         # remove a default key
 "H" = "pane.resize-left"                            # bind a shifted key
 "w" = "window.select 3"                             # a command with an argument
+```
+
+How to change what the states look like (a nerd-font symbol for "running", another green for "finished"; the file is read again by the reload and `arcade config check` names a wrong entry with its line):
+
+```toml
+[status]
+state-style = "plain"
+
+[status.state.running]
+symbol = "\uf04b"        # a nerd-font "play" glyph: it must be one cell wide
+[status.state.finished]
+color = "#8bd5ca"         # a different green, used as written
 ```
 
 Binding one key twice in the same table is an error. See the command names with the prefix, then `?`.
@@ -401,7 +415,16 @@ A program in a pane can also set the clipboard with OSC 52 when `allow-pane-writ
 
 **Progress reports.** A program can show a progress bar in the window of your terminal with `ESC ] 9 ; 4 ; <state> ; <value> ST` (state 0 removes it, 1 is a value from 0 to 100, 2 an error, 3 an unknown amount, 4 paused). Arcade passes the report of the focused pane of the window you are looking at on to your terminal, so a terminal that draws it (Ghostty shows a bar under the title) does so as it does without Arcade. When you move to another pane or window, the bar of the pane you moved to is shown if it has one, and otherwise the bar is removed; when the program ends, and when you detach, the bar is removed. A report that arrives again with the same state and value is passed on again, because programs repeat it to keep the bar. A report with a state or value out of range is ignored. A report does not stay for ever: when no new report arrives for `[status] progress-expires` seconds (default 30; `0` keeps it until the program takes it away), Arcade takes it away itself, from the tab and from your terminal's bar, so a program that was ended or killed without saying so does not leave a mark behind. Arcade could not find out how often real programs repeat their report (a coding agent reports only while it works, and no tool documents an interval), so the value is a guess: a program that reports once and stays silent for longer than this loses its mark; raise the value or set `0` if that happens (Ghostty also drops a bar by itself after about 15 seconds). Separately, a report goes at once when the program that made it is no longer in the foreground of the pane (it ended and the shell is back, or its process group is gone), without waiting for the time. In a pane whose shell sends the prompt marks (5.15), a new prompt or the end of a command also takes that pane's report away at once. Moving a window to another session, a screen change (the alternate screen) and `arcade upgrade` do not clear it and do not copy it.
 
-**The status of a tab.** What the window's panes say shows as one symbol in the number badge of the tab, in place of the number, in the badge's own shape and width (a badge with a two-digit number keeps two cells), so a tab is as wide with a state as without and the tabs to its right never move. A tab with nothing to say shows its number as always. When a window has a state, its badge takes the colour of the state and the symbol is drawn in the bar's dark text colour (the same as the coloured block of a message; each colour reads at a contrast of 4.5): yellow for a notification that asks for you (`▲` approval, `◆` input), red for an error and for a failed report or command (`■` `✗`), blue for a progress level and for something that runs, green for something that finished well and for `●` info, a quieter grey for a paused report. A quiet tab keeps its grey badge with the number, and the current tab keeps its accent badge when quiet; with a state it takes the state's colour too (its bold name and lighter block still say it is the current one). A badge that shows a symbol is still the window with its number by its place: tabs stay in number order, and the tree, the window list and the notification list keep the numbers, so prefix and the digit still jumps to it. With `[status] number = "off"` there is no badge, and the one cell reserved after the name shows the symbol instead. The same shapes and colours are used in the pill and the flat style:
+**The status of a tab.** What the window's panes say shows as one symbol on the tab, where the number stood, in the same width (a two-digit number keeps two cells), so a tab is as wide with a state as without and the tabs to its right never move. A tab with nothing to say shows its number as always. By default (`[status] state-style = "plain"`) the symbol has no badge behind it: it stands on the tab's name block in the colour of its state, bold, in the bright colour of the class and never darker (each colour reads at a contrast of 4.5): red for a notification that asks for approval (`▲`), yellow for one that asks for input (`◆`), pink for an error (`■`), teal for information (`●`), red for a failed report or command (`✗`), blue for a progress level and for something that runs, green for something that finished well, a quieter grey for a paused report. A badge that shows a symbol is still the window with its number by its place: tabs stay in number order, and the tree, the window list and the notification list keep the numbers, so prefix and the digit still jumps to it. With `[status] number = "off"` there is no badge, and the one cell reserved after the name shows the symbol instead. The same shapes and colours are used in the pill and the flat style. Four looks are available with `[status] state-style`:
+
+| Value | What a tab with a state looks like |
+|---|---|
+| `"plain"` (default) | no badge: the symbol in its bright colour on the name block, where the number stood |
+| `"dark"` | a very dark badge (darker than the bar) with the symbol in its bright colour |
+| `"filled"` | a badge filled with the colour of the state and the symbol in the bar's dark text colour |
+| `"number"` | the badge keeps its number, its background takes the colour of the state and the number is in the dark text colour; no symbol is drawn on the tab |
+
+A quiet tab keeps its grey badge with the number whatever the look, and the current tab keeps its accent badge when quiet. The look and the symbols and colours below can be changed per state with the table `[status.state]` (the settings table in section 4 has the details); the same symbol and colour are used everywhere the state is drawn: on the tab, in the counter, in the corner mark of a pane, in the tree and in the notification list.
 
 | Symbol | Meaning | Rank |
 |---|---|---|

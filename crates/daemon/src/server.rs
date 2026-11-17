@@ -697,6 +697,8 @@ fn serve(mut server: Server, config: &DaemonConfig, started: &str) -> io::Result
         arcade_proto::PROTOCOL_VERSION
     ));
     server.sync_sleep_guard();
+    // The look of the states is read on this thread, which draws every bar.
+    crate::theme::set_state_look(server.config.state_look);
     let result = server.event_loop();
     match &result {
         Ok(()) => server.log.line("daemon stopped"),

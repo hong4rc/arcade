@@ -252,6 +252,9 @@ pub struct Config {
     /// How long a progress report (`OSC 9;4`) is kept when the program does not repeat it or take
     /// it away; zero keeps it until it is taken away.
     pub progress_expires: Duration,
+    /// How a tab with a state looks (`[status] state-style`), and the symbols and colours the
+    /// settings give the states (`[status.state]`).
+    pub state_look: crate::theme::StateLook,
     /// What a tab says besides the number (fields: name, title, program, directory).
     pub tab_format: Template,
     /// The title Arcade sets on the host terminal's window (fields: session, number, name,
@@ -290,6 +293,7 @@ impl Default for Config {
             status_position: StatusPosition::Bottom,
             tab_number: NumberPosition::Right,
             progress_expires: Duration::from_secs(30),
+            state_look: crate::theme::StateLook::default(),
             command_running_after: Duration::from_secs(2),
             command_finished_after: Duration::from_secs(10),
             tab_style: TabStyle::Pill,
@@ -441,6 +445,65 @@ impl Reader<'_> {
                 None
             }
         }
+    }
+}
+
+/// `[status.state]`: for each state a symbol, a colour or both. A symbol is exactly one cell wide
+/// (as the pane engine measures it), a colour is `#rrggbb`; what is left out keeps its default.
+fn read_states(r: &mut Reader<'_>, states: &DeTable<'_>, look: &mut crate::theme::StateLook) {
+    use crate::theme::{StateName, StateSetting};
+    for (name, value) in states.iter() {
+        let word = name.get_ref().as_ref();
+        let Some(state) = StateName::parse(word) else {
+            let known: Vec<&str> = StateName::ALL.iter().map(|n| n.word()).collect();
+            r.error(
+                name.span().start,
+                format!(
+                    "unknown state \"{word}\" (the states are {})",
+                    known.join(", ")
+                ),
+            );
+            continue;
+        };
+        let Some(entry) = r.table(&format!("state.{word}"), value) else {
+            continue;
+        };
+        let mut setting = StateSetting::default();
+        for (key, v) in entry.iter() {
+            match key.get_ref().as_ref() {
+                "symbol" => {
+                    if let Some(text) = r.string(&format!("{word}.symbol"), v) {
+                        let width = crate::compose::text_cells(text, Default::default()).len();
+                        if width == 1 {
+                            setting.symbol = Some(crate::theme::intern(text));
+                        } else {
+                            r.error(
+                                v.span().start,
+                                format!(
+                                    "the symbol of {word} must be exactly one cell wide, \"{text}\" is {width}"
+                                ),
+                            );
+                        }
+                    }
+                }
+                "color" => {
+                    if let Some(text) = r.string(&format!("{word}.color"), v) {
+                        match crate::theme::parse_color(text) {
+                            Some(color) => setting.color = Some(color),
+                            None => r.error(
+                                v.span().start,
+                                format!("the color of {word} is written #rrggbb, not \"{text}\""),
+                            ),
+                        }
+                    }
+                }
+                other => r.error(
+                    key.span().start,
+                    unknown_key(&format!("status.state.{word}"), other, &["symbol", "color"]),
+                ),
+            }
+        }
+        look.set(state, setting);
     }
 }
 
@@ -928,6 +991,24 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                             ),
                             None => {}
                         },
+                        "state-style" => {
+                            if let Some(word) = r.string("state-style", v) {
+                                match crate::theme::StateStyle::parse(word) {
+                                    Some(style) => config.state_look.style = style,
+                                    None => r.error(
+                                        v.span().start,
+                                        format!(
+                                            "state-style is plain, dark, filled or number, not \"{word}\""
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        "state" => {
+                            if let Some(states) = r.table("state", v) {
+                                read_states(&mut r, states, &mut config.state_look);
+                            }
+                        }
                         "running-after" => {
                             if let Some(s) = r.integer("running-after", v) {
                                 config.command_running_after = Duration::from_secs(s as u64);
@@ -973,6 +1054,8 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                                     "running-after",
                                     "finished-after",
                                     "progress-expires",
+                                    "state-style",
+                                    "state",
                                 ],
                             ),
                         ),
@@ -1545,5 +1628,74 @@ position = "top"
         assert_eq!(config.progress_expires, Duration::ZERO);
         let errors = parse("[status]\nprogress-expires = \"never\"\n").unwrap_err();
         assert!(errors[0].message.contains("whole number"), "{errors:?}");
+    }
+
+    #[test]
+    fn the_look_of_the_states_is_read_and_a_wrong_entry_is_named() {
+        use crate::theme::{StateName, StateStyle};
+        let config = parse("").unwrap();
+        assert_eq!(config.state_look, crate::theme::StateLook::default());
+        assert_eq!(config.state_look.style, StateStyle::Plain);
+        for (word, style) in [
+            ("plain", StateStyle::Plain),
+            ("dark", StateStyle::Dark),
+            ("filled", StateStyle::Filled),
+            ("number", StateStyle::Number),
+        ] {
+            let config = parse(&format!("[status]\nstate-style = \"{word}\"\n")).unwrap();
+            assert_eq!(config.state_look.style, style);
+        }
+        let config = parse(
+            "[status.state.running]\nsymbol = \"\u{f04b}\"\ncolor = \"#00ff00\"\n\
+             [status.state.finished]\ncolor = \"#a1b2c3\"\n",
+        )
+        .unwrap();
+        let mut want = crate::theme::StateLook::default();
+        want.set(
+            StateName::Running,
+            crate::theme::StateSetting {
+                symbol: Some(crate::theme::intern("\u{f04b}")),
+                color: crate::theme::parse_color("#00ff00"),
+            },
+        );
+        want.set(
+            StateName::Finished,
+            crate::theme::StateSetting {
+                symbol: None,
+                color: crate::theme::parse_color("#a1b2c3"),
+            },
+        );
+        assert_eq!(config.state_look, want);
+        for (text, line, word) in [
+            (
+                "[status]\nstate-style = \"loud\"\n",
+                2,
+                "plain, dark, filled or number",
+            ),
+            ("[status.state.nope]\nsymbol = \"x\"\n", 1, "unknown state"),
+            (
+                "[status.state.input]\nsymbol = \"\"\n",
+                2,
+                "exactly one cell",
+            ),
+            (
+                "[status.state.input]\nsymbol = \"ab\"\n",
+                2,
+                "exactly one cell",
+            ),
+            (
+                "[status.state.input]\nsymbol = \"\u{4e2d}\"\n",
+                2,
+                "exactly one cell",
+            ),
+            ("[status.state.input]\ncolor = \"red\"\n", 2, "#rrggbb"),
+            ("[status.state.input]\ncolor = \"#12345\"\n", 2, "#rrggbb"),
+            ("[status.state.input]\nglyph = \"x\"\n", 2, "glyph"),
+            ("[status.state]\ninput = \"x\"\n", 2, "input"),
+        ] {
+            let errors = parse(text).unwrap_err();
+            assert_eq!(errors[0].line, line, "{text}: {errors:?}");
+            assert!(errors[0].message.contains(word), "{text}: {errors:?}");
+        }
     }
 }
