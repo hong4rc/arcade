@@ -63,6 +63,7 @@ dependencies = [
  "arcade-proto",
  "arcade-term",
  "libc",
+ "memchr",
  "mio",
  "toml",
 ]

@@ -19,10 +19,15 @@ pub enum Mark {
 enum State {
     #[default]
     Ground,
-    Escape,
     Osc,
     OscEscape,
 }
+
+/// The four bytes that start every mark.
+const START: &[u8] = b"\x1b]133;";
+
+static START_FINDER: std::sync::LazyLock<memchr::memmem::Finder<'static>> =
+    std::sync::LazyLock::new(|| memchr::memmem::Finder::new(START));
 
 /// The longest payload of an OSC that is kept; a longer one (a long title) is not a mark.
 const PAYLOAD_LIMIT: usize = 32;
@@ -33,35 +38,75 @@ pub struct Scanner {
     state: State,
     payload: Vec<u8>,
     too_long: bool,
+    /// The start of a mark that the last read ended in the middle of.
+    start: Vec<u8>,
 }
 
 impl Scanner {
     /// Add `bytes`, and push the marks they hold on `out`.
+    ///
+    /// Most output holds no mark, so while none is under way the bytes are only searched for the
+    /// four bytes that start one (`ESC ] 133 ;`) with a fast substring search, and nothing is
+    /// looked at one by one; only the text of a mark itself goes through the state machine.
     pub fn feed(&mut self, bytes: &[u8], out: &mut Vec<Mark>) {
-        // Most output holds no escape at all: nothing to find while none is under way.
-        if self.state == State::Ground && !bytes.contains(&0x1b) {
-            return;
-        }
-        for &b in bytes {
-            match self.state {
-                State::Ground => {
-                    if b == 0x1b {
-                        self.state = State::Escape;
+        let mut i = 0;
+        while i < bytes.len() {
+            if self.state != State::Ground {
+                i += self.feed_mark_text(&bytes[i..], out);
+                continue;
+            }
+            let rest = &bytes[i..];
+            if !self.start.is_empty() {
+                // The start of a mark came at the end of the last read: does this one finish it?
+                let have = self.start.len();
+                let need = START.len() - have;
+                let n = need.min(rest.len());
+                if rest[..n] == START[have..have + n] {
+                    self.start.extend_from_slice(&rest[..n]);
+                    i += n;
+                    if self.start.len() == START.len() {
+                        self.start.clear();
+                        self.begin_mark_text();
                     }
+                    continue;
                 }
-                State::Escape => {
-                    self.state = match b {
-                        b']' => {
-                            self.payload.clear();
-                            self.too_long = false;
-                            State::Osc
-                        }
-                        0x1b => State::Escape,
-                        _ => State::Ground,
-                    };
+                self.start.clear();
+            }
+            match START_FINDER.find(rest) {
+                Some(at) => {
+                    i += at + START.len();
+                    self.begin_mark_text();
                 }
+                None => {
+                    // The longest start of a mark that the read ends with waits for the next one.
+                    if let Some(k) = (1..START.len())
+                        .rev()
+                        .find(|k| rest.ends_with(&START[..*k]))
+                    {
+                        self.start.extend_from_slice(&START[..k]);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    fn begin_mark_text(&mut self) {
+        self.payload.clear();
+        self.payload.extend_from_slice(b"133;");
+        self.too_long = false;
+        self.state = State::Osc;
+    }
+
+    /// Read the text of a mark up to its end; returns how many bytes were used.
+    fn feed_mark_text(&mut self, bytes: &[u8], out: &mut Vec<Mark>) -> usize {
+        for (n, &b) in bytes.iter().enumerate() {
+            match self.state {
                 State::Osc => match b {
-                    0x07 => self.finish(out),
+                    0x07 => {
+                        self.finish(out);
+                        return n + 1;
+                    }
                     0x1b => self.state = State::OscEscape,
                     _ => {
                         if self.payload.len() < PAYLOAD_LIMIT {
@@ -74,16 +119,16 @@ impl Scanner {
                 State::OscEscape => {
                     if b == b'\\' {
                         self.finish(out);
-                    } else {
-                        self.state = if b == 0x1b {
-                            State::Escape
-                        } else {
-                            State::Ground
-                        };
+                        return n + 1;
                     }
+                    // Anything else ends the text without making a mark.
+                    self.state = State::Ground;
+                    return n;
                 }
+                State::Ground => return n,
             }
         }
+        bytes.len()
     }
 
     fn finish(&mut self, out: &mut Vec<Mark>) {
@@ -240,6 +285,36 @@ mod tests {
             marks(&[long.as_bytes(), b"\x1b]133;C\x07"]),
             [Mark::CommandStart]
         );
+    }
+
+    #[test]
+    fn a_stream_is_cut_at_every_point_and_gives_the_same_marks() {
+        let stream: &[u8] = b"plain\x1b[31mred\x1b[0m\x1b]133;A\x07ls\x1b]133;C\x1b\\out\x1b]0;title\x07\x1b]133;D;3\x07\x1b]13\x1b]133;B\x07tail\x1b";
+        let mut whole = Vec::new();
+        Scanner::default().feed(stream, &mut whole);
+        assert_eq!(
+            whole,
+            [
+                Mark::PromptStart,
+                Mark::CommandStart,
+                Mark::CommandEnd(Some(3)),
+                Mark::InputStart
+            ]
+        );
+        for cut in 0..=stream.len() {
+            let mut scanner = Scanner::default();
+            let mut got = Vec::new();
+            scanner.feed(&stream[..cut], &mut got);
+            scanner.feed(&stream[cut..], &mut got);
+            assert_eq!(got, whole, "cut at {cut}");
+        }
+        // One byte at a time.
+        let mut scanner = Scanner::default();
+        let mut got = Vec::new();
+        for b in stream {
+            scanner.feed(std::slice::from_ref(b), &mut got);
+        }
+        assert_eq!(got, whole);
     }
 
     #[test]
