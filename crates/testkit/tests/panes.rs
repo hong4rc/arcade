@@ -158,20 +158,21 @@ fn the_divider_next_to_the_focused_pane_has_the_focus_color_on_the_focused_pane_
     assert_ne!(plain, lit, "the divider is one color all along");
     assert_eq!(color(&client, short_right.0, short_right.1), lit);
     assert_eq!(color(&client, short_left.0, short_left.1), plain);
-    // Focus on B (upper right): it touches the long divider only in the upper half, and the
-    // lower half is the one it would mark, so nothing of the long divider is lit; the short
-    // divider is below B, so its left half is lit.
+    // Focus on B (upper right): the long divider has two panes on its right, so the whole
+    // edge of B is marked, which is the upper part of the divider; the lower part touches C
+    // and stays plain. The short divider is below B, so its left half is lit.
     run(&daemon, "pane.focus-up");
-    client.wait_until(Duration::from_millis(300), |_| false);
-    assert_eq!(color(&client, above, divider_x), plain);
-    assert_eq!(color(&client, below, divider_x), plain);
-    assert_eq!(color(&client, short_left.0, short_left.1), lit);
-    assert_eq!(color(&client, short_right.0, short_right.1), plain);
-    // Focus on A: the upper half of the long divider is lit; the short one does not touch A.
-    run(&daemon, "pane.focus-left");
     client.wait_until(Duration::from_millis(300), |_| false);
     assert_eq!(color(&client, above, divider_x), lit);
     assert_eq!(color(&client, below, divider_x), plain);
+    assert_eq!(color(&client, short_left.0, short_left.1), lit);
+    assert_eq!(color(&client, short_right.0, short_right.1), plain);
+    // Focus on A: A touches the whole long divider, so all of it is lit; the short one does
+    // not touch A.
+    run(&daemon, "pane.focus-left");
+    client.wait_until(Duration::from_millis(300), |_| false);
+    assert_eq!(color(&client, above, divider_x), lit);
+    assert_eq!(color(&client, below, divider_x), lit);
     assert_eq!(color(&client, short_left.0, short_left.1), plain);
     assert_eq!(color(&client, short_right.0, short_right.1), plain);
 }

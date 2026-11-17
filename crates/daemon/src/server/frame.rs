@@ -598,7 +598,10 @@ impl Server {
             } else {
                 window.layout.dividers()
             };
-            session.screen.draw_dividers(&dividers, origin, focus_rect);
+            let rects: Vec<crate::layout::Rect> = visible.iter().map(|(_, r)| *r).collect();
+            session
+                .screen
+                .draw_dividers(&dividers, origin, focus_rect, &rects);
             if let Some(y) = status_row(rows, status_position) {
                 let copy_on = self
                     .panes
