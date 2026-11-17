@@ -300,6 +300,114 @@ fn an_attached_client_is_told_which_program_and_session_to_attach_again() {
     again.wait_for_text("back").unwrap();
 }
 
+impl Env {
+    /// Start a daemon from a copy of the program with one session, and a client in it that has
+    /// typed `echo pid-$$`; returns the copy, the client and the shell's number.
+    fn running_from_a_copy(&self) -> (PathBuf, TestClient, String) {
+        let live = self.copy_of_program("arcade-live");
+        assert!(
+            self.plain_with(&live, &["new", "-d", "-s", "work", "/bin/sh"])
+                .status
+                .success()
+        );
+        let mut client = self.client("work", 100, 30);
+        client.type_line("echo pid-$$");
+        let number = wait_for_number(&mut client, "pid-");
+        (live, client, number)
+    }
+
+    /// Another build of the same version, installed over `live`: a new file with other bytes is
+    /// moved onto the path, as an install does.
+    fn install_another_build_over(&self, live: &Path) {
+        let next = self.dir.join("arcade-live.next");
+        let mut bytes = std::fs::read(ARCADE).unwrap();
+        bytes.extend_from_slice(b"\0another build of the same version");
+        std::fs::write(&next, bytes).unwrap();
+        std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::rename(&next, live).unwrap();
+    }
+}
+
+/// The digits after `prefix` on a row of the client's screen, once there are some.
+fn wait_for_number(client: &mut TestClient, prefix: &str) -> String {
+    let mut found = None;
+    let ok = client.wait_until(WAIT, |c| {
+        found = c.screen_rows().iter().find_map(|r| {
+            let digits: String = r
+                .strip_prefix(prefix)?
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            (!digits.is_empty()).then_some(digits)
+        });
+        found.is_some()
+    });
+    assert!(ok, "no {prefix}<number> row:\n{}", client.screen_text());
+    found.unwrap()
+}
+
+/// Installs between releases keep the path and the version number while the program changes: the
+/// daemon compares the bytes, so another build is upgraded to without `--force`, says so, and the
+/// pane's program keeps running.
+#[test]
+fn another_build_at_the_same_path_and_version_upgrades_without_force() {
+    let env = Env::new();
+    let (live, client, number) = env.running_from_a_copy();
+    drop(client);
+    env.install_another_build_over(&live);
+    let out = env.plain_with(&live, &["upgrade"]);
+    assert!(out.status.success(), "{}", text(&out));
+    let line = text(&out);
+    assert!(line.contains("upgraded"), "{line}");
+    assert!(line.contains("(different build)"), "{line}");
+    assert!(!line.contains("nothing to upgrade"), "{line}");
+    let mut again = env.client("work", 100, 30);
+    again.type_line("echo again-$$");
+    assert_eq!(wait_for_number(&mut again, "again-"), number);
+}
+
+/// The same build, run again, is still told there is nothing to do.
+#[test]
+fn the_same_build_still_has_nothing_to_upgrade() {
+    let env = Env::new();
+    let (live, _client, _) = env.running_from_a_copy();
+    let out = env.plain_with(&live, &["upgrade"]);
+    assert!(!out.status.success());
+    assert!(text(&out).contains("nothing to upgrade"), "{}", text(&out));
+    assert!(!text(&out).contains("upgrading to"), "{}", text(&out));
+}
+
+/// A daemon from before the bytes were compared answers by place and version only. It cannot say
+/// which build it runs, so a file written after it started is taken as another build, and one
+/// that is older than the daemon keeps the old answer.
+#[test]
+fn a_daemon_that_cannot_say_which_build_it_runs_is_judged_by_the_file_date() {
+    let env = Env::new();
+    let (live, client, number) = env.running_from_a_copy();
+    drop(client);
+    let play_old_daemon =
+        || std::fs::write(env.socket.with_extension("fault"), "old-refusal").unwrap();
+    // The file is older than the daemon: the old answer stands.
+    play_old_daemon();
+    let out = env.plain_with(&live, &["upgrade"]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out).contains("is this program and version"),
+        "{}",
+        text(&out)
+    );
+    // Written after the daemon started: it is upgraded to, without `--force`.
+    std::thread::sleep(Duration::from_millis(50));
+    env.install_another_build_over(&live);
+    play_old_daemon();
+    let out = env.plain_with(&live, &["upgrade"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("upgraded"), "{}", text(&out));
+    let mut again = env.client("work", 100, 30);
+    again.type_line("echo again-$$");
+    assert_eq!(wait_for_number(&mut again, "again-"), number);
+}
+
 /// What the new program refuses or fails at, before and after the point of no return, never
 /// costs a session.
 #[test]

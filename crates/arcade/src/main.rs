@@ -360,7 +360,26 @@ fn upgrade_command(options: &Options, rest: &[String]) -> u8 {
         Ok(Handshake::Ok(connection)) | Ok(Handshake::Mismatch { connection, .. }) => connection,
         Err(code) => return code,
     };
-    match command_result(&mut connection, "server.upgrade", &args, None) {
+    let mut result = command_result(&mut connection, "server.upgrade", &args, None);
+    // A daemon from before the bytes of the programs were compared says "nothing to upgrade" for
+    // any file at its own place with its own version, though installs between releases keep both.
+    // It cannot say which build it runs, so a file written after the daemon started (the socket is
+    // made when it starts) is taken to be another build.
+    if !force
+        && matches!(&result, Ok((false, o)) if o.contains(" is this program and version "))
+        && written_after_daemon_started(options, &program)
+        && let Ok(
+            Handshake::Ok(mut again)
+            | Handshake::Mismatch {
+                connection: mut again,
+                ..
+            },
+        ) = open_connection(options, false)
+    {
+        args.push("--force".to_string());
+        result = command_result(&mut again, "server.upgrade", &args, None);
+    }
+    match result {
         Ok((true, output)) => {
             announce();
             println!("{}", output.trim_end());
@@ -394,6 +413,16 @@ fn upgrade_command(options: &Options, rest: &[String]) -> u8 {
             1
         }
     }
+}
+
+/// Whether the file at `program` was written after the daemon started, which is when its socket
+/// was made.
+fn written_after_daemon_started(options: &Options, program: &std::path::Path) -> bool {
+    let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    matches!(
+        (modified(program), modified(&options.socket)),
+        (Some(file), Some(socket)) if file > socket
+    )
 }
 
 /// Connect, starting the daemon first when asked to and none is running.

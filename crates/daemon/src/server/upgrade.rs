@@ -667,7 +667,13 @@ impl Server {
 
     /// Take over the clients that were passed on and tell them how it went. `undone` is why the
     /// upgrade was undone, when it was.
-    fn settle_clients(&mut self, snap: &Snapshot, built: Built, undone: Option<&str>) {
+    fn settle_clients(
+        &mut self,
+        snap: &Snapshot,
+        built: Built,
+        undone: Option<&str>,
+        other_build: bool,
+    ) {
         let program = std::env::current_exe()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
@@ -729,9 +735,14 @@ impl Server {
                     None => (
                         true,
                         format!(
-                            "upgraded {} -> {}: kept {} sessions, {} windows, {} panes{}",
+                            "upgraded {} -> {}{}: kept {} sessions, {} windows, {} panes{}",
                             snap.program_version,
                             env!("CARGO_PKG_VERSION"),
+                            if other_build && snap.program_version == env!("CARGO_PKG_VERSION") {
+                                " (different build)"
+                            } else {
+                                ""
+                            },
                             built.sessions,
                             built.windows,
                             built.panes,
@@ -870,17 +881,31 @@ impl Server {
                 return (false, format!("the new program cannot take over: {e}"));
             }
         };
-        if !force
-            && new_program == own_path.canonicalize().unwrap_or(own_path.clone())
-            && version == env!("CARGO_PKG_VERSION")
-        {
-            return (
-                false,
-                format!(
-                    "{} is this program and version {version}: nothing to upgrade (`--force` does it anyway)",
-                    new_program.display()
-                ),
-            );
+        // Nothing to do only when the file is the build that runs: the same place, the same
+        // version, and the same bytes. Installs between releases keep the path and the version
+        // while the program changes, so the bytes decide.
+        let same_place = new_program == own_path.canonicalize().unwrap_or(own_path.clone());
+        let old_answer = injected_fault(&self.socket_path, &["old-refusal"]).is_some();
+        if !force && same_place && version == env!("CARGO_PKG_VERSION") {
+            if old_answer {
+                // A test plays a daemon from before the bytes were compared.
+                return (
+                    false,
+                    format!(
+                        "{} is this program and version {version}: nothing to upgrade (`--force` does it anyway)",
+                        new_program.display()
+                    ),
+                );
+            }
+            if same_bytes(&own_file, &new_program) {
+                return (
+                    false,
+                    format!(
+                        "{} is the build that runs (version {version}): nothing to upgrade (`--force` does it anyway)",
+                        new_program.display()
+                    ),
+                );
+            }
         }
 
         // The way back: this program's own file, copied where an install cannot touch it.
@@ -934,6 +959,42 @@ impl Server {
             format!("the new program could not be started: {error}"),
         )
     }
+}
+
+/// A fingerprint of the bytes of a file, read from `offset` 0 without moving the file's position.
+fn fingerprint(file: &File) -> io::Result<(u64, u64)> {
+    let mut buf = vec![0u8; 1 << 20];
+    let mut offset = 0u64;
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    loop {
+        let n = std::os::unix::fs::FileExt::read_at(file, &mut buf, offset)?;
+        if n == 0 {
+            break;
+        }
+        // Eight bytes at a time keeps this quick even for a program run as a debug build.
+        let (words, rest) = buf[..n].as_chunks::<8>();
+        for w in words {
+            let word = u64::from_le_bytes(*w);
+            hash = (hash ^ word)
+                .wrapping_mul(0x0000_0100_0000_01b3)
+                .rotate_left(23);
+        }
+        for b in rest {
+            hash = (hash ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        offset += n as u64;
+    }
+    Ok((offset, hash))
+}
+
+/// Whether the running program (its file, kept open since the start) and the file at `other` hold
+/// the same bytes. When either cannot be read the answer is yes: then nothing says they differ,
+/// and the old answer (same place, same version) stands.
+fn same_bytes(running: &File, other: &Path) -> bool {
+    let (Ok(a), Ok(file)) = (fingerprint(running), File::open(other)) else {
+        return true;
+    };
+    fingerprint(&file).map_or(true, |b| a == b)
 }
 
 /// Copy the running program's file (read through the descriptor kept open since the start) to
@@ -1148,7 +1209,14 @@ pub fn resume(config: DaemonConfig, resume: Resume) -> io::Result<()> {
         },
         _ => {}
     }
-    server.settle_clients(&snap, built, rolled_back.as_deref());
+    // The program that handed over left a copy of itself: the same version can still be another
+    // build, and the person is told so.
+    let other_build = resume
+        .rollback
+        .as_deref()
+        .zip(std::env::current_exe().ok())
+        .is_some_and(|(copy, own)| File::open(copy).is_ok_and(|c| !same_bytes(&c, &own)));
+    server.settle_clients(&snap, built, rolled_back.as_deref(), other_build);
     server.log.line(&match &rolled_back {
         None => format!(
             "upgraded from {}: {} sessions, {} windows, {} panes{}",
