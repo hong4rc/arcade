@@ -110,6 +110,7 @@ pub fn label_of(command: &str, args: &[String]) -> String {
         "window.layout-even" => "even layout",
         "window.select" => "go to window N",
         "session.list" => "session list",
+        "session.new" => "new session",
         "session.rename" => "rename session",
         "session.detach" => "detach",
         "session.close" => "close session",

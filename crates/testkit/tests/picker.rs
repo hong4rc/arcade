@@ -207,7 +207,9 @@ fn lines_of_the_list(client: &mut TestClient) -> Vec<String> {
             .take(right.saturating_sub(left + 1))
             .collect();
         let inside = inside.trim().to_string();
-        if !inside.is_empty() && !inside.starts_with('/') {
+        // The last line of the session list makes a session; it is not a session.
+        let is_new_row = inside.trim_start_matches("> ").starts_with("+ new session");
+        if !inside.is_empty() && !inside.starts_with('/') && !is_new_row {
             lines.push(inside);
         }
     }

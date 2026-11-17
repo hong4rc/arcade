@@ -95,6 +95,9 @@ pub enum Command {
     WindowLayoutEven,
     SessionList,
     SessionSwitch(String),
+    /// A new session starting in the directory of the focused pane; the name, when given, or
+    /// an automatic one.
+    SessionNew(Option<String>),
     SessionRename(Option<String>),
     SessionDetach,
     SessionClose(Option<String>),
@@ -153,6 +156,7 @@ const NAMES: &[(&str, Command)] = &[
     ("window.layout-next", Command::WindowLayoutNext),
     ("window.layout-even", Command::WindowLayoutEven),
     ("session.list", Command::SessionList),
+    ("session.new", Command::SessionNew(None)),
     ("session.rename", Command::SessionRename(None)),
     ("session.detach", Command::SessionDetach),
     ("session.close", Command::SessionClose(None)),
@@ -277,6 +281,7 @@ pub fn parse(name: &str, args: &[String]) -> Result<Command, String> {
         "window.new" => Ok(Command::WindowNew(optional())),
         "window.rename" => Ok(Command::WindowRename(optional())),
         "window.move-to-session" => Ok(Command::WindowMoveToSession(optional())),
+        "session.new" => Ok(Command::SessionNew(optional())),
         "session.rename" => Ok(Command::SessionRename(optional())),
         "session.close" => Ok(Command::SessionClose(optional())),
         other => NAMES

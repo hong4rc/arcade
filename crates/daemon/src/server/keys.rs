@@ -77,6 +77,8 @@ pub(super) enum PromptKind {
     ClosePane,
     RenameWindow,
     RenameSession,
+    /// The name of a session to make; empty makes one with the automatic name.
+    NewSession,
     /// The one argument of the named command, typed on the prompt line.
     Argument(&'static str),
     /// The text to look for in copy mode, going down or going up.
@@ -593,6 +595,7 @@ impl Server {
             ("pane.close", _) => Some((PromptKind::ClosePane, "Close this pane? (y/n) ")),
             ("window.rename", true) => Some((PromptKind::RenameWindow, "Window name: ")),
             ("session.rename", true) => Some((PromptKind::RenameSession, "Session name: ")),
+            ("session.new", true) => Some((PromptKind::NewSession, "Session name: ")),
             ("window.select", true) => {
                 Some((PromptKind::Argument("window.select"), "Window number: "))
             }
@@ -705,6 +708,24 @@ impl Server {
     }
 
     fn accept_prompt(&mut self, session_id: u64) {
+        // A name that is in use keeps the prompt open, with the reason on the bar.
+        let taken = self
+            .sessions
+            .get(&session_id)
+            .and_then(|s| s.key_state.prompt.as_ref())
+            .filter(|p| p.kind == PromptKind::NewSession && !p.text.is_empty())
+            .map(|p| p.text.clone())
+            .filter(|name| self.sessions.values().any(|s| &s.name == name));
+        if taken.is_some() {
+            // The prompt holds the right end of the bar, so the reason is its own label.
+            if let Some(s) = self.sessions.get_mut(&session_id)
+                && let Some(prompt) = s.key_state.prompt.as_mut()
+            {
+                prompt.label = "Name in use: ".to_string();
+                s.chrome_dirty = true;
+            }
+            return;
+        }
         let Some(prompt) = self.close_prompt(session_id) else {
             return;
         };
@@ -713,6 +734,14 @@ impl Server {
         };
         let (name, args): (&str, Vec<String>) = match prompt.kind {
             PromptKind::ClosePane => ("pane.close", Vec::new()),
+            // An empty name is an answer: the session gets the automatic name.
+            PromptKind::NewSession => (
+                "session.new",
+                Some(prompt.text)
+                    .filter(|t| !t.is_empty())
+                    .into_iter()
+                    .collect(),
+            ),
             // An empty window name is an answer: the window goes back to automatic naming.
             PromptKind::RenameSession
             | PromptKind::Argument(_)

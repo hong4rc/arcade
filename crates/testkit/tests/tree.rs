@@ -951,7 +951,9 @@ fn the_session_list_and_the_window_list_keep_their_frame_under_a_filter() {
             base,
         );
         client.send(ESC);
-        closed(&mut client);
+        // `closed` looks for the tree only: wait here until no box of any list is left.
+        let gone = client.wait_until(WAIT, |c| frame(c).is_none());
+        assert!(gone, "{}", client.screen_text());
     }
 }
 

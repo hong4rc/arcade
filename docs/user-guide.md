@@ -98,7 +98,7 @@ The option `--socket <path>`, placed first on the command line, uses another soc
 | `arcade kill-session [-t <session>]` | Close a session |
 | `arcade upgrade [--force] [--restart] [<program>]` | Make the running daemon continue as a newer `arcade` (the program you ran, or the file you give) without ending any session or program (see 5.13) |
 | `arcade kill-server` | Stop the daemon and every session |
-| `arcade run <command> [<argument>...]` | Run a named command (for example `session.detach`), meant for scripts |
+| `arcade run <command> [<argument>...]` | Run a named command (for example `session.detach`), meant for scripts. `arcade run session.new [<name>]` makes a session in the directory of the pane it is run from (a script with no pane: the directory of the session in use) and, when run inside an Arcade pane, switches that screen to it, as `arcade new` does; from a script outside Arcade it only makes it |
 | `arcade config check [--host kitty\|legacy] [<file>]` | Check a configuration file and list its errors, then the bindings that cannot work on the terminal (see 5.11), without a daemon |
 | `arcade keys list [--host kitty\|legacy] [<file>]` | Print every key binding in force, table by table, with where it comes from (`default` or `config`), then the bindings that cannot work. Reads the file only, so it needs no daemon and gives the same text every time |
 | `arcade keys test [<file>]` | Show, for each key you press, the name Arcade receives, its bytes and what it does in each table. `Ctrl+C` quits and the terminal is given back as it was |
@@ -153,7 +153,8 @@ The four default movement keys are `h` (left), `j` (down), `k` (up), `l` (right)
 | `>` | Move the window to the right |
 | `,` | Rename the window |
 | `$` | Rename the session |
-| `s` | List of sessions |
+| `C` | New session: asks for a name on the status bar (`Enter` makes it and shows it, an empty name gives the automatic one, `Esc` cancels; a name in use keeps the prompt open with `Name in use:` in front). It starts in the directory of the pane you are in |
+| `s` | List of sessions; its last line, `+ new session`, is always there (also when the filter matches nothing), and `Enter` on it asks for the name, starting from what you typed to filter, and never makes a session by itself |
 | `w` | List of the windows of this session; type to filter by name, `Enter` to go there |
 | `t` | Tree of sessions, windows and panes: look and jump (section 3.5) |
 | `m` | Lift the current pane to put it down somewhere else (section 3.5). `m` used to move a window to another session; the command `window.move-to-session` is still in the command palette (`:`) but has no default key |

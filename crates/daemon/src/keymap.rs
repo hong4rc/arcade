@@ -582,6 +582,7 @@ impl Keymap {
         bind(t, ch('>'), "window.move-right", &[], true);
         bind(t, ch(','), "window.rename", &[], false);
         bind(t, ch('$'), "session.rename", &[], false);
+        bind(t, ch('C'), "session.new", &[], false);
         bind(t, ch('w'), "window.list", &[], false);
         bind(t, ch('s'), "session.list", &[], false);
         bind(t, ch('t'), "tree.open", &[], false);

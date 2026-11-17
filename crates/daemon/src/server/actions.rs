@@ -284,6 +284,7 @@ impl Server {
                 self.end_session(session, "closed");
                 return Ok(String::new());
             }
+            Command::SessionNew(name) => return self.new_session(from_pane, name.clone()),
             _ => {}
         }
         let ctx = self.resolve(from_pane)?;
@@ -403,6 +404,8 @@ impl Server {
                 }
                 Ok(String::new())
             }
+            // Handled before the context is found, in `execute`.
+            Command::SessionNew(_) => Err("session.new is run by the server".to_string()),
             Command::SessionRename(None) => {
                 Err("session.rename needs a name when it is not typed at the keyboard".to_string())
             }
@@ -721,7 +724,7 @@ impl Server {
         }
         let mut sessions: Vec<&Session> = self.sessions.values().collect();
         sessions.sort_by(|a, b| a.name.cmp(&b.name));
-        let items: Vec<Item> = sessions
+        let mut items: Vec<Item> = sessions
             .iter()
             .filter(|s| kind == PickerKind::Sessions || s.id != session_id)
             .enumerate()
@@ -737,6 +740,9 @@ impl Server {
             return Err("no other session".to_string());
         }
         let selected = items.iter().position(|i| i.current).unwrap_or(0);
+        if kind == PickerKind::Sessions {
+            items.push(Item::new_session_row(items.len()));
+        }
         let title = match kind {
             PickerKind::Sessions => "Sessions",
             PickerKind::MoveWindow => "Move window to",
@@ -856,12 +862,24 @@ impl Server {
             ListCommand::Select => {
                 let kind = picker.kind;
                 let chosen = picker.chosen().map(|i| (i.id, i.name.clone()));
+                let new_row = picker.chosen().is_some_and(|i| i.new_row);
+                let typed = picker.filter().to_string();
                 session.picker = None;
                 session.relayout = true;
                 session.chrome_dirty = true;
                 let Some((index, name)) = chosen else {
                     return Ok(String::new());
                 };
+                if new_row {
+                    // Never makes a session at once: the name is asked for, starting from what
+                    // was typed to filter.
+                    session.key_state.prompt = Some(keys::PromptState {
+                        kind: keys::PromptKind::NewSession,
+                        label: "Session name: ".to_string(),
+                        text: typed,
+                    });
+                    return Ok(String::new());
+                }
                 return match kind {
                     PickerKind::Keys => {
                         // The rows were made from the tables in this order, and nothing in them
@@ -922,6 +940,57 @@ impl Server {
             window: window.id,
             pane: window.focus,
         })
+    }
+
+    /// Make a session that starts in the directory of the pane the command comes from (the
+    /// directory of the session, when there is none), with the name given or an automatic one.
+    /// When the command comes from a pane, the screen of that pane goes to the new session; from
+    /// a script with no pane it is only made.
+    fn new_session(
+        &mut self,
+        from_pane: Option<u64>,
+        name: Option<String>,
+    ) -> Result<String, String> {
+        let ctx = self.resolve(from_pane)?;
+        if let Some(name) = &name
+            && self.sessions.values().any(|s| &s.name == name)
+        {
+            return Err(format!("a session called {name} exists"));
+        }
+        let source = self
+            .sessions
+            .get(&ctx.session)
+            .ok_or_else(|| "no such session".to_string())?;
+        let cwd = self
+            .panes
+            .get(&ctx.pane)
+            .and_then(|p| pty::process_cwd(p.pid))
+            .unwrap_or_else(|| source.cwd.clone());
+        let request = arcade_proto::AttachRequest {
+            session: None,
+            create: arcade_proto::CreateMode::Always,
+            new_name: name,
+            command: Vec::new(),
+            cwd,
+            env: source.env.clone(),
+            cols: source.cols,
+            rows: source.rows,
+        };
+        let created = self.create_session(&request)?;
+        let created_name = self
+            .sessions
+            .get(&created)
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        let shown = from_pane.is_some()
+            && self
+                .sessions
+                .get(&ctx.session)
+                .is_some_and(|s| s.client.is_some());
+        if shown {
+            self.switch_session_id(ctx.session, created)?;
+        }
+        Ok(created_name)
     }
 
     /// The client of this session goes to another session without leaving. A client that the

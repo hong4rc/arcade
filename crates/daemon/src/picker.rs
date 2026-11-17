@@ -45,6 +45,8 @@ pub struct Item {
     search: String,
     /// What a row of the key list says besides its action.
     pub keys: Option<KeyCells>,
+    /// The line is "new session": it stays in the list whatever the filter says.
+    pub new_row: bool,
 }
 
 impl Item {
@@ -58,7 +60,15 @@ impl Item {
             current,
             search,
             keys: None,
+            new_row: false,
         }
+    }
+
+    /// The last line of the session list, which makes a session; the filter never hides it.
+    pub fn new_session_row(id: usize) -> Item {
+        let mut item = Item::new(id, "+ new session".to_string(), String::new(), false);
+        item.new_row = true;
+        item
     }
 
     /// The line is a row of the key list.
@@ -146,8 +156,10 @@ impl Picker {
             .enumerate()
             // The rows that show only for a filter (the keys of copy mode) wait for one.
             .filter(|(_, item)| {
-                item.search.contains(&wanted)
-                    && (!wanted.is_empty() || !item.keys.as_ref().is_some_and(|k| k.filter_only))
+                item.new_row
+                    || item.search.contains(&wanted)
+                        && (!wanted.is_empty()
+                            || !item.keys.as_ref().is_some_and(|k| k.filter_only))
             })
             .map(|(i, _)| i)
             .collect();
@@ -168,6 +180,11 @@ impl Picker {
         if self.selected + 1 < self.visible.len() {
             self.selected += 1;
         }
+    }
+
+    /// What was typed to filter the lines.
+    pub fn filter(&self) -> &str {
+        &self.filter
     }
 
     pub fn chosen(&self) -> Option<&Item> {
@@ -209,7 +226,8 @@ impl Picker {
         let go = match self.kind {
             PickerKind::MoveWindow => "move here",
             PickerKind::Keys | PickerKind::Commands => "run",
-            PickerKind::Sessions | PickerKind::Windows | PickerKind::Notifications => "go",
+            PickerKind::Sessions => "go or new session",
+            PickerKind::Windows | PickerKind::Notifications => "go",
         };
         let typing = if filtered {
             keys_item(&[&keys.filter_clear], "clear filter")
@@ -235,17 +253,24 @@ impl Picker {
         if self.key_view.is_some() {
             return keylist::draw(self, cols, rows, keys);
         }
-        let mut lines: Vec<String> = self
-            .shown()
-            .enumerate()
-            .map(|(i, item)| self.line(item, i == self.selected))
-            .collect();
-        let nothing = self.visible.is_empty();
         let no_match = format!("  {}", theme::symbol(Symbol::PickerNoMatch));
-        if nothing {
+        // Nothing matches when no line is left but the "new session" one, which stays; the
+        // words say so above it.
+        let nothing = self.shown().all(|item| item.new_row);
+        let mut lines: Vec<String> = Vec::new();
+        let mut selected = None;
+        for (i, item) in self.shown().enumerate() {
+            if nothing && item.new_row {
+                lines.push(no_match.clone());
+            }
+            if i == self.selected {
+                selected = Some(lines.len());
+            }
+            lines.push(self.line(item, i == self.selected));
+        }
+        if self.visible.is_empty() {
             lines.push(no_match.clone());
         }
-        let selected = (!nothing).then_some(self.selected);
         let filtered = !self.filter.is_empty();
         let widest = self
             .items
@@ -726,5 +751,22 @@ mod tests {
         assert_eq!(fit_hint_line(items(), 20), "enter run  esc close");
         // The one that matters most stays even when it does not fit either.
         assert_eq!(fit_hint_line(items(), 3), "esc close");
+    }
+
+    #[test]
+    fn the_new_session_line_stays_whatever_the_filter_says_and_is_chosen_when_nothing_else_is() {
+        let mut list = items(&["alpha", "beta"]);
+        list.push(Item::new_session_row(2));
+        let mut p = Picker::new(PickerKind::Sessions, "Sessions", list, 0);
+        p.type_text("zzz");
+        let names: Vec<&str> = p.shown().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["+ new session"]);
+        assert!(p.chosen().is_some_and(|i| i.new_row));
+        assert_eq!(p.filter(), "zzz");
+        p.clear_filter();
+        assert_eq!(p.shown().count(), 3);
+        p.type_text("alp");
+        let names: Vec<&str> = p.shown().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["alpha", "+ new session"]);
     }
 }
