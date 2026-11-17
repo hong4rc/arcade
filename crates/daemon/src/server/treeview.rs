@@ -38,10 +38,11 @@ enum WindowDest {
 }
 
 impl Server {
-    /// What the tree shows now: every session (by name), its windows, and their panes.
+    /// What the tree shows now: every session (in the order they were made), its windows, and
+    /// their panes.
     fn tree_entries(&self, viewing: u64) -> Vec<Entry> {
         let mut sessions: Vec<&Session> = self.sessions.values().collect();
-        sessions.sort_by(|a, b| a.name.cmp(&b.name));
+        sessions.sort_by_key(|s| s.id);
         let mut entries = Vec::new();
         for s in sessions {
             let here = s.id == viewing;

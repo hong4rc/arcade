@@ -156,8 +156,8 @@ The four default movement keys are `h` (left), `j` (down), `k` (up), `l` (right)
 | `>` | Move the window to the right |
 | `,` | Rename the window |
 | `$` | Rename the session |
-| `C` | New session: asks for a name on the status bar (`Enter` makes it and shows it, an empty name gives the automatic one, `Esc` cancels; a name in use keeps the prompt open with `Name in use:` in front). It starts in the directory of the pane you are in |
-| `s` | List of sessions; its last line, `+ new session`, is always there (also when the filter matches nothing), and `Enter` on it asks for the name, starting from what you typed to filter, and never makes a session by itself |
+| `C` | New session: the session is made at once, in the directory of the pane you are in, and shown; the status bar then asks for its name. `Enter` with a name renames it, an empty `Enter` or `Esc` keeps the automatic name, and a name that another session has keeps the prompt open with `Name in use:` in front |
+| `s` | List of sessions, in the order they were made; its last line, `+ new session`, is always there (also when the filter matches nothing). `Enter` on it makes the session and shows it, then asks for its name as `C` does, starting from what you typed to filter |
 | `w` | List of the windows of this session; type to filter by name, `Enter` to go there |
 | `t` | Tree of sessions, windows and panes: look and jump (section 3.5) |
 | `m` | Lift the current pane to put it down somewhere else (section 3.5). `m` used to move a window to another session; the command `window.move-to-session` is still in the command palette (`:`) but has no default key |
@@ -228,6 +228,8 @@ If your movement keys take over one of the keys above, the displaced key moves: 
 ### 3.4 Selection lists (sessions, windows, key list, command palette)
 
 Every list has a filter box on its first line: type letters and only the lines that contain them remain (case does not matter), updating with each key. Because letters go into the filter box, lists do not use letter keys for movement (`h j k l`, or your `nav`).
+
+Sessions in the lists and in the tree are in the order they were made, so a new session comes last.
 
 | Key | Action |
 |---|---|

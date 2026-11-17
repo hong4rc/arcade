@@ -12,14 +12,6 @@ fn run(daemon: &TestDaemon, name: &str, args: &[&str]) -> (bool, String) {
 /// Two sessions, `alpha` and `beta`, each with a line of its own on the screen. The returned
 /// client is attached to `alpha`; `beta` has no client.
 fn two_sessions(daemon: &TestDaemon) -> TestClient {
-    let mut beta = daemon
-        .attach(AttachOptions::new().size(100, 30).named("beta"))
-        .unwrap();
-    beta.wait_for_prompt().unwrap();
-    beta.type_line("echo only-in-beta");
-    beta.wait_for_row("only-in-beta").unwrap();
-    beta.detach();
-    assert!(beta.wait_closed(WAIT));
     let mut alpha = daemon
         .attach(AttachOptions::new().size(100, 30).named("alpha"))
         .unwrap();
@@ -33,6 +25,15 @@ fn two_sessions(daemon: &TestDaemon) -> TestClient {
         "no prompt after the echo:\n{}",
         alpha.screen_text()
     );
+    // Made after alpha, so the sessions are listed in the order they were made.
+    let mut beta = daemon
+        .attach(AttachOptions::new().size(100, 30).named("beta"))
+        .unwrap();
+    beta.wait_for_prompt().unwrap();
+    beta.type_line("echo only-in-beta");
+    beta.wait_for_row("only-in-beta").unwrap();
+    beta.detach();
+    assert!(beta.wait_closed(WAIT));
     alpha
 }
 
@@ -171,7 +172,13 @@ fn letters_go_into_the_filter_and_the_arrows_and_ctrl_n_and_ctrl_p_move() {
 
 /// Sessions `a`, `ab` and `b`; the client is attached to `a`.
 fn a_ab_b(daemon: &TestDaemon) -> TestClient {
-    for name in ["b", "ab"] {
+    // Made in the order a, ab, b, so the sessions are listed in that order; "a" stays with this
+    // client.
+    let mut client = daemon
+        .attach(AttachOptions::new().size(100, 30).named("a"))
+        .unwrap();
+    client.wait_for_prompt().unwrap();
+    for name in ["ab", "b"] {
         let mut other = daemon
             .attach(AttachOptions::new().size(100, 30).named(name))
             .unwrap();
@@ -179,10 +186,6 @@ fn a_ab_b(daemon: &TestDaemon) -> TestClient {
         other.detach();
         assert!(other.wait_closed(WAIT));
     }
-    let mut client = daemon
-        .attach(AttachOptions::new().size(100, 30).named("a"))
-        .unwrap();
-    client.wait_for_prompt().unwrap();
     client
 }
 

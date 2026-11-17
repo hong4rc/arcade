@@ -727,8 +727,9 @@ impl Server {
         if kind == PickerKind::MoveWindow && current.windows.len() < 2 {
             return Err("this is the last window of its session".to_string());
         }
+        // In the order they were made, so a new session comes last.
         let mut sessions: Vec<&Session> = self.sessions.values().collect();
-        sessions.sort_by(|a, b| a.name.cmp(&b.name));
+        sessions.sort_by_key(|s| s.id);
         let mut items: Vec<Item> = sessions
             .iter()
             .filter(|s| kind == PickerKind::Sessions || s.id != session_id)
@@ -876,13 +877,12 @@ impl Server {
                     return Ok(String::new());
                 };
                 if new_row {
-                    // Never makes a session at once: the name is asked for, starting from what
-                    // was typed to filter.
-                    session.key_state.prompt = Some(keys::PromptState {
-                        kind: keys::PromptKind::NewSession,
-                        label: "Session name: ".to_string(),
-                        text: typed,
-                    });
+                    // The Enter on this row is the confirmation: the session is made and shown
+                    // as with the session.new key, and its name is asked for on its prompt,
+                    // starting from what was typed to filter.
+                    if let Some(pane) = self.focus_pane_of(session_id) {
+                        self.new_session_then_name(session_id, pane, typed);
+                    }
                     return Ok(String::new());
                 }
                 return match kind {
@@ -951,7 +951,7 @@ impl Server {
     /// directory of the session, when there is none), with the name given or an automatic one.
     /// When the command comes from a pane, the screen of that pane goes to the new session; from
     /// a script with no pane it is only made.
-    fn new_session(
+    pub(super) fn new_session(
         &mut self,
         from_pane: Option<u64>,
         name: Option<String>,
@@ -1780,7 +1780,7 @@ impl Server {
     }
 
     /// The session a client goes to when its own ends: the one that was used last, and when none
-    /// ever was, the first by name. Only a session with no client of its own: no one is thrown
+    /// ever was, the one made first. Only a session with no client of its own: no one is thrown
     /// out of theirs.
     fn session_to_go_to(&self) -> Option<u64> {
         let mut free: Vec<&Session> = self
@@ -1788,7 +1788,7 @@ impl Server {
             .values()
             .filter(|s| s.client.is_none())
             .collect();
-        free.sort_by(|a, b| a.name.cmp(&b.name));
+        free.sort_by_key(|s| s.id);
         let used = free
             .iter()
             .filter(|s| s.last_used > 0)

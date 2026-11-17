@@ -26,9 +26,23 @@ fn sessions(daemon: &TestDaemon) -> Vec<String> {
     names
 }
 
+/// The session made by the last key press: the one that is not `alpha` or in `known`.
+fn automatic_name(daemon: &TestDaemon, known: &[&str]) -> String {
+    let names = sessions(daemon);
+    names
+        .into_iter()
+        .find(|n| !known.contains(&n.as_str()))
+        .expect("a new session")
+}
+
 fn bar_has(client: &mut TestClient, text: &str) {
     let ok = client.wait_until(WAIT, |c| c.status_row().contains(text));
     assert!(ok, "the bar lacks {text:?}: {:?}", client.status_row());
+}
+
+fn bar_lacks(client: &mut TestClient, text: &str) {
+    let ok = client.wait_until(WAIT, |c| !c.status_row().contains(text));
+    assert!(ok, "the bar still has {text:?}: {:?}", client.status_row());
 }
 
 fn screen_has(client: &mut TestClient, text: &str) {
@@ -36,58 +50,74 @@ fn screen_has(client: &mut TestClient, text: &str) {
     assert!(ok, "the screen lacks {text:?}:\n{}", client.screen_text());
 }
 
-fn open_prompt(client: &mut TestClient) {
+/// Prefix `C`: the new session is made and shown, and its name is asked for on the bar.
+fn press_c(client: &mut TestClient) {
     client.send(PREFIX);
     client.send(b"C");
     bar_has(client, "Session name: ");
 }
 
+/// Where the first line with `name` is on the screen, so that a list's order can be checked.
+fn at(client: &TestClient, name: &str) -> usize {
+    client
+        .screen_text()
+        .find(name)
+        .unwrap_or_else(|| panic!("{name} is not on the screen:\n{}", client.screen_text()))
+}
+
 #[test]
-fn the_key_asks_for_a_name_makes_the_session_in_the_directory_of_the_pane_and_shows_it() {
+fn the_key_makes_the_session_and_shows_it_before_any_name_is_asked() {
     let daemon = TestDaemon::start();
     let mut client = start(&daemon);
     client.type_line("mkdir -p inner && cd inner && echo here-$((1+1))");
     client.wait_for_row("here-2").unwrap();
-    open_prompt(&mut client);
-    // Nothing is made before the name is entered.
-    assert_eq!(sessions(&daemon), ["alpha"]);
+    press_c(&mut client);
+    // The session exists and is on the screen while the prompt is open.
+    let automatic = automatic_name(&daemon, &["alpha"]);
+    assert_eq!(automatic, "inner");
+    bar_has(&mut client, &automatic);
+    assert_eq!(sessions(&daemon), ["alpha", automatic.as_str()]);
+    // A name renames it, and the shell still starts in the directory the pane was in.
     client.send(b"fresh");
     client.send(b"\r");
     bar_has(&mut client, "fresh");
+    bar_lacks(&mut client, "Session name: ");
     assert_eq!(sessions(&daemon), ["alpha", "fresh"]);
-    // The screen is the new session's, and its shell starts in the directory the pane was in.
     client.wait_for_prompt().unwrap();
     client.type_line("echo dir-$(basename \"$PWD\")");
     client.wait_for_row("dir-inner").unwrap();
 }
 
 #[test]
-fn an_empty_name_gives_the_automatic_name_and_escape_makes_nothing() {
+fn an_empty_name_keeps_the_automatic_name_and_escape_keeps_the_session() {
     let daemon = TestDaemon::start();
     let mut client = start(&daemon);
-    open_prompt(&mut client);
+    press_c(&mut client);
+    let automatic = automatic_name(&daemon, &["alpha"]);
     client.send(b"\x1b");
-    assert!(client.wait_until(WAIT, |c| !c.status_row().contains("Session name: ")));
-    assert_eq!(sessions(&daemon), ["alpha"]);
-    open_prompt(&mut client);
+    bar_lacks(&mut client, "Session name: ");
+    assert_eq!(sessions(&daemon), ["alpha", automatic.as_str()]);
+    bar_has(&mut client, &automatic);
+    // Enter on an empty prompt keeps the name too.
+    press_c(&mut client);
     client.send(b"\r");
-    assert!(client.wait_until(WAIT, |c| !c.status_row().contains("Session name: ")));
+    bar_lacks(&mut client, "Session name: ");
     let names = sessions(&daemon);
-    assert_eq!(names.len(), 2, "{names:?}");
-    let automatic = names.iter().find(|n| *n != "alpha").unwrap();
-    assert!(client.wait_until(WAIT, |c| c.status_row().contains(automatic.as_str())));
+    assert_eq!(names.len(), 3, "{names:?}");
+    assert!(names.contains(&automatic));
 }
 
 #[test]
 fn a_name_in_use_keeps_the_prompt_open_and_says_so() {
     let daemon = TestDaemon::start();
     let mut client = start(&daemon);
-    open_prompt(&mut client);
+    press_c(&mut client);
+    let automatic = automatic_name(&daemon, &["alpha"]);
     client.send(b"alpha");
     client.send(b"\r");
     bar_has(&mut client, "Name in use: alpha");
-    // Still asking, with what was typed, and nothing was made.
-    assert_eq!(sessions(&daemon), ["alpha"]);
+    // Still asking, with what was typed; the session keeps its automatic name.
+    assert_eq!(sessions(&daemon), ["alpha", automatic.as_str()]);
     // A different name then works from the same prompt.
     client.send(b"\x15");
     client.send(b"other");
@@ -97,27 +127,41 @@ fn a_name_in_use_keeps_the_prompt_open_and_says_so() {
 }
 
 #[test]
-fn the_session_list_ends_with_a_new_session_line_that_asks_for_the_name_first() {
+fn a_session_may_keep_the_name_it_got_automatically() {
+    let daemon = TestDaemon::start();
+    let mut client = start(&daemon);
+    press_c(&mut client);
+    let automatic = automatic_name(&daemon, &["alpha"]);
+    // Typing the session's own name is not a clash with another session.
+    client.send(automatic.as_bytes());
+    client.send(b"\r");
+    bar_lacks(&mut client, "Session name: ");
+    assert_eq!(sessions(&daemon), ["alpha", automatic.as_str()]);
+}
+
+#[test]
+fn the_session_list_line_makes_the_session_on_enter_and_asks_for_its_name_there() {
     let daemon = TestDaemon::start();
     let mut client = start(&daemon);
     client.send(PREFIX);
     client.send(b"s");
     screen_has(&mut client, "+ new session");
     screen_has(&mut client, "go or new session");
-    // With a filter that matches no session the line is still there, and a first Enter on it
-    // opens the prompt with the filter as the name; nothing is made yet.
+    // With a filter that matches no session the line is still there. Enter on it makes the
+    // session, shows it, and asks for the name on its prompt, starting from the filter.
     client.send(b"zzz");
     screen_has(&mut client, "+ new session");
     client.send(b"\r");
     bar_has(&mut client, "Session name: zzz");
-    assert_eq!(sessions(&daemon), ["alpha"]);
+    let automatic = automatic_name(&daemon, &["alpha", "zzz"]);
+    assert_eq!(sessions(&daemon), ["alpha", automatic.as_str()]);
     client.send(b"\r");
     bar_has(&mut client, "zzz");
     assert_eq!(sessions(&daemon), ["alpha", "zzz"]);
 }
 
 #[test]
-fn the_new_session_line_without_a_filter_opens_an_empty_prompt() {
+fn the_new_session_line_without_a_filter_opens_an_empty_prompt_on_a_new_session() {
     let daemon = TestDaemon::start();
     let mut client = start(&daemon);
     client.send(PREFIX);
@@ -127,14 +171,32 @@ fn the_new_session_line_without_a_filter_opens_an_empty_prompt() {
     client.send(b"\x1b[B");
     client.send(b"\r");
     bar_has(&mut client, "Session name: ");
-    assert!(
-        !client.status_row().contains("Session name: a"),
-        "{:?}",
-        client.status_row()
-    );
-    assert_eq!(sessions(&daemon), ["alpha"]);
+    assert_eq!(sessions(&daemon).len(), 2);
     client.send(b"\x1b");
-    assert_eq!(sessions(&daemon), ["alpha"]);
+    bar_lacks(&mut client, "Session name: ");
+    assert_eq!(sessions(&daemon).len(), 2);
+}
+
+#[test]
+fn a_new_session_comes_last_in_the_session_list_and_in_the_tree() {
+    let daemon = TestDaemon::start();
+    let mut client = start(&daemon);
+    // Names that are not in the order they were made: "zulu" first, then "bravo".
+    let (ok, output) = daemon.command("session.new", &["zulu"]).unwrap();
+    assert!(ok, "{output}");
+    let (ok, output) = daemon.command("session.new", &["bravo"]).unwrap();
+    assert!(ok, "{output}");
+    client.send(PREFIX);
+    client.send(b"s");
+    screen_has(&mut client, "bravo");
+    assert!(at(&client, "alpha") < at(&client, "zulu"));
+    assert!(at(&client, "zulu") < at(&client, "bravo"));
+    client.send(b"\x1b");
+    client.send(PREFIX);
+    client.send(b"t");
+    screen_has(&mut client, "bravo");
+    assert!(at(&client, "alpha") < at(&client, "zulu"));
+    assert!(at(&client, "zulu") < at(&client, "bravo"));
 }
 
 #[test]

@@ -33,14 +33,6 @@ fn name_pane(client: &mut TestClient, title: &str) {
 }
 
 fn world_sized(daemon: &TestDaemon, cols: u16, rows: u16) -> TestClient {
-    let mut beta = daemon
-        .attach(AttachOptions::new().size(cols, rows).named("beta"))
-        .unwrap();
-    beta.wait_for_prompt().unwrap();
-    name_pane(&mut beta, "emacs");
-    beta.detach();
-    assert!(beta.wait_closed(WAIT));
-
     let mut alpha = daemon
         .attach(AttachOptions::new().size(cols, rows).named("alpha"))
         .unwrap();
@@ -58,6 +50,14 @@ fn world_sized(daemon: &TestDaemon, cols: u16, rows: u16) -> TestClient {
     alpha.send(PREFIX);
     alpha.send(b"1");
     assert!(alpha.wait_until(WAIT, |c| c.screen_text().contains("in-zsh")));
+    // Made after alpha, so the sessions are listed in the order they were made.
+    let mut beta = daemon
+        .attach(AttachOptions::new().size(cols, rows).named("beta"))
+        .unwrap();
+    beta.wait_for_prompt().unwrap();
+    name_pane(&mut beta, "emacs");
+    beta.detach();
+    assert!(beta.wait_closed(WAIT));
     alpha
 }
 

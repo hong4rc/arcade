@@ -77,8 +77,9 @@ pub(super) enum PromptKind {
     ClosePane,
     RenameWindow,
     RenameSession,
-    /// The name of a session to make; empty makes one with the automatic name.
-    NewSession,
+    /// The name of a session that was just made and is already on the screen. Empty keeps the
+    /// automatic name; a name that another session has keeps the prompt open.
+    NameNewSession,
     /// The one argument of the named command, typed on the prompt line.
     Argument(&'static str),
     /// The text to look for in copy mode, going down or going up.
@@ -592,11 +593,14 @@ impl Server {
         let Some(pane) = self.focus_pane_of(session_id) else {
             return;
         };
+        if binding.command == "session.new" && binding.args.is_empty() {
+            self.new_session_then_name(session_id, pane, String::new());
+            return;
+        }
         let ask = match (binding.command.as_str(), binding.args.is_empty()) {
             ("pane.close", _) => Some((PromptKind::ClosePane, "Close this pane? (y/n) ")),
             ("window.rename", true) => Some((PromptKind::RenameWindow, "Window name: ")),
             ("session.rename", true) => Some((PromptKind::RenameSession, "Session name: ")),
-            ("session.new", true) => Some((PromptKind::NewSession, "Session name: ")),
             ("window.select", true) => {
                 Some((PromptKind::Argument("window.select"), "Window number: "))
             }
@@ -708,15 +712,47 @@ impl Server {
         }
     }
 
+    /// Make a session with the automatic name, show it at once, and ask for its name on its own
+    /// prompt. `typed` is what the prompt starts with (the text typed to filter a list, or empty).
+    pub(super) fn new_session_then_name(&mut self, session_id: u64, pane: u64, typed: String) {
+        let name = match self.new_session(Some(pane), None) {
+            Ok(name) => name,
+            Err(message) => {
+                self.set_error(session_id, &message);
+                return;
+            }
+        };
+        let Some(new_id) = self
+            .sessions
+            .values()
+            .find(|s| s.name == name)
+            .map(|s| s.id)
+        else {
+            return;
+        };
+        if let Some(s) = self.sessions.get_mut(&new_id) {
+            s.key_state.prompt = Some(PromptState {
+                kind: PromptKind::NameNewSession,
+                label: "Session name: ".to_string(),
+                text: typed,
+            });
+            s.chrome_dirty = true;
+        }
+    }
+
     fn accept_prompt(&mut self, session_id: u64) {
-        // A name that is in use keeps the prompt open, with the reason on the bar.
+        // A name that another session has keeps the prompt open, with the reason on the bar.
         let taken = self
             .sessions
             .get(&session_id)
             .and_then(|s| s.key_state.prompt.as_ref())
-            .filter(|p| p.kind == PromptKind::NewSession && !p.text.is_empty())
+            .filter(|p| p.kind == PromptKind::NameNewSession && !p.text.is_empty())
             .map(|p| p.text.clone())
-            .filter(|name| self.sessions.values().any(|s| &s.name == name));
+            .filter(|name| {
+                self.sessions
+                    .values()
+                    .any(|s| &s.name == name && s.id != session_id)
+            });
         if taken.is_some() {
             // The prompt holds the right end of the bar, so the reason is its own label.
             if let Some(s) = self.sessions.get_mut(&session_id)
@@ -735,16 +771,10 @@ impl Server {
         };
         let (name, args): (&str, Vec<String>) = match prompt.kind {
             PromptKind::ClosePane => ("pane.close", Vec::new()),
-            // An empty name is an answer: the session gets the automatic name.
-            PromptKind::NewSession => (
-                "session.new",
-                Some(prompt.text)
-                    .filter(|t| !t.is_empty())
-                    .into_iter()
-                    .collect(),
-            ),
-            // An empty window name is an answer: the window goes back to automatic naming.
+            // An empty window name is an answer: the window goes back to automatic naming. An
+            // empty name for a new session keeps its automatic name.
             PromptKind::RenameSession
+            | PromptKind::NameNewSession
             | PromptKind::Argument(_)
             | PromptKind::SearchForward
             | PromptKind::SearchBackward
@@ -758,7 +788,9 @@ impl Server {
                 return;
             }
             PromptKind::RenameWindow => ("window.rename", vec![prompt.text]),
-            PromptKind::RenameSession => ("session.rename", vec![prompt.text]),
+            PromptKind::RenameSession | PromptKind::NameNewSession => {
+                ("session.rename", vec![prompt.text])
+            }
             PromptKind::Argument(name) => (name, vec![prompt.text]),
         };
         let (ok, output) = self.run_command(name, &args, Some(pane));
