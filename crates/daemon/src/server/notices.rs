@@ -425,7 +425,7 @@ impl Server {
     }
 
     /// Only the bars of the sessions that hold `pane` are drawn again.
-    fn bar_changed(&mut self, pane: u64) {
+    pub(super) fn bar_changed(&mut self, pane: u64) {
         let owner = self.locate_pane(pane).map(|(s, _)| s);
         for s in self.sessions.values_mut() {
             if Some(s.id) == owner {

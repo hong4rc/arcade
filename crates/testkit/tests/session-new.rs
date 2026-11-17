@@ -46,8 +46,7 @@ fn open_prompt(client: &mut TestClient) {
 fn the_key_asks_for_a_name_makes_the_session_in_the_directory_of_the_pane_and_shows_it() {
     let daemon = TestDaemon::start();
     let mut client = start(&daemon);
-    client.type_line("mkdir -p inner && cd inner");
-    client.type_line("echo here-$((1+1))");
+    client.type_line("mkdir -p inner && cd inner && echo here-$((1+1))");
     client.wait_for_row("here-2").unwrap();
     open_prompt(&mut client);
     // Nothing is made before the name is entered.

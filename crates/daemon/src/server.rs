@@ -1758,6 +1758,7 @@ impl Server {
         let mut clipboard_writes = Vec::new();
         let mut signals = Vec::new();
         let mut title_changed = false;
+        let mut progress_changed = false;
 
         if pane.term.has_events() {
             // Who has the terminal now: a title belongs to the program that wrote it. Asked
@@ -1803,6 +1804,7 @@ impl Server {
                             .and_then(|_| pty::foreground_group(pane.master.as_raw_fd()))
                             .filter(|g| *g != pane.pid);
                         pane.progress_seq += 1;
+                        progress_changed = true;
                     }
                     TermEvent::Bell => signals.push(crate::notify::Signal::new(
                         crate::notify::Class::Info,
@@ -1831,6 +1833,11 @@ impl Server {
                     s.chrome_dirty = true;
                 }
             }
+        }
+        // The tab of the window shows the report, so the bar is drawn again at once; waiting for
+        // some other change of the bar left it out of date until the next one.
+        if progress_changed {
+            self.bar_changed(pane_id);
         }
         // Only the latest write counts, and it waits until the output has been passed on.
         if let Some(data) = clipboard_writes.pop() {
