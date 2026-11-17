@@ -62,6 +62,7 @@ pub fn cut_to_cells(text: &str, max: usize) -> String {
     out
 }
 
+#[derive(Clone)]
 pub struct Tab {
     /// The number shown, which is the window's place in the bar plus the base index.
     pub number: usize,
@@ -89,6 +90,7 @@ pub enum CommandMark {
 }
 
 /// A line the user types into.
+#[derive(Clone)]
 pub struct Prompt {
     pub label: String,
     pub text: String,
@@ -120,6 +122,7 @@ pub enum CopyState {
     Jump(String),
 }
 
+#[derive(Clone)]
 pub struct StatusInfo {
     pub session: String,
     /// Where the number stands in a tab.
@@ -786,6 +789,32 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
     if let Some(hint) = &info.hint {
         return (fit(text_cells(hint, bar), width, bar), None, Vec::new());
     }
+    // A message is painted over the right end of the bar as it would be without it: the tabs, the
+    // counter and the words stay where they are, and the cells under the message are replaced (a
+    // question that is typed into keeps its room instead, below).
+    if info.message.is_some() && info.prompt.is_none() {
+        let mut bare = info.clone();
+        bare.message = None;
+        let (mut cells, cursor, mut spans) = build_with_tabs(cols, &bare);
+        // One blank cell before it keeps it apart from what is left of a tab under its edge.
+        let (message, _) = message_cells(info, (width / 2).saturating_sub(1));
+        if message.is_empty() {
+            return (cells, cursor, spans);
+        }
+        let from = width.saturating_sub(message.len() + 1);
+        let painted = std::iter::once(blank(bar)).chain(message);
+        for (at, cell) in painted.enumerate() {
+            if let Some(under) = cells.get_mut(from + at) {
+                *under = cell;
+            }
+        }
+        // What is covered cannot be clicked.
+        spans.retain(|t| usize::from(t.from) < from);
+        for t in &mut spans {
+            t.to = t.to.min(from as u16);
+        }
+        return (cells, cursor, spans);
+    }
     let mut words: Vec<String> = Vec::new();
     if info.prefix {
         words.push("PREFIX".to_string());
@@ -1392,39 +1421,45 @@ mod tests {
                             .iter()
                             .any(|s| !s.marker && !s.counter && s.index == 1)
                     };
-                    // A prompt takes its room before the current tab does.
+                    // A prompt takes its room before the current tab does; a message is painted
+                    // over the right end, so the current tab shows unless it lies under it.
                     if shows(&quiet_spans) && name != "question" && name != "prompt" {
-                        assert!(shows(&spans), "the current tab is gone: {context}");
+                        let covered = usize::from(width) - piece;
+                        let tab = quiet_spans
+                            .iter()
+                            .find(|s| !s.marker && !s.counter && s.index == 1);
+                        assert!(
+                            shows(&spans) || tab.is_some_and(|t| usize::from(t.to) > covered),
+                            "the current tab is gone: {context}"
+                        );
                     }
                 }
             }
         }
     }
 
-    /// With a mode word too, the word is at the far right, the message left of it, and together
-    /// they keep to half the screen.
+    /// With a mode word too, the message is painted at the far right over it, within half the
+    /// screen, and the word keeps its place under it.
     #[test]
-    fn a_message_stands_left_of_the_mode_word_and_both_keep_to_half_the_screen() {
+    fn a_message_is_painted_over_the_mode_word_and_keeps_to_half_the_screen() {
         for style in [TabStyle::Pill, TabStyle::Flat] {
             let (_, i) = lines_to_try(style).swap_remove(8);
-            for width in 40u16..=200 {
+            for width in 60u16..=200 {
                 let (cells, _) = build(width, &i);
                 let line = text(&cells);
+                let trimmed = line.trim_end_matches('\u{e0b4}').trim_end();
+                assert!(trimmed.ends_with("no binding for z"), "{width}: {line:?}");
+                let m = line.find("no binding").unwrap();
+                let from = line[..m].chars().count();
                 assert!(
-                    line.trim_end_matches('\u{e0b4}')
-                        .trim_end()
-                        .ends_with("PREFIX"),
+                    usize::from(width) - from <= usize::from(width) / 2 + 4,
                     "{width}: {line:?}"
                 );
-                if let (Some(m), Some(p)) = (line.find("no binding"), line.find("PREFIX")) {
-                    assert!(m < p, "{width}: {line:?}");
-                    // From the start of the message to the end of the row.
-                    let from = line[..m].chars().count();
-                    assert!(
-                        usize::from(width) - from <= usize::from(width) / 2 + 4,
-                        "{width}: {line:?}"
-                    );
-                }
+                // Without the message the word is at the right end, where the message is now.
+                let mut quiet = i.clone();
+                quiet.message = None;
+                let quiet_line = text(&build(width, &quiet).0);
+                assert!(quiet_line.contains("PREFIX"), "{width}: {quiet_line:?}");
             }
         }
     }
@@ -2739,6 +2774,87 @@ mod tests {
                         if first > 0 || last + 1 < i.tabs.len() {
                             assert!(compact_all > usize::from(width), "{ctx}: {}", text(&cells));
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A crowded bar: many tabs with long names, the counter for another session and a message.
+    fn crowded(tabs: usize) -> StatusInfo {
+        let mut i = info();
+        i.tabs = (0..tabs)
+            .map(|n| Tab {
+                number: n + 1,
+                text: vec![TabPiece::plain(format!("window-name-{n}"))],
+                current: n == tabs / 2,
+                zoomed: false,
+                notice: None,
+                progress: None,
+                command: None,
+            })
+            .collect();
+        i.notices = [1, 0, 0, 2];
+        i.notice_sessions = vec!["hahaa".to_string()];
+        i
+    }
+
+    #[test]
+    fn a_message_is_painted_over_the_right_end_and_nothing_is_laid_out_again() {
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            for tabs in [2, 6, 12, 30] {
+                for width in [20u16, 40, 60, 80, 100, 160] {
+                    let mut bare = crowded(tabs);
+                    bare.style = style;
+                    let mut said = crowded(tabs);
+                    said.style = style;
+                    said.message = Some("config reloaded".into());
+                    let ctx = format!("{style:?} {tabs} tabs {width} columns");
+                    let (before, _, spans_before) = build_with_tabs(width, &bare);
+                    let (after, _, spans_after) = build_with_tabs(width, &said);
+                    assert_eq!(after.len(), usize::from(width), "{ctx}");
+                    // Every cell that changed is within the right half of the bar.
+                    let changed: Vec<usize> = (0..before.len())
+                        .filter(|&c| {
+                            before[c].text != after[c].text || before[c].style != after[c].style
+                        })
+                        .collect();
+                    let half = usize::from(width) / 2;
+                    assert!(
+                        changed.iter().all(|&c| c >= usize::from(width) - half),
+                        "{ctx}: {changed:?}"
+                    );
+                    // The message is there, at the right end, and fills what it changed.
+                    let line = text(&after);
+                    assert!(
+                        line.contains("config reloaded") || width < 60,
+                        "{ctx}: {line}"
+                    );
+                    if let Some(&first) = changed.first() {
+                        assert!(first >= half, "{ctx}");
+                    }
+                    // The tabs and the counter are where they were, except where covered.
+                    let covered = changed.first().copied().unwrap_or(usize::from(width));
+                    let before_spans: Vec<_> = spans_before
+                        .iter()
+                        .filter(|t| usize::from(t.from) < covered)
+                        .map(|t| {
+                            (
+                                t.index,
+                                t.from,
+                                t.to.min(covered as u16),
+                                t.marker,
+                                t.counter,
+                            )
+                        })
+                        .collect();
+                    let after_spans: Vec<_> = spans_after
+                        .iter()
+                        .map(|t| (t.index, t.from, t.to, t.marker, t.counter))
+                        .collect();
+                    assert_eq!(before_spans, after_spans, "{ctx}");
+                    for c in 0..covered {
+                        assert_eq!(before[c].text, after[c].text, "{ctx} column {c}");
                     }
                 }
             }
