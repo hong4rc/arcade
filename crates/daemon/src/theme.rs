@@ -82,6 +82,7 @@ mod palette {
     pub const YELLOW: Color = Color::Rgb(0xe5, 0xc8, 0x90);
     pub const PINK: Color = Color::Rgb(0xf4, 0xb8, 0xe4);
     pub const TEAL: Color = Color::Rgb(0x81, 0xc8, 0xbe);
+    pub const BLUE: Color = Color::Rgb(0x8c, 0xaa, 0xee);
 }
 
 fn on(fg: Color, bg: Color) -> Style {
@@ -299,25 +300,6 @@ pub fn notice_style(class: crate::notify::Class) -> Style {
     })
 }
 
-/// The mark of a class on a block of the bar that is not its own chip: the symbol in the class's
-/// colour, as red, green and blue, on the block's own background, so that a pill stays one shape.
-/// The colours are the four of the palette of the tabs (approval red, input yellow, error pink,
-/// info teal), made lighter only as far as it takes to read at a contrast of 4.5 on that block.
-pub fn mark_on(class: crate::notify::Class, block: Style) -> Style {
-    let colour = match class {
-        crate::notify::Class::Approval => palette::RED,
-        crate::notify::Class::Input => palette::YELLOW,
-        crate::notify::Class::Error => palette::PINK,
-        crate::notify::Class::Info => palette::TEAL,
-    };
-    Style {
-        fg: readable_on(colour, block.bg),
-        bg: block.bg,
-        bold: true,
-        ..Style::default()
-    }
-}
-
 /// The mark of a class: one cell wide wherever it is drawn (tab, count, pane, lists), a shape of
 /// its own so that colour is not all that tells the classes apart, and a shape that text does
 /// not use, so that a line of a list can be searched for it.
@@ -330,25 +312,65 @@ pub fn notice_symbol(class: crate::notify::Class) -> &'static str {
     }
 }
 
-/// How many cells the progress mark of a tab takes whenever it shows, so that a tab changes
-/// width only when a report appears or goes.
-pub const PROGRESS_MARK_WIDTH: usize = 4;
+/// What colours the one status cell of a tab: a class of notification, or a kind of progress
+/// report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tint {
+    Class(crate::notify::Class),
+    /// A progress report that failed.
+    ProgressError,
+    /// A progress report with a value, or with an unknown amount.
+    Progress,
+    /// A progress report that is paused: the same block, dimmer.
+    Paused,
+}
 
-/// What the tab of a window says about a progress report of one of its panes, always
-/// [`PROGRESS_MARK_WIDTH`] cells: the percentage right-aligned (`  9%`, ` 42%`, `100%`); `x` and
-/// two digits for an error (`x30%`, ` err` when it has no value); `p` and two digits for a
-/// pause (`p55%`); ` ...` when the amount is unknown. An error or a pause at 100 shows 99.
-pub fn progress_mark(report: arcade_term::Progress) -> String {
-    let two = report.value.min(99);
-    let mark = match report.state {
-        1 => format!("{:>3}%", report.value.min(100)),
-        2 if report.value == 0 => " err".to_string(),
-        2 => format!("x{two:>2}%"),
-        3 => " ...".to_string(),
-        _ => format!("p{two:>2}%"),
+/// The symbol of the status cell for a progress report that failed. One cell wide, a shape of its
+/// own (the notification marks are filled shapes).
+pub const PROGRESS_ERROR_SYMBOL: &str = "✗";
+
+/// The symbol of the status cell for a progress report with no amount: static, one cell wide.
+pub const BUSY_SYMBOL: &str = "⟳";
+
+/// The eight level blocks, from a sliver to the full cell.
+const LEVEL_BLOCKS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+
+/// The level block for a value of 0 to 100: 0 to 12 the lowest, 88 to 100 the full block.
+pub fn level_block(value: u8) -> &'static str {
+    LEVEL_BLOCKS[(usize::from(value.min(100)) * 8 / 100).min(7)]
+}
+
+/// The status cell's symbol in a colour on the block it stands on, as the marks of the classes:
+/// the palette's colour, made lighter only as far as it takes to read at a contrast of 4.5.
+pub fn cell_style(tint: Tint, block: Style) -> Style {
+    let colour = match tint {
+        Tint::Class(crate::notify::Class::Approval) => palette::RED,
+        Tint::Class(crate::notify::Class::Input) => palette::YELLOW,
+        Tint::Class(crate::notify::Class::Error) => palette::PINK,
+        Tint::Class(crate::notify::Class::Info) => palette::TEAL,
+        Tint::ProgressError => palette::RED,
+        Tint::Progress => palette::BLUE,
+        Tint::Paused => palette::OVERLAY2,
     };
-    debug_assert_eq!(mark.chars().count(), PROGRESS_MARK_WIDTH);
-    mark
+    Style {
+        fg: readable_on(colour, block.bg),
+        bg: block.bg,
+        bold: true,
+        ..Style::default()
+    }
+}
+
+/// What a list says about a progress report, in words: `42%`, `error 30%`, `error`, `paused 55%`,
+/// `working` (an unknown amount). An error or a pause at 100 shows 99.
+pub fn progress_text(report: arcade_term::Progress) -> String {
+    let two = report.value.min(99);
+    match report.state {
+        1 => format!("{}%", report.value.min(100)),
+        2 if report.value == 0 => "error".to_string(),
+        2 => format!("error {two}%"),
+        3 => "working".to_string(),
+        _ => format!("paused {two}%"),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -492,7 +514,7 @@ mod tests {
                 Role::PillNameCurrent,
                 Role::PillBadge,
             ] {
-                let on_block = mark_on(class, style(role));
+                let on_block = cell_style(Tint::Class(class), style(role));
                 if role == Role::PillBadge {
                     continue;
                 }

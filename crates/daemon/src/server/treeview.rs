@@ -69,12 +69,26 @@ impl Server {
                         .highest(w.layout.rects().into_iter().map(|(p, _)| p)),
                     key: TreeKey::Window(w.id),
                     label: format!(
-                        "{} {}",
+                        "{} {}{}",
                         w.number,
                         super::frame::tab_text(&self.config, &self.panes, w)
                             .into_iter()
                             .map(|p| p.text)
-                            .collect::<String>()
+                            .collect::<String>(),
+                        // What the tab shows as one symbol, the list says in words.
+                        self.panes
+                            .get(&w.focus)
+                            .and_then(|p| p.progress)
+                            .or_else(|| {
+                                w.layout
+                                    .rects()
+                                    .into_iter()
+                                    .find_map(|(p, _)| self.panes.get(&p).and_then(|p| p.progress))
+                            })
+                            .map_or(String::new(), |r| format!(
+                                " ({})",
+                                crate::theme::progress_text(r)
+                            ))
                     ),
                     parent: Some(session_at),
                     here: window_here,
@@ -121,6 +135,9 @@ impl Server {
         {
             label.push_str(" running ");
             label.push_str(&running);
+        }
+        if let Some(report) = p.progress {
+            label.push_str(&format!(" ({})", crate::theme::progress_text(report)));
         }
         label
     }

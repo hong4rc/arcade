@@ -176,7 +176,7 @@ fn closing_a_pane_takes_its_progress_and_its_notification_with_it() {
     let second = client.focused_pane_id();
     client.type_line("printf '\\033]9;4;1;40\\033\\\\'; echo shown");
     assert!(
-        client.wait_until(WAIT, |c| c.status_row().contains("40%")),
+        client.wait_until(WAIT, |c| c.status_row().contains('\u{2584}')),
         "{}",
         client.status_row()
     );
@@ -190,7 +190,7 @@ fn closing_a_pane_takes_its_progress_and_its_notification_with_it() {
         .command_from(Some(second), "pane.close", &[])
         .unwrap();
     assert!(
-        client.wait_until(WAIT, |c| !c.status_row().contains("40%")),
+        client.wait_until(WAIT, |c| !c.status_row().contains('◆')),
         "{}",
         client.status_row()
     );

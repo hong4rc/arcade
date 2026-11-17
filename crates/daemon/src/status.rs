@@ -195,21 +195,11 @@ fn tab_cells_with(tab: &Tab, pieces: &[TabPiece], info: &StatusInfo) -> Vec<Cell
             name,
         ));
     }
-    if let Some(class) = tab.notice {
-        text.extend(text_cells(" ", name));
-        text.extend(text_cells(
-            theme::notice_symbol(class),
-            mark_style(class, name, info),
-        ));
-    }
-    if let Some(report) = tab.progress {
-        text.extend(text_cells(" ", name));
-        let style = if report.state == 2 {
-            mark_style(Class::Error, name, info)
-        } else {
-            name
-        };
-        text.extend(text_cells(&theme::progress_mark(report), style));
+    // The one status cell: always there, so a tab's width does not depend on what it says.
+    text.extend(text_cells(" ", name));
+    match status_mark(tab) {
+        Some(mark) => text.extend(mark_cells(mark, name)),
+        None => text.extend(text_cells(" ", name)),
     }
     text.extend(text_cells(" ", name));
     let number = text_cells(&format!(" {} ", tab.number), badge);
@@ -226,13 +216,69 @@ fn tab_cells_with(tab: &Tab, pieces: &[TabPiece], info: &StatusInfo) -> Vec<Cell
     )
 }
 
-/// The mark of a notification on a tab: in the pill style the symbol in the class's colour on the
-/// pill's own background, so the pill stays one shape; in the flat style a chip of its own.
-fn mark_style(class: Class, block: arcade_term::Style, info: &StatusInfo) -> arcade_term::Style {
-    match info.style {
-        TabStyle::Pill => theme::mark_on(class, block),
-        TabStyle::Flat => theme::notice_style(class),
+/// What the one status cell of a tab shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    /// A notification of the window's panes.
+    Notice(Class),
+    /// A progress report that failed.
+    ProgressError,
+    /// A progress report with a value (`paused` when it is paused).
+    Level { value: u8, paused: bool },
+    /// A progress report with an unknown amount.
+    Busy,
+}
+
+impl Mark {
+    /// How urgent the mark is; the smaller, the more.
+    fn rank(self) -> usize {
+        let class = |c: Class| Class::BY_URGENCY.iter().position(|b| *b == c).unwrap_or(0);
+        match self {
+            Mark::Notice(c) if c != Class::Info => class(c),
+            Mark::ProgressError => 10,
+            Mark::Level { .. } => 20,
+            Mark::Busy => 30,
+            Mark::Notice(c) => 40 + class(c),
+        }
     }
+}
+
+/// The mark a tab shows, the most urgent of what it knows: a notification that asks for you or
+/// reports an error, a failed progress report, a progress report with a value, one with an
+/// unknown amount, then a notification that something finished.
+pub fn status_mark(tab: &Tab) -> Option<Mark> {
+    let progress = tab.progress.and_then(|r| match r.state {
+        1 | 4 => Some(Mark::Level {
+            value: r.value,
+            paused: r.state == 4,
+        }),
+        2 => Some(Mark::ProgressError),
+        3 => Some(Mark::Busy),
+        _ => None,
+    });
+    tab.notice
+        .map(Mark::Notice)
+        .into_iter()
+        .chain(progress)
+        .min_by_key(|m| m.rank())
+}
+
+/// The cell of a mark on the block it stands on, in the mark's colour.
+fn mark_cells(mark: Mark, block: arcade_term::Style) -> Vec<Cell> {
+    let (symbol, tint) = match mark {
+        Mark::Notice(class) => (theme::notice_symbol(class), theme::Tint::Class(class)),
+        Mark::ProgressError => (theme::PROGRESS_ERROR_SYMBOL, theme::Tint::ProgressError),
+        Mark::Level { value, paused } => (
+            theme::level_block(value),
+            if paused {
+                theme::Tint::Paused
+            } else {
+                theme::Tint::Progress
+            },
+        ),
+        Mark::Busy => (theme::BUSY_SYMBOL, theme::Tint::Progress),
+    };
+    text_cells(symbol, theme::cell_style(tint, block))
 }
 
 /// A laid-out bar: its cells and, for each tab or marker, its index (for a marker the nearest
@@ -389,15 +435,14 @@ fn marker_cells(
         MarkerLevel::Short => arrow.to_string(),
     };
     let mut cells = text_cells(&text, bar);
+    // The most urgent notification or failed report among the hidden tabs.
     let urgent = hidden
         .clone()
-        .filter_map(|i| info.tabs[i].notice)
-        .min_by_key(|c| Class::BY_URGENCY.iter().position(|b| b == c));
-    if let Some(class) = urgent {
-        cells.extend(text_cells(
-            theme::notice_symbol(class),
-            theme::mark_on(class, bar),
-        ));
+        .filter_map(|i| status_mark(&info.tabs[i]))
+        .filter(|m| matches!(m, Mark::Notice(_) | Mark::ProgressError))
+        .min_by_key(|m| m.rank());
+    if let Some(mark) = urgent {
+        cells.extend(mark_cells(mark, bar));
     }
     let nearest = if before {
         *hidden.end()
@@ -707,8 +752,8 @@ mod tests {
         assert!(cursor.is_none());
         let line = text(&cells);
         assert!(line.contains(" work "), "{line}");
-        assert!(line.contains(" sh  1 "), "{line}");
-        assert!(line.contains(" vim [Z]  2 "), "{line}");
+        assert!(line.contains(" sh    1 "), "{line}");
+        assert!(line.contains(" vim [Z]    2 "), "{line}");
         let at = |needle: &str| cells[line[..line.find(needle).unwrap()].chars().count()].style;
         assert_eq!(at("vim"), theme::style(Role::PillNameCurrent));
         assert_eq!(at("sh"), theme::style(Role::PillName));
@@ -728,12 +773,12 @@ mod tests {
         assert_eq!(spans[0].index, 0);
         assert_eq!(
             (spans[0].from, spans[0].to),
-            (col(" sh  1 "), col(" sh  1 ") + 7)
+            (col(" sh    1 "), col(" sh    1 ") + 9)
         );
         assert_eq!(spans[1].index, 1);
         // One cell of the bar between two tabs, which belongs to neither.
         assert_eq!(spans[1].from, spans[0].to + 1);
-        assert_eq!(spans[1].to, spans[1].from + " vim [Z]  2 ".len() as u16);
+        assert_eq!(spans[1].to, spans[1].from + " vim [Z]    2 ".len() as u16);
         // Too narrow for both: the first tab is hidden, a marker at the left stands for it (a
         // click on the marker selects it) and the tab of the window you are in shows whole.
         let (_, _, narrow) = build_with_tabs(18, &info());
@@ -822,68 +867,202 @@ mod tests {
         assert_eq!(cursor, Some(11));
     }
 
-    #[test]
-    fn a_tab_with_a_progress_report_shows_its_mark_after_the_name() {
+    /// A tab that says nothing, and the same tab with a mark of every kind.
+    fn marks_to_try() -> Vec<(&'static str, Option<Class>, Option<arcade_term::Progress>)> {
         use arcade_term::Progress;
-        let mut i = info();
-        i.tabs[0].progress = Some(Progress {
-            state: 1,
-            value: 42,
-        });
-        i.tabs[1].progress = Some(Progress { state: 2, value: 0 });
-        let (cells, _, spans) = build_with_tabs(80, &i);
-        let line = text(&cells);
-        assert!(line.contains(" sh  42%  1 "), "{line}");
-        assert!(line.contains(" vim [Z]  err  2 "), "{line}");
-        let at = |needle: &str| cells[line[..line.find(needle).unwrap()].chars().count()].style;
-        assert_eq!(at("42%"), theme::style(Role::PillName));
-        assert_eq!(at("err"), theme::notice_style(Class::Error));
-        // The mark belongs to its tab: a click on it is a click on the tab.
-        assert_eq!(spans[0].to as usize, line.find("42%").unwrap() + 7);
-        for (state, value, want) in [
-            (1, 9, "  9%"),
-            (1, 100, "100%"),
-            (2, 30, "x30%"),
-            (2, 100, "x99%"),
-            (3, 0, " ..."),
-            (4, 55, "p55%"),
-        ] {
-            assert_eq!(theme::progress_mark(Progress { state, value }), want);
+        let p = |state, value| Some(Progress { state, value });
+        vec![
+            ("nothing", None, None),
+            ("approval", Some(Class::Approval), None),
+            ("input", Some(Class::Input), None),
+            ("error", Some(Class::Error), None),
+            ("info", Some(Class::Info), None),
+            ("value 0", None, p(1, 0)),
+            ("value 42", None, p(1, 42)),
+            ("value 100", None, p(1, 100)),
+            ("failed", None, p(2, 0)),
+            ("failed 30", None, p(2, 30)),
+            ("busy", None, p(3, 0)),
+            ("paused", None, p(4, 55)),
+            ("error over 40%", Some(Class::Error), p(1, 40)),
+            ("info over busy", Some(Class::Info), p(3, 0)),
+        ]
+    }
+
+    /// Every tab has one status cell that is always there: a tab is as wide with a mark of any
+    /// kind as with none, in both styles and at the three places of the number, so the tabs to its
+    /// right never move.
+    #[test]
+    fn a_tab_is_as_wide_with_every_mark_as_with_none() {
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            for number in [
+                NumberPosition::Left,
+                NumberPosition::Right,
+                NumberPosition::Off,
+            ] {
+                let spans_with = |notice, progress| {
+                    let mut i = info();
+                    i.style = style;
+                    i.number = number;
+                    i.tabs[0].notice = notice;
+                    i.tabs[0].progress = progress;
+                    build_with_tabs(120, &i).2
+                };
+                let none = spans_with(None, None);
+                for (name, notice, progress) in marks_to_try() {
+                    let other = spans_with(notice, progress);
+                    assert_eq!(other.len(), none.len(), "{name}");
+                    for (a, b) in other.iter().zip(&none) {
+                        assert_eq!(
+                            (a.from, a.to),
+                            (b.from, b.to),
+                            "{style:?} {number:?} {name}"
+                        );
+                    }
+                }
+            }
         }
     }
 
+    /// Each state draws its own symbol after the name, in its colour, in both styles.
     #[test]
-    fn the_tab_has_the_same_width_for_every_value_and_state_so_the_tabs_to_its_right_stay() {
+    fn the_status_cell_draws_the_symbol_of_the_state() {
         use arcade_term::Progress;
-        let spans_with = |report: Option<Progress>| {
-            let mut i = info();
-            i.tabs[0].progress = report;
-            let (_, _, spans) = build_with_tabs(80, &i);
-            spans
+        let wanted = |notice: Option<Class>, progress: Option<Progress>| -> &'static str {
+            match (notice, progress) {
+                (Some(c), _) if c != Class::Info => theme::notice_symbol(c),
+                (_, Some(Progress { state: 2, .. })) => theme::PROGRESS_ERROR_SYMBOL,
+                (
+                    _,
+                    Some(Progress {
+                        state: 1 | 4,
+                        value,
+                    }),
+                ) => theme::level_block(value),
+                (_, Some(Progress { state: 3, .. })) => theme::BUSY_SYMBOL,
+                (Some(c), _) => theme::notice_symbol(c),
+                _ => " ",
+            }
         };
-        let shown = spans_with(Some(Progress { state: 1, value: 9 }));
-        let width = |s: &[TabSpan]| s[0].to - s[0].from;
-        for (state, value) in [
-            (1, 0),
-            (1, 42),
-            (1, 100),
-            (2, 0),
-            (2, 7),
-            (2, 100),
-            (3, 0),
-            (4, 5),
-            (4, 100),
-        ] {
-            let other = spans_with(Some(Progress { state, value }));
-            assert_eq!(width(&other), width(&shown), "{state} {value}");
-            assert_eq!(other[1].from, shown[1].from, "{state} {value}");
-            assert_eq!(other[1].to, shown[1].to, "{state} {value}");
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            for (name, notice, progress) in marks_to_try() {
+                let mut i = info();
+                i.style = style;
+                i.tabs[0].notice = notice;
+                i.tabs[0].progress = progress;
+                let (cells, _, spans) = build_with_tabs(120, &i);
+                // The cell is the third from the end of the tab's text: the cell, a space, and the
+                // number's badge follow.
+                let line = text(&cells);
+                let tab = shown_text(&cells, &spans[0]);
+                assert!(
+                    tab.contains(&format!("sh {} ", wanted(notice, progress))),
+                    "{style:?} {name}: {tab:?} in {line:?}"
+                );
+            }
         }
-        // Only the appearing of a report moves the tabs, by the mark and the blank before it.
-        let none = spans_with(None);
+        // The colours: a level in the progress colour, a pause dimmer, a failure and an
+        // approval notification red, each readable on the tab.
+        let block = theme::style(Role::PillName);
+        let colour = |tint| theme::cell_style(tint, block).fg;
+        assert_ne!(colour(theme::Tint::Progress), colour(theme::Tint::Paused));
+        assert_ne!(
+            colour(theme::Tint::Progress),
+            colour(theme::Tint::ProgressError)
+        );
+        assert_ne!(
+            colour(theme::Tint::ProgressError),
+            colour(theme::Tint::Class(Class::Info))
+        );
+    }
+
+    /// The more urgent state wins: a notification that asks for you or reports an error, a failed
+    /// report, a value, an unknown amount, then a finished notification.
+    #[test]
+    fn the_status_cell_shows_the_most_urgent_state() {
+        use arcade_term::Progress;
+        let tab = |notice, progress| Tab {
+            number: 1,
+            text: vec![],
+            current: false,
+            zoomed: false,
+            notice,
+            progress,
+        };
+        let p = |state, value| Some(Progress { state, value });
+        let mark = |notice, progress| status_mark(&tab(notice, progress));
+        assert_eq!(mark(None, None), None);
         assert_eq!(
-            usize::from(shown[1].from - none[1].from),
-            theme::PROGRESS_MARK_WIDTH + 1
+            mark(Some(Class::Error), p(1, 40)),
+            Some(Mark::Notice(Class::Error))
+        );
+        assert_eq!(
+            mark(Some(Class::Input), p(2, 0)),
+            Some(Mark::Notice(Class::Input))
+        );
+        assert_eq!(mark(None, p(2, 5)), Some(Mark::ProgressError));
+        assert_eq!(mark(Some(Class::Info), p(2, 5)), Some(Mark::ProgressError));
+        assert_eq!(
+            mark(Some(Class::Info), p(1, 40)),
+            Some(Mark::Level {
+                value: 40,
+                paused: false
+            })
+        );
+        assert_eq!(mark(Some(Class::Info), p(3, 0)), Some(Mark::Busy));
+        assert_eq!(
+            mark(Some(Class::Info), None),
+            Some(Mark::Notice(Class::Info))
+        );
+        assert_eq!(
+            mark(None, p(4, 20)),
+            Some(Mark::Level {
+                value: 20,
+                paused: true
+            })
+        );
+        // A value outranks an unknown amount only through the report itself: one report per tab.
+        assert_eq!(mark(None, p(0, 0)), None);
+    }
+
+    /// The eight level blocks: 0 to 12 the lowest, 88 to 100 the full block.
+    #[test]
+    fn the_level_block_follows_the_value_in_eight_steps() {
+        let blocks: Vec<&str> = (0..=100).map(theme::level_block).collect();
+        assert_eq!(blocks[0], "\u{2581}");
+        assert_eq!(blocks[12], "\u{2581}");
+        assert_eq!(blocks[13], "\u{2582}");
+        assert_eq!(blocks[87], "\u{2587}");
+        assert_eq!(blocks[88], "\u{2588}");
+        assert_eq!(blocks[100], "\u{2588}");
+        assert!(blocks.windows(2).all(|w| w[0] <= w[1]));
+        // Every symbol of the cell is one cell wide in the pane.
+        for symbol in blocks
+            .iter()
+            .copied()
+            .chain([theme::BUSY_SYMBOL, theme::PROGRESS_ERROR_SYMBOL])
+        {
+            assert_eq!(crate::width::text_width(symbol), 1, "{symbol}");
+        }
+    }
+
+    /// A hidden tab with a failed report is as urgent as one with a notification of an error: the
+    /// marker of the hidden tabs carries it.
+    #[test]
+    fn the_marker_of_hidden_tabs_carries_a_failed_report() {
+        let mut i = four_windows();
+        i.tabs[0].progress = Some(arcade_term::Progress { state: 2, value: 0 });
+        i.tabs[1].progress = Some(arcade_term::Progress {
+            state: 1,
+            value: 50,
+        });
+        let (cells, _, spans) = build_with_tabs(40, &i);
+        assert!(spans.iter().any(|s| s.marker), "{}", text(&cells));
+        let line = text(&cells);
+        assert!(line.contains(theme::PROGRESS_ERROR_SYMBOL), "{line}");
+        assert!(
+            !line.contains(theme::level_block(50)) || !line.contains("‹"),
+            "{line}"
         );
     }
 
@@ -1014,10 +1193,6 @@ mod tests {
                             shown.contains(mark),
                             "width {width} {style:?} {number:?}: {shown:?}"
                         );
-                        assert!(
-                            shown.contains("40%"),
-                            "width {width} {style:?} {number:?}: {shown:?}"
-                        );
                     }
                 }
                 if width >= 40 {
@@ -1061,9 +1236,9 @@ mod tests {
     #[test]
     fn the_number_goes_right_left_or_nowhere() {
         for (position, want) in [
-            (NumberPosition::Right, " sh  1 "),
-            (NumberPosition::Left, " 1  sh "),
-            (NumberPosition::Off, " sh "),
+            (NumberPosition::Right, " sh    1 "),
+            (NumberPosition::Left, " 1  sh   "),
+            (NumberPosition::Off, " sh   "),
         ] {
             let mut i = info();
             i.number = position;
@@ -1308,7 +1483,10 @@ mod tests {
             assert_eq!(shown, format!("{arrow}2{approval}"), "{style:?}: {line}");
             // The mark is in its colour, on the bar's own background.
             let mark = cells[usize::from(left.to) - 1].style;
-            let want = theme::mark_on(Class::Approval, theme::style(Role::StatusBar));
+            let want = theme::cell_style(
+                theme::Tint::Class(Class::Approval),
+                theme::style(Role::StatusBar),
+            );
             assert_eq!(mark, want, "{style:?}");
             // At the right end, tabs hidden after the last one that shows.
             let (cells, _, spans) = build_with_tabs(30, &i);

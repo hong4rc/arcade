@@ -137,14 +137,14 @@ fn the_tab_of_a_window_shows_the_progress_of_its_panes_until_it_is_removed() {
     let daemon = TestDaemon::start();
     let mut client = start(&daemon);
     client.type_line(&report(1, 42));
-    assert!(client.wait_until(WAIT, |c| c.screen_text().contains("42%")));
+    assert!(client.wait_until(WAIT, |c| c.screen_text().contains('\u{2584}')));
     client.type_line(&report(2, 0));
-    let bar_ends_in_x = |c: &mut TestClient| c.status_row().contains(" err");
+    let bar_ends_in_x = |c: &mut TestClient| c.status_row().contains('\u{2717}');
     assert!(client.wait_until(WAIT, bar_ends_in_x));
     client.type_line(&report(0, 0));
     assert!(client.wait_until(WAIT, |c| {
         let text = c.screen_text();
-        !text.contains("42%") && !c.status_row().contains(" err")
+        !text.contains('\u{2584}') && !c.status_row().contains('\u{2717}')
     }));
 }
 
@@ -161,7 +161,7 @@ fn a_report_that_says_the_same_again_does_not_redraw_the_bar() {
     let daemon = TestDaemon::start();
     let mut client = start(&daemon);
     client.type_line(&report(1, 42));
-    assert!(client.wait_until(WAIT, |c| c.screen_text().contains("42%")));
+    assert!(client.wait_until(WAIT, |c| c.screen_text().contains('\u{2584}')));
     // The count sees a write of the bar: showing the first report wrote it.
     assert!(bar_writes_since(&client, 0) >= 1);
     let lap = |client: &mut TestClient, body: &str, marker: &str| {

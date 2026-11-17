@@ -66,13 +66,13 @@ fn goes_to_the_tab_that_was_clicked(position: StatusPosition) {
     let mut client = three_windows(&daemon, 100);
     let (y, bar) = bar_row(&client, top);
     // Window C is shown. Click the tab of A, then of B, then the tab that is already shown.
-    click(&mut client, column_of(&bar, "A  1"), y);
+    click(&mut client, column_of(&bar, "A    1"), y);
     assert!(shows(&mut client, "A"), "{}", client.screen_text());
     let (y, bar) = bar_row(&client, top);
-    click(&mut client, column_of(&bar, "B  2") + 1, y);
+    click(&mut client, column_of(&bar, "B    2") + 1, y);
     assert!(shows(&mut client, "B"));
     let (y, bar) = bar_row(&client, top);
-    click(&mut client, column_of(&bar, "B  2"), y);
+    click(&mut client, column_of(&bar, "B    2"), y);
     quiet(&mut client);
     assert!(client.screen_text().contains("here-B"));
 }
@@ -98,7 +98,7 @@ fn the_session_name_the_gaps_and_the_right_hand_words_do_nothing() {
     quiet(&mut client);
     assert!(client.screen_text().contains("here-C"));
     // A right-button press and the wheel on a tab do nothing either.
-    let x = column_of(&bar, "A  1");
+    let x = column_of(&bar, "A    1");
     client.send(format!("\x1b[<2;{};{}M\x1b[<2;{};{}m", x + 1, y + 1, x + 1, y + 1).as_bytes());
     client.send(format!("\x1b[<64;{};{}M", x + 1, y + 1).as_bytes());
     quiet(&mut client);
@@ -115,7 +115,7 @@ fn the_click_is_the_bars_even_when_the_program_asked_for_the_mouse() {
         c.screen_rows().iter().any(|r| r.ends_with("ready"))
     }));
     let (y, bar) = bar_row(&client, false);
-    let x = column_of(&bar, "A  1");
+    let x = column_of(&bar, "A    1");
     // Press, a drag along the bar and the release.
     client.send(format!("\x1b[<0;{};{}M", x + 1, y + 1).as_bytes());
     assert!(shows(&mut client, "A"));
@@ -136,14 +136,14 @@ fn a_narrow_bar_cuts_the_tabs_but_keeps_the_tab_of_the_window_you_are_in() {
     let mut client = three_windows(&daemon, 16);
     let (y, bar) = bar_row(&client, false);
     // The window you are in (C) always shows; the tabs before it give way, and A is gone.
-    assert!(bar.contains("C  3") && !bar.contains("A  1"), "{bar:?}");
+    assert!(bar.contains("C    3") && !bar.contains("A    1"), "{bar:?}");
     // Clicking the tab of the window you are in changes nothing.
-    click(&mut client, column_of(&bar, "C  3"), y);
+    click(&mut client, column_of(&bar, "C    3"), y);
     quiet(&mut client);
     assert!(client.screen_text().contains("here-C"));
     // The tab of B shows in part (or whole), and clicking it goes there.
-    if bar.contains("B  2") {
-        click(&mut client, column_of(&bar, "B  2"), y);
+    if bar.contains("B    2") {
+        click(&mut client, column_of(&bar, "B    2"), y);
         assert!(shows(&mut client, "B"), "{}", client.screen_text());
     }
     // A tab that is cut away leads nowhere: the session's name does nothing.
@@ -181,7 +181,10 @@ fn a_click_on_the_marker_of_hidden_tabs_shows_the_nearest_hidden_window() {
     let mut client = three_windows(&daemon, 24);
     let (y, bar) = bar_row(&client, true);
     assert!(bar.contains('‹'), "{bar:?}");
-    assert!(!bar.contains("A  1"), "window A should be hidden: {bar:?}");
+    assert!(
+        !bar.contains("A    1"),
+        "window A should be hidden: {bar:?}"
+    );
     // The marker at the left selects window B, the nearest one that is hidden.
     click(&mut client, column_of(&bar, "‹"), y);
     assert!(shows(&mut client, "B"), "{}", client.screen_text());

@@ -223,7 +223,7 @@ fn six_windows(daemon: &TestDaemon, client: &mut TestClient) {
         run(daemon, "window.rename", &[name]);
     }
     run(daemon, "window.select", &["1"]);
-    status_has(client, " F  6 ");
+    status_has(client, " F    6 ");
 }
 
 /// Ctrl+h, Ctrl+Shift+h and Ctrl+Shift+`.` as a terminal with the keyboard protocol sends them
@@ -249,7 +249,7 @@ fn move_with_prefix(forms: &[&[u8]], gap: Duration) {
     }
     // Ctrl is let go (the hint on the bar goes with it) so that the tabs can be read.
     client.send(b"\x1b[27u");
-    let want = format!(" A  {} ", 1 + forms.len());
+    let want = format!(" A    {} ", 1 + forms.len());
     status_has(&mut client, &want);
 }
 
@@ -502,7 +502,7 @@ fn the_command_run_from_a_pane_gives_the_same_result_as_the_key() {
         .unwrap();
     six_windows(&daemon, &mut client);
     run(&daemon, "window.move-right", &[]);
-    status_has(&mut client, " A  2 ");
+    status_has(&mut client, " A    2 ");
 }
 
 #[test]
@@ -680,7 +680,7 @@ fn by_default_the_prefix_and_a_held_modifier_never_change_the_status_bar() {
     six_windows(&daemon, &mut client);
     let before = client.status_row();
     assert!(
-        before.contains("A  1") && before.contains("F  6"),
+        before.contains("A    1") && before.contains("F    6"),
         "{before}"
     );
     // The prefix, then longer than the hint's delay.
@@ -690,7 +690,7 @@ fn by_default_the_prefix_and_a_held_modifier_never_change_the_status_bar() {
     let during = client.status_row();
     assert!(!hint_is_shown(&client), "{during}");
     assert!(
-        during.contains("A  1") && during.contains("F  6"),
+        during.contains("A    1") && during.contains("F    6"),
         "{during}"
     );
     // Holding the modifier after the prefix.
@@ -699,7 +699,7 @@ fn by_default_the_prefix_and_a_held_modifier_never_change_the_status_bar() {
     client.read_more(std::time::Instant::now() + Duration::from_millis(100));
     let held = client.status_row();
     assert!(!hint_is_shown(&client), "{held}");
-    assert!(held.contains("A  1") && held.contains("F  6"), "{held}");
+    assert!(held.contains("A    1") && held.contains("F    6"), "{held}");
 }
 
 #[test]

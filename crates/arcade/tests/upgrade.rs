@@ -955,11 +955,11 @@ fn a_daemon_from_before_the_feature_is_restarted_with_its_sessions_made_again() 
         // Each tab is named after the directory its own shell started in, not the first one's.
         let mut screen = env.client("work", 100, 30);
         screen.wait_until(WAIT, |c| {
-            format!("{} ", c.status_row()).contains(" usr  2 ")
+            format!("{} ", c.status_row()).contains(" usr    2 ")
         });
         let bar = format!("{} ", screen.status_row());
-        assert!(bar.contains(" start-here  1 "), "{version}: {bar:?}");
-        assert!(bar.contains(" usr  2 "), "{version}: {bar:?}");
+        assert!(bar.contains(" start-here    1 "), "{version}: {bar:?}");
+        assert!(bar.contains(" usr    2 "), "{version}: {bar:?}");
     }
 }
 
@@ -1000,7 +1000,7 @@ fn an_upgrade_keeps_a_zoomed_window_and_its_progress_and_ends_copy_mode() {
     type_until_row_starting(&mut host, "echo again-$$", "again-");
     let after = host.screen_text();
     assert!(after.contains("[Z]"), "{after}");
-    assert!(after.contains("40%"), "{after}");
+    assert!(after.contains('\u{2584}'), "{after}");
     assert!(!after.contains("COPY"), "{after}");
     // A drag that was going on when the daemon was replaced is over: the motion and the release
     // that follow it move nothing and the shell is still answering.
