@@ -1796,7 +1796,12 @@ impl Server {
                     TermEvent::Progress(report) => {
                         pane.progress = Some(report).filter(|r| r.state != 0);
                         pane.progress_at = pane.progress.map(|_| Instant::now());
-                        pane.progress_owner = writer.filter(|_| pane.progress.is_some());
+                        // Asked afresh: the answer kept for titles may name a program that has
+                        // just ended, and the report would be taken away at once.
+                        pane.progress_owner = pane
+                            .progress
+                            .and_then(|_| pty::foreground_group(pane.master.as_raw_fd()))
+                            .filter(|g| *g != pane.pid);
                         pane.progress_seq += 1;
                     }
                     TermEvent::Bell => signals.push(crate::notify::Signal::new(
