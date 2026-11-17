@@ -72,7 +72,7 @@ fn tab_order(client: &TestClient) -> Vec<String> {
     let mut found: Vec<(usize, String)> = Vec::new();
     for number in 1..=9 {
         for name in ["A", "B", "C"] {
-            if let Some(at) = bar.find(&format!(" {name}    {number} ")) {
+            if let Some(at) = bar.find(&format!(" {name}  {number} ")) {
                 found.push((at, format!("{number} {name}")));
             }
         }
@@ -105,14 +105,14 @@ fn three_windows_show_three_tabs_and_the_current_one_stands_out() {
             bar[..bar.find(tab).unwrap()].chars().count() as u16 + 1,
         )
     };
-    let current = style(&client, " C    3 ");
-    assert_ne!(current, style(&client, " A    1 "));
-    assert_eq!(style(&client, " A    1 "), style(&client, " B    2 "));
+    let current = style(&client, " C  3 ");
+    assert_ne!(current, style(&client, " A  1 "));
+    assert_eq!(style(&client, " A  1 "), style(&client, " B  2 "));
     // Choosing another window moves the highlight.
     run(&daemon, "window.select", &["1"]);
     client.wait_until(Duration::from_millis(300), |_| false);
-    assert_eq!(style(&client, " A    1 "), current);
-    assert_ne!(style(&client, " C    3 "), current);
+    assert_eq!(style(&client, " A  1 "), current);
+    assert_ne!(style(&client, " C  3 "), current);
 }
 
 #[test]
@@ -202,9 +202,9 @@ fn tab_becomes(client: &mut TestClient, name: &str) {
     loop {
         client.type_line("");
         client.wait_until(Duration::from_millis(250), |c| {
-            bar_of(c).contains(&format!(" {name}    1 "))
+            bar_of(c).contains(&format!(" {name}  1 "))
         });
-        if bar_of(client).contains(&format!(" {name}    1 ")) {
+        if bar_of(client).contains(&format!(" {name}  1 ")) {
             return;
         }
         assert!(
@@ -218,7 +218,7 @@ fn tab_becomes(client: &mut TestClient, name: &str) {
 /// Wait until the first tab is not called this any more.
 fn tab_stops_being(daemon: &TestDaemon, client: &mut TestClient, name: &str) {
     let deadline = Instant::now() + WAIT;
-    while bar_of(client).contains(&format!(" {name}    1 ")) {
+    while bar_of(client).contains(&format!(" {name}  1 ")) {
         client.type_line("");
         client.wait_until(Duration::from_millis(250), |_| false);
         if Instant::now() >= deadline {
@@ -269,7 +269,7 @@ fn a_tab_is_named_after_the_program_unless_it_was_named_by_hand() {
     tab_stops_being(&daemon, &mut client, "sleep");
     // A name chosen by hand stays, whatever runs afterwards.
     run(&daemon, "window.rename", &["mine"]);
-    assert!(client.wait_until(WAIT, |c| bar_of(c).contains(" mine    1 ")));
+    assert!(client.wait_until(WAIT, |c| bar_of(c).contains(" mine  1 ")));
     client.type_line("sleep 32");
     let until = Instant::now() + Duration::from_millis(2500);
     while Instant::now() < until {
@@ -278,7 +278,7 @@ fn a_tab_is_named_after_the_program_unless_it_was_named_by_hand() {
     }
     let bar = bar_of(&client);
     assert!(
-        bar.contains(" mine    1 ") && !bar.contains("sleep"),
+        bar.contains(" mine  1 ") && !bar.contains("sleep"),
         "{bar:?}"
     );
     // An empty name gives the tab back to the program.
@@ -295,7 +295,7 @@ fn a_zoomed_pane_is_marked_on_its_tab() {
     run(&daemon, "pane.split-right", &[]);
     assert!(!bar_of(&client).contains("[Z]"));
     run(&daemon, "pane.zoom", &[]);
-    assert!(client.wait_until(WAIT, |c| bar_of(c).contains(" C [Z]    3 ")));
+    assert!(client.wait_until(WAIT, |c| bar_of(c).contains(" C [Z]  3 ")));
     run(&daemon, "pane.zoom", &[]);
     assert!(client.wait_until(WAIT, |c| !bar_of(c).contains("[Z]")));
 }
@@ -355,13 +355,13 @@ fn an_empty_window_name_typed_at_the_prompt_gives_the_window_back_to_the_program
     ask(&mut client);
     client.send(b"edit");
     client.send(b"\r");
-    assert!(client.wait_until(WAIT, |c| bar_of(c).contains(" edit    1 ")));
+    assert!(client.wait_until(WAIT, |c| bar_of(c).contains(" edit  1 ")));
     // Esc leaves the name alone, even with the line cleared.
     ask(&mut client);
     client.send(b"\x1b[27u");
     client.wait_until(Duration::from_millis(1500), |_| false);
     assert!(
-        bar_of(&client).contains(" edit    1 "),
+        bar_of(&client).contains(" edit  1 "),
         "{:?}",
         bar_of(&client)
     );

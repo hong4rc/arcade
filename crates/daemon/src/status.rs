@@ -222,14 +222,17 @@ fn tab_cells_with(tab: &Tab, pieces: &[TabPiece], info: &StatusInfo) -> Vec<Cell
             name,
         ));
     }
-    // The one status cell: always there, so a tab's width does not depend on what it says.
     text.extend(text_cells(" ", name));
-    match status_mark(tab) {
-        Some(mark) => text.extend(mark_cells(mark, name)),
-        None => text.extend(text_cells(" ", name)),
+    // With a badge, the state shows in place of its number. With none (`number = "off"`) one
+    // cell after the name is kept for it, so the tab's width does not depend on what it says.
+    if info.number == NumberPosition::Off {
+        match status_mark(tab) {
+            Some(mark) => text.extend(mark_cells(mark, name)),
+            None => text.extend(text_cells(" ", name)),
+        }
+        text.extend(text_cells(" ", name));
     }
-    text.extend(text_cells(" ", name));
-    let number = text_cells(&format!(" {} ", tab.number), badge);
+    let number = badge_cells(tab, badge);
     let (first, last, blocks) = match info.number {
         NumberPosition::Left => (badge, name, [number, text].concat()),
         NumberPosition::Right => (name, badge, [text, number].concat()),
@@ -303,9 +306,10 @@ pub fn status_mark(tab: &Tab) -> Option<Mark> {
         .min_by_key(|m| m.rank())
 }
 
-/// The cell of a mark on the block it stands on, in the mark's colour.
-fn mark_cells(mark: Mark, block: arcade_term::Style) -> Vec<Cell> {
-    let (symbol, tint) = match mark {
+/// The symbol of a mark and what colours it. Something running (a progress report with no
+/// amount, a command) has one symbol.
+fn mark_parts(mark: Mark) -> (&'static str, theme::Tint) {
+    match mark {
         Mark::Notice(class) => (theme::notice_symbol(class), theme::Tint::Class(class)),
         Mark::ProgressError => (theme::PROGRESS_ERROR_SYMBOL, theme::Tint::ProgressError),
         Mark::Level { value, paused } => (
@@ -316,12 +320,31 @@ fn mark_cells(mark: Mark, block: arcade_term::Style) -> Vec<Cell> {
                 theme::Tint::Progress
             },
         ),
-        Mark::Busy => (theme::BUSY_SYMBOL, theme::Tint::Progress),
-        Mark::Running => (theme::RUNNING_SYMBOL, theme::Tint::Progress),
+        Mark::Busy | Mark::Running => (theme::RUNNING_SYMBOL, theme::Tint::Progress),
         Mark::Finished { ok: true } => (theme::notice_symbol(Class::Info), theme::Tint::Finished),
         Mark::Finished { ok: false } => (theme::PROGRESS_ERROR_SYMBOL, theme::Tint::ProgressError),
-    };
+    }
+}
+
+/// The cell of a mark on the block it stands on, in the mark's colour.
+fn mark_cells(mark: Mark, block: arcade_term::Style) -> Vec<Cell> {
+    let (symbol, tint) = mark_parts(mark);
     text_cells(symbol, theme::cell_style(tint, block))
+}
+
+/// The badge of a tab: the number, or when the window has a state that state's symbol in its
+/// colour in place of the number, padded to the width of the number so that the badge does not
+/// change.
+fn badge_cells(tab: &Tab, badge: arcade_term::Style) -> Vec<Cell> {
+    let digits = tab.number.to_string().len();
+    let Some(mark) = status_mark(tab) else {
+        return text_cells(&format!(" {} ", tab.number), badge);
+    };
+    let (symbol, tint) = mark_parts(mark);
+    let mut cells = text_cells(" ", badge);
+    cells.extend(text_cells(symbol, theme::badge_cell_style(tint, badge)));
+    cells.extend(text_cells(&" ".repeat(digits), badge));
+    cells
 }
 
 /// A laid-out bar: its cells and, for each tab or marker, its index (for a marker the nearest
@@ -1031,8 +1054,8 @@ mod tests {
         assert!(cursor.is_none());
         let line = text(&cells);
         assert!(line.contains(" work "), "{line}");
-        assert!(line.contains(" sh    1 "), "{line}");
-        assert!(line.contains(" vim [Z]    2 "), "{line}");
+        assert!(line.contains(" sh  1 "), "{line}");
+        assert!(line.contains(" vim [Z]  2 "), "{line}");
         let at = |needle: &str| cells[line[..line.find(needle).unwrap()].chars().count()].style;
         assert_eq!(at("vim"), theme::style(Role::PillNameCurrent));
         assert_eq!(at("sh"), theme::style(Role::PillName));
@@ -1052,12 +1075,12 @@ mod tests {
         assert_eq!(spans[0].index, 0);
         assert_eq!(
             (spans[0].from, spans[0].to),
-            (col(" sh    1 "), col(" sh    1 ") + 9)
+            (col(" sh  1 "), col(" sh  1 ") + 7)
         );
         assert_eq!(spans[1].index, 1);
         // One cell of the bar between two tabs, which belongs to neither.
         assert_eq!(spans[1].from, spans[0].to + 1);
-        assert_eq!(spans[1].to, spans[1].from + " vim [Z]    2 ".len() as u16);
+        assert_eq!(spans[1].to, spans[1].from + " vim [Z]  2 ".len() as u16);
         // Too narrow for both: the first tab is hidden, a marker at the left stands for it (a
         // click on the marker selects it) and the tab of the window you are in shows whole.
         let (_, _, narrow) = build_with_tabs(18, &info());
@@ -1400,8 +1423,8 @@ mod tests {
         ]
     }
 
-    /// Every tab has one status cell that is always there: a tab is as wide with a mark of any
-    /// kind as with none, in both styles and at the three places of the number, so the tabs to its
+    /// A tab is as wide with a state of any kind as with none, in both styles, with the number at
+    /// the right, at the left and off, with a one-digit and a two-digit number, so the tabs to its
     /// right never move.
     #[test]
     fn a_tab_is_as_wide_with_every_mark_as_with_none() {
@@ -1411,31 +1434,54 @@ mod tests {
                 NumberPosition::Right,
                 NumberPosition::Off,
             ] {
-                let spans_with = |notice, progress| {
-                    let mut i = info();
-                    i.style = style;
-                    i.number = number;
-                    i.tabs[0].notice = notice;
-                    i.tabs[0].progress = progress;
-                    build_with_tabs(120, &i).2
-                };
-                let none = spans_with(None, None);
-                for (name, notice, progress) in marks_to_try() {
-                    let other = spans_with(notice, progress);
-                    assert_eq!(other.len(), none.len(), "{name}");
-                    for (a, b) in other.iter().zip(&none) {
-                        assert_eq!(
-                            (a.from, a.to),
-                            (b.from, b.to),
-                            "{style:?} {number:?} {name}"
-                        );
+                for first_number in [1usize, 12] {
+                    let spans_with = |notice, progress| {
+                        let mut i = info();
+                        i.style = style;
+                        i.number = number;
+                        i.tabs[0].number = first_number;
+                        i.tabs[0].notice = notice;
+                        i.tabs[0].progress = progress;
+                        build_with_tabs(120, &i).2
+                    };
+                    let none = spans_with(None, None);
+                    for (name, notice, progress) in marks_to_try() {
+                        let other = spans_with(notice, progress);
+                        assert_eq!(other.len(), none.len(), "{name}");
+                        for (a, b) in other.iter().zip(&none) {
+                            assert_eq!(
+                                (a.from, a.to),
+                                (b.from, b.to),
+                                "{style:?} {number:?} {first_number} {name}"
+                            );
+                        }
                     }
                 }
             }
         }
     }
 
-    /// Each state draws its own symbol after the name, in its colour, in both styles.
+    /// With a number a quiet tab is as narrow as it was before the status had a place of its
+    /// own: the name, one cell, the number between its spaces.
+    #[test]
+    fn a_quiet_tab_with_a_number_is_as_narrow_as_it_ever_was() {
+        for number in [NumberPosition::Left, NumberPosition::Right] {
+            let mut i = info();
+            i.number = number;
+            i.style = TabStyle::Flat;
+            let (cells, _, spans) = build_with_tabs(120, &i);
+            // " sh " and " 1 " are 7 cells with the gap-free joins of the flat style.
+            assert_eq!(
+                spans[0].to - spans[0].from,
+                7,
+                "{number:?} {:?}",
+                text(&cells)
+            );
+        }
+    }
+
+    /// Each state draws its own symbol, in its colour: in the badge in place of the number, and
+    /// with no number in the one cell after the name.
     #[test]
     fn the_status_cell_draws_the_symbol_of_the_state() {
         use arcade_term::Progress;
@@ -1450,28 +1496,51 @@ mod tests {
                         value,
                     }),
                 ) => theme::level_block(value),
-                (_, Some(Progress { state: 3, .. })) => theme::BUSY_SYMBOL,
+                (_, Some(Progress { state: 3, .. })) => theme::RUNNING_SYMBOL,
                 (Some(c), _) => theme::notice_symbol(c),
                 _ => " ",
             }
         };
         for style in [TabStyle::Pill, TabStyle::Flat] {
-            for (name, notice, progress) in marks_to_try() {
-                let mut i = info();
-                i.style = style;
-                i.tabs[0].notice = notice;
-                i.tabs[0].progress = progress;
-                let (cells, _, spans) = build_with_tabs(120, &i);
-                // The cell is the third from the end of the tab's text: the cell, a space, and the
-                // number's badge follow.
-                let line = text(&cells);
-                let tab = shown_text(&cells, &spans[0]);
-                assert!(
-                    tab.contains(&format!("sh {} ", wanted(notice, progress))),
-                    "{style:?} {name}: {tab:?} in {line:?}"
-                );
+            for number in [
+                NumberPosition::Left,
+                NumberPosition::Right,
+                NumberPosition::Off,
+            ] {
+                for (name, notice, progress) in marks_to_try() {
+                    let mut i = info();
+                    i.style = style;
+                    i.number = number;
+                    i.tabs[0].notice = notice;
+                    i.tabs[0].progress = progress;
+                    let (cells, _, spans) = build_with_tabs(120, &i);
+                    let tab = shown_text(&cells, &spans[0]);
+                    let context = format!("{style:?} {number:?} {name}: {tab:?}");
+                    let symbol = wanted(notice, progress);
+                    if number == NumberPosition::Off {
+                        assert!(tab.contains(&format!("sh {symbol} ")), "{context}");
+                    } else if symbol == " " {
+                        assert!(tab.contains('1'), "{context}");
+                    } else {
+                        // The symbol is where the number was; the number is not there.
+                        assert!(tab.contains(&format!(" {symbol} ")), "{context}");
+                        assert!(!tab.contains('1'), "{context}");
+                    }
+                }
             }
         }
+        // The number still shows in the other tab, and a symbol in a badge keeps the badge's
+        // background.
+        let mut i = info();
+        i.tabs[0].notice = Some(Class::Approval);
+        let (cells, _, spans) = build_with_tabs(120, &i);
+        let tab = shown_text(&cells, &spans[0]);
+        assert!(!tab.contains('1'), "{tab:?}");
+        let line = text(&cells);
+        let at = line.find(theme::notice_symbol(Class::Approval)).unwrap();
+        let style = cells[line[..at].chars().count()].style;
+        assert_eq!(style.bg, theme::style(Role::PillBadge).bg);
+        assert!(line.contains(" 2 "), "{line:?}");
         // The colours: a level in the progress colour, a pause dimmer, a failure and an
         // approval notification red, each readable on the tab.
         let block = theme::style(Role::PillName);
@@ -1587,9 +1656,8 @@ mod tests {
             Some(Mark::Finished { ok: true })
         );
         assert_eq!(mark(None, None, None), None);
-        // The symbol is one cell and differs from the busy one; the tab keeps its width.
+        // The symbol is one cell and is the one of a report with no amount too; the tab keeps its width.
         assert_eq!(crate::width::text_width(theme::RUNNING_SYMBOL), 1);
-        assert_ne!(theme::RUNNING_SYMBOL, theme::BUSY_SYMBOL);
         for style in [TabStyle::Pill, TabStyle::Flat] {
             for number in [
                 NumberPosition::Left,
@@ -1615,9 +1683,52 @@ mod tests {
                         FinishedWell => theme::notice_symbol(Class::Info),
                         FinishedWithError => theme::PROGRESS_ERROR_SYMBOL,
                     };
-                    assert!(line.contains(&format!("sh {symbol} ")), "{line:?}");
+                    let shown = if number == NumberPosition::Off {
+                        format!("sh {symbol} ")
+                    } else {
+                        format!(" {symbol} ")
+                    };
+                    assert!(line.contains(&shown), "{line:?}");
                 }
             }
+        }
+    }
+
+    /// A report with no amount and a command that runs say the same thing, with one symbol; and
+    /// there is no counter when no other session has a notification.
+    #[test]
+    fn one_symbol_for_something_that_runs_and_no_counter_without_other_sessions() {
+        let mut busy = info();
+        busy.tabs[0].progress = Some(arcade_term::Progress { state: 3, value: 0 });
+        let mut running = info();
+        running.tabs[0].command = Some(CommandMark::Running);
+        let tab = |i: &StatusInfo| {
+            let (cells, _, spans) = build_with_tabs(120, i);
+            (
+                shown_text(&cells, &spans[0]),
+                cells[spans[0].to as usize - 3].style,
+            )
+        };
+        assert_eq!(tab(&busy), tab(&running));
+        assert!(tab(&busy).0.contains(theme::RUNNING_SYMBOL));
+        for style in [TabStyle::Pill, TabStyle::Flat] {
+            let mut quiet = info();
+            quiet.style = style;
+            quiet.tabs[0].notice = Some(Class::Input);
+            let line = text(&build(120, &quiet).0);
+            // The tab says it; nothing is counted at the right end.
+            assert_eq!(
+                line.matches(theme::notice_symbol(Class::Input)).count(),
+                1,
+                "{line:?}"
+            );
+            quiet.notices = [0, 1, 0, 0];
+            let line = text(&build(120, &quiet).0);
+            assert_eq!(
+                line.matches(theme::notice_symbol(Class::Input)).count(),
+                2,
+                "{line:?}"
+            );
         }
     }
 
@@ -1636,7 +1747,7 @@ mod tests {
         for symbol in blocks
             .iter()
             .copied()
-            .chain([theme::BUSY_SYMBOL, theme::PROGRESS_ERROR_SYMBOL])
+            .chain([theme::RUNNING_SYMBOL, theme::PROGRESS_ERROR_SYMBOL])
         {
             assert_eq!(crate::width::text_width(symbol), 1, "{symbol}");
         }
@@ -1694,7 +1805,7 @@ mod tests {
         let line = text(&cells);
         let [approval, error, dot] =
             [Class::Approval, Class::Error, Class::Info].map(theme::notice_symbol);
-        assert!(line.contains(&format!("sh {approval} ")), "{line}");
+        assert!(line.contains(&format!("sh  {approval} ")), "{line}");
         assert!(
             line.trim_end()
                 .ends_with(&format!("{approval}2  {error}1  {dot}3")),
@@ -1873,7 +1984,7 @@ mod tests {
     #[test]
     fn the_number_goes_right_left_or_nowhere() {
         for (position, want) in [
-            (NumberPosition::Right, " sh    1 "),
+            (NumberPosition::Right, " sh  1 "),
             (NumberPosition::Left, " 1  sh   "),
             (NumberPosition::Off, " sh   "),
         ] {
@@ -2081,8 +2192,9 @@ mod tests {
         assert!(spans.iter().all(|s| !s.marker));
         let line = text(&cells);
         assert!(line.contains('…'), "{line}");
-        // The numbers and the notification mark are all there, and the current name is whole.
-        for number in 1..=4 {
+        // The numbers are all there but the last one, which the notification mark stands in for,
+        // and the current name is whole.
+        for number in 1..=3 {
             assert!(line.contains(&format!(" {number} ")), "{line}");
         }
         assert!(line.contains(theme::notice_symbol(Class::Input)), "{line}");
@@ -2281,6 +2393,49 @@ mod tests {
                 crate::render::push_row(&mut bytes, 0, &cells, &[]);
                 bytes.extend_from_slice(b"\x1b[0m\n");
                 std::fs::write(format!("{dir}/bar-{name}-{place}.bin"), bytes).unwrap();
+            }
+            // Five windows, each in a state (asks for you, 40 percent, running, finished,
+            // quiet), and the same with a notification in another session, at 110 columns.
+            {
+                let tab = |number: usize, name: &str| Tab {
+                    number,
+                    text: vec![TabPiece::plain(name)],
+                    current: number == 2,
+                    zoomed: false,
+                    notice: None,
+                    progress: None,
+                    command: None,
+                };
+                let mut i = info();
+                i.style = style;
+                i.tabs = vec![
+                    tab(1, "api"),
+                    tab(2, "web"),
+                    tab(3, "build"),
+                    tab(4, "tests"),
+                    tab(5, "notes"),
+                ];
+                i.tabs[0].notice = Some(Class::Approval);
+                i.tabs[1].progress = Some(arcade_term::Progress {
+                    state: 1,
+                    value: 40,
+                });
+                i.tabs[2].command = Some(CommandMark::Running);
+                i.tabs[3].command = Some(CommandMark::FinishedWell);
+                for (file, notices) in [("states", [0; 4]), ("states-other-session", [0, 0, 0, 1])]
+                {
+                    i.notices = notices;
+                    let (cells, _) = build(110, &i);
+                    let mut bytes = Vec::new();
+                    crate::render::push_row(&mut bytes, 0, &cells, &[]);
+                    bytes.extend_from_slice(b"\x1b[0m\n");
+                    std::fs::write(format!("{dir}/tabs-{file}-{name}-110.bin"), bytes).unwrap();
+                    std::fs::write(
+                        format!("{dir}/tabs-{file}-{name}-110.txt"),
+                        format!("{}\n", text(&cells)),
+                    )
+                    .unwrap();
+                }
             }
             // A bar with the counters at the right, at 110 columns.
             {

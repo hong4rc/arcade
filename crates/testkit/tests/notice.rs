@@ -48,12 +48,8 @@ fn a_bell_in_a_pane_out_of_focus_shows_on_its_tab_and_in_the_counter_and_looking
     let mut client = start(&daemon);
     signal_from_a_pane_left_behind(&mut client, "\\a");
     assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
-    // The tab of the window wears the mark, too.
-    assert!(
-        bar(&client).contains(" 1 ") && bar(&client).contains("● "),
-        "{}",
-        bar(&client)
-    );
+    // The tab of the window wears the mark, too, in place of its number.
+    assert!(bar(&client).contains(" ● "), "{}", bar(&client));
     // Going to the pane that rang is looking at it: an info notification goes away at once.
     client.send(PREFIX);
     client.send(b"h");

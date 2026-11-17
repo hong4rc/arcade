@@ -955,11 +955,11 @@ fn a_daemon_from_before_the_feature_is_restarted_with_its_sessions_made_again() 
         // Each tab is named after the directory its own shell started in, not the first one's.
         let mut screen = env.client("work", 100, 30);
         screen.wait_until(WAIT, |c| {
-            format!("{} ", c.status_row()).contains(" usr    2 ")
+            format!("{} ", c.status_row()).contains(" usr  2 ")
         });
         let bar = format!("{} ", screen.status_row());
-        assert!(bar.contains(" start-here    1 "), "{version}: {bar:?}");
-        assert!(bar.contains(" usr    2 "), "{version}: {bar:?}");
+        assert!(bar.contains(" start-here  1 "), "{version}: {bar:?}");
+        assert!(bar.contains(" usr  2 "), "{version}: {bar:?}");
     }
 }
 

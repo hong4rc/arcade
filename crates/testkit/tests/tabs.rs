@@ -54,7 +54,7 @@ fn a_window_is_named_after_its_directory_and_the_name_stays_when_the_shell_moves
     let mut client = attach(&daemon);
     let dir = start_dir(&daemon);
     assert!(
-        bar(&client).contains(&format!(" {dir}    1 ")),
+        bar(&client).contains(&format!(" {dir}  1 ")),
         "{:?}",
         bar(&client)
     );
@@ -63,7 +63,7 @@ fn a_window_is_named_after_its_directory_and_the_name_stays_when_the_shell_moves
     client.wait_until(Duration::from_millis(1500), |_| false);
     client.type_line("");
     assert!(
-        bar(&client).contains(&format!(" {dir}    1 ")),
+        bar(&client).contains(&format!(" {dir}  1 ")),
         "{:?}",
         bar(&client)
     );
@@ -77,7 +77,7 @@ fn the_name_follows_the_directory_when_the_configuration_says_so() {
     client.wait_for_text("moved-42").unwrap();
     let ok = (0..30).any(|_| {
         client.type_line("");
-        client.wait_until(Duration::from_millis(250), |c| bar(c).contains(" /    1 "))
+        client.wait_until(Duration::from_millis(250), |c| bar(c).contains(" /  1 "))
     });
     assert!(ok, "{:?}", bar(&client));
 }
@@ -95,7 +95,7 @@ fn the_home_directory_is_called_a_tilde() {
     client.wait_for_text("moved-42").unwrap();
     let ok = (0..30).any(|_| {
         client.type_line("");
-        client.wait_until(Duration::from_millis(250), |c| bar(c).contains(" ~    1 "))
+        client.wait_until(Duration::from_millis(250), |c| bar(c).contains(" ~  1 "))
     });
     assert!(ok, "{:?}", bar(&client));
 }
@@ -109,7 +109,7 @@ fn the_name_can_come_from_the_program_or_from_the_title_the_program_set() {
     let mut client = attach(&daemon);
     client.type_line("sleep 37");
     assert!(
-        client.wait_until(WAIT, |c| bar(c).contains(" sleep    1 ")),
+        client.wait_until(WAIT, |c| bar(c).contains(" sleep  1 ")),
         "{:?}",
         bar(&client)
     );
@@ -123,7 +123,7 @@ fn the_name_can_come_from_the_program_or_from_the_title_the_program_set() {
     let dir = start_dir(&daemon);
     // No title yet: the directory.
     assert!(
-        bar(&client).contains(&format!(" {dir}    1 ")),
+        bar(&client).contains(&format!(" {dir}  1 ")),
         "{:?}",
         bar(&client)
     );
@@ -131,7 +131,7 @@ fn the_name_can_come_from_the_program_or_from_the_title_the_program_set() {
     let ok = (0..30).any(|_| {
         client.type_line("");
         client.wait_until(Duration::from_millis(250), |c| {
-            bar(c).contains(" from-title    1 ")
+            bar(c).contains(" from-title  1 ")
         })
     });
     assert!(ok, "{:?}", bar(&client));
@@ -143,14 +143,14 @@ fn a_name_given_by_hand_wins_and_an_empty_one_gives_the_window_back_to_the_rule(
     let mut client = attach(&daemon);
     let dir = start_dir(&daemon);
     run(&daemon, "window.rename", &["mine"]);
-    assert!(client.wait_until(WAIT, |c| bar(c).contains(" mine    1 ")));
+    assert!(client.wait_until(WAIT, |c| bar(c).contains(" mine  1 ")));
     client.type_line("cd /; echo moved-$((40 + 2))");
     client.wait_for_text("moved-42").unwrap();
-    assert!(bar(&client).contains(" mine    1 "));
+    assert!(bar(&client).contains(" mine  1 "));
     // Given back: named by the directory the pane is in now, at once.
     run(&daemon, "window.rename", &[""]);
     assert!(
-        client.wait_until(WAIT, |c| bar(c).contains(" /    1 ")),
+        client.wait_until(WAIT, |c| bar(c).contains(" /  1 ")),
         "{:?}",
         bar(&client)
     );
@@ -161,7 +161,7 @@ fn a_name_given_by_hand_wins_and_an_empty_one_gives_the_window_back_to_the_rule(
 fn the_number_stands_left_or_right_of_the_name_or_is_not_shown_with_a_colour_of_its_own() {
     for (position, expected) in [
         (NumberPosition::Left, " 1  nm "),
-        (NumberPosition::Right, " nm    1 "),
+        (NumberPosition::Right, " nm  1 "),
         (NumberPosition::Off, " nm "),
     ] {
         let daemon = TestDaemon::start_with(move |c| c.config.tab_number = position);
@@ -183,7 +183,7 @@ fn the_number_stands_left_or_right_of_the_name_or_is_not_shown_with_a_colour_of_
         // current one), apart from the name's.
         let at = match position {
             NumberPosition::Left => column_of(&line, "1  nm"),
-            _ => column_of(&line, "nm    1") + 6,
+            _ => column_of(&line, "nm  1") + 6,
         };
         let number = client.screen.style_at(y, at);
         assert_ne!(number.fg, name.fg, "{position:?}");
@@ -199,16 +199,16 @@ fn the_text_of_a_tab_is_the_name_by_default_and_follows_the_format() {
     client.type_line("printf '\\033]2;prog-title\\007'");
     // By default no title of the program shows on a tab.
     client.wait_until(Duration::from_millis(500), |_| false);
-    assert!(bar(&client).contains(" nm    1 "), "{:?}", bar(&client));
+    assert!(bar(&client).contains(" nm  1 "), "{:?}", bar(&client));
     assert!(!bar(&client).contains("prog-title"));
 
     let daemon = TestDaemon::start_with(|c| c.config.tab_format = template("{name} {title}"));
     let mut client = attach(&daemon);
     run(&daemon, "window.rename", &["nm"]);
-    assert!(client.wait_until(WAIT, |c| bar(c).contains(" nm    1 ")));
+    assert!(client.wait_until(WAIT, |c| bar(c).contains(" nm  1 ")));
     client.type_line("printf '\\033]2;prog-title\\007'");
     assert!(
-        client.wait_until(WAIT, |c| bar(c).contains(" nm prog-title    1 ")),
+        client.wait_until(WAIT, |c| bar(c).contains(" nm prog-title  1 ")),
         "{:?}",
         bar(&client)
     );
@@ -220,7 +220,7 @@ fn the_text_of_a_tab_is_the_name_by_default_and_follows_the_format() {
     assert_ne!(title, name);
     // A title equal to the name is said once, and a long one is cut.
     client.type_line("printf '\\033]2;nm\\007'");
-    assert!(client.wait_until(WAIT, |c| bar(c).contains(" nm    1 ")
+    assert!(client.wait_until(WAIT, |c| bar(c).contains(" nm  1 ")
         && !bar(c).contains("nm nm")));
     client.type_line("printf '\\033]2;%s\\007' abcdefghijklmnopqrstuvwxyz0123456789");
     assert!(
@@ -238,7 +238,7 @@ fn a_tab_format_may_use_the_program_and_the_directory_and_reorder_them() {
     let dir = start_dir(&daemon);
     client.type_line("sleep 38");
     assert!(
-        client.wait_until(WAIT, |c| bar(c).contains(&format!(" {dir}|sleep    1 "))),
+        client.wait_until(WAIT, |c| bar(c).contains(&format!(" {dir}|sleep  1 "))),
         "{:?}",
         bar(&client)
     );
@@ -260,7 +260,7 @@ fn the_number_and_the_formats_are_read_from_the_file_and_taken_up_on_reload() {
     let mut client = attach(&daemon);
     run(&daemon, "window.rename", &["nm"]);
     assert!(
-        client.wait_until(WAIT, |c| bar(c).contains(" nm!    1 ")),
+        client.wait_until(WAIT, |c| bar(c).contains(" nm!  1 ")),
         "{:?}",
         bar(&client)
     );
@@ -321,14 +321,14 @@ fn every_way_to_make_a_window_names_it_after_a_directory_by_default() {
         .unwrap();
     client.wait_for_text("$").unwrap();
     assert!(
-        bar(&client).contains(&format!(" {dir}    1 ")),
+        bar(&client).contains(&format!(" {dir}  1 ")),
         "{:?}",
         bar(&client)
     );
     // A new window takes the directory of the pane it was made from, not the program.
     run(&daemon, "window.new", &[]);
     assert!(
-        client.wait_until(WAIT, |c| bar(c).contains(" inner-dir    2 ")),
+        client.wait_until(WAIT, |c| bar(c).contains(" inner-dir  2 ")),
         "{:?}",
         bar(&client)
     );
@@ -337,7 +337,7 @@ fn every_way_to_make_a_window_names_it_after_a_directory_by_default() {
     client.wait_until(WAIT, |c| c.screen_text().contains('│'));
     run(&daemon, "pane.break", &[]);
     assert!(
-        client.wait_until(WAIT, |c| bar(c).contains(" inner-dir    3 ")),
+        client.wait_until(WAIT, |c| bar(c).contains(" inner-dir  3 ")),
         "{:?}",
         bar(&client)
     );
@@ -358,7 +358,7 @@ mod new_windows {
         let mut client = attach(&daemon);
         let (ok, why) = daemon.command("window.new", &["/usr"]).unwrap();
         assert!(ok, "{why}");
-        assert!(named(&mut client, "usr    2"), "{:?}", bar(&client));
+        assert!(named(&mut client, "usr  2"), "{:?}", bar(&client));
         client.wait_for_prompt().unwrap();
         client.type_line("pwd");
         assert!(client.wait_until(WAIT, |c| c.screen_rows().iter().any(|r| r.trim() == "/usr")));
@@ -366,7 +366,7 @@ mod new_windows {
         // is (here the one in /usr) and is named after that.
         let (ok, _) = daemon.command("window.new", &["/no/such/place"]).unwrap();
         assert!(ok);
-        assert!(named(&mut client, "usr    3"), "{:?}", bar(&client));
+        assert!(named(&mut client, "usr  3"), "{:?}", bar(&client));
     }
 
     #[test]
@@ -379,17 +379,17 @@ mod new_windows {
         // From a key, and from `arcade run` as a pane does it.
         client.send(b"\x1b[109;5u");
         client.send(b"c");
-        assert!(named(&mut client, "usr    2"), "{:?}", bar(&client));
+        assert!(named(&mut client, "usr  2"), "{:?}", bar(&client));
         client.wait_for_prompt().unwrap();
         client.type_line("pwd");
         assert!(client.wait_until(WAIT, |c| c.screen_rows().iter().any(|r| r.trim() == "/usr")));
         let pane = client.focused_pane_id();
         let (ok, why) = daemon.command_from(Some(pane), "window.new", &[]).unwrap();
         assert!(ok, "{why}");
-        assert!(named(&mut client, "usr    3"), "{:?}", bar(&client));
+        assert!(named(&mut client, "usr  3"), "{:?}", bar(&client));
         // The first window keeps the name of where it began, with `name-follow` off.
         assert!(
-            bar(&client).contains(&format!(" {start}    1 ")),
+            bar(&client).contains(&format!(" {start}  1 ")),
             "{:?}",
             bar(&client)
         );
@@ -406,6 +406,6 @@ mod new_windows {
         client.wait_for_text("moved-42").unwrap();
         client.send(b"\x1b[109;5u");
         client.send(b"!");
-        assert!(named(&mut client, "usr    2"), "{:?}", bar(&client));
+        assert!(named(&mut client, "usr  2"), "{:?}", bar(&client));
     }
 }

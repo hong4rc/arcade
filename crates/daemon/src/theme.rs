@@ -311,11 +311,8 @@ pub enum Tint {
 /// own (the notification marks are filled shapes).
 pub const PROGRESS_ERROR_SYMBOL: &str = "✗";
 
-/// The symbol of the status cell for a progress report with no amount: static, one cell wide.
-pub const BUSY_SYMBOL: &str = "⟳";
-
-/// The symbol of the status cell for a command that is running (by the marks of the shell
-/// prompt): a small mark, not the busy symbol of a progress report with no amount.
+/// The symbol of the status for something that is running: a command (by the marks of the shell
+/// prompt) and a progress report with no amount both show it.
 pub const RUNNING_SYMBOL: &str = "▸";
 
 /// The eight level blocks, from a sliver to the full cell.
@@ -326,10 +323,8 @@ pub fn level_block(value: u8) -> &'static str {
     LEVEL_BLOCKS[(usize::from(value.min(100)) * 8 / 100).min(7)]
 }
 
-/// The status cell's symbol in a colour on the block it stands on, as the marks of the classes:
-/// the palette's colour, made lighter only as far as it takes to read at a contrast of 4.5.
-pub fn cell_style(tint: Tint, block: Style) -> Style {
-    let colour = match tint {
+fn tint_colour(tint: Tint) -> Color {
+    match tint {
         Tint::Class(crate::notify::Class::Approval) => palette::RED,
         Tint::Class(crate::notify::Class::Input) => palette::YELLOW,
         Tint::Class(crate::notify::Class::Error) => palette::PINK,
@@ -338,12 +333,54 @@ pub fn cell_style(tint: Tint, block: Style) -> Style {
         Tint::Progress => palette::BLUE,
         Tint::Paused => palette::OVERLAY2,
         Tint::Finished => palette::GREEN,
-    };
+    }
+}
+
+/// The status cell's symbol in a colour on the block it stands on, as the marks of the classes:
+/// the palette's colour, made lighter only as far as it takes to read at a contrast of 4.5.
+pub fn cell_style(tint: Tint, block: Style) -> Style {
     Style {
-        fg: readable_on(colour, block.bg),
+        fg: readable_on(tint_colour(tint), block.bg),
         bg: block.bg,
         bold: true,
         ..Style::default()
+    }
+}
+
+/// The symbol in the badge of a tab (where the number stands): the state's colour, made lighter
+/// or else darker only as far as it takes to read at a contrast of 4.5 on the badge's own
+/// background, which is mid-grey or the accent; a colour that cannot be made to read on it gives
+/// way to the dark text colour of the badge.
+pub fn badge_cell_style(tint: Tint, badge: Style) -> Style {
+    let colour = tint_colour(tint);
+    let Color::Rgb(r, g, b) = colour else {
+        return Style {
+            fg: colour,
+            ..badge
+        };
+    };
+    let reads = |c: Color| {
+        contrast(Style {
+            fg: c,
+            bg: badge.bg,
+            ..Style::default()
+        }) >= 4.5
+    };
+    let toward = |target: i64| {
+        (0..=100u32).find_map(|step| {
+            let mix = |v: u8| {
+                let v = i64::from(v);
+                (v + (target - v) * i64::from(step) / 100) as u8
+            };
+            let candidate = Color::Rgb(mix(r), mix(g), mix(b));
+            reads(candidate).then_some(candidate)
+        })
+    };
+    let fg = toward(255).or_else(|| toward(0)).unwrap_or(badge.fg);
+    Style {
+        fg,
+        bold: true,
+        ..badge
     }
 }
 
@@ -513,6 +550,32 @@ mod tests {
                 assert_eq!(on_block.bg, style(role).bg);
                 let ratio = contrast(on_block);
                 assert!(ratio >= 4.5, "{class:?} on {role:?}: {ratio:.2}");
+            }
+        }
+    }
+
+    /// A state's symbol in the badge of a tab reads at a contrast of 4.5 on the badge of every
+    /// tab, the accent badge of the current one included, and the badge keeps its background.
+    #[test]
+    fn the_symbol_of_a_state_in_a_badge_reads_on_both_badges() {
+        use crate::notify::Class;
+        let tints = [
+            Tint::Class(Class::Approval),
+            Tint::Class(Class::Input),
+            Tint::Class(Class::Error),
+            Tint::Class(Class::Info),
+            Tint::ProgressError,
+            Tint::Progress,
+            Tint::Paused,
+            Tint::Finished,
+        ];
+        for role in [Role::PillBadge, Role::PillBadgeCurrent] {
+            let badge = style(role);
+            for tint in tints {
+                let on_badge = badge_cell_style(tint, badge);
+                assert_eq!(on_badge.bg, badge.bg);
+                let ratio = contrast(on_badge);
+                assert!(ratio >= 4.5, "{tint:?} on {role:?}: {ratio:.2}");
             }
         }
     }
