@@ -532,6 +532,55 @@ impl Server {
             .collect()
     }
 
+    /// The names of the other sessions that hold the notifications the counter counts, the one
+    /// with the most urgent notification first. Empty unless the counter counts the other
+    /// sessions only.
+    pub(super) fn notice_sessions(&self, session_id: u64) -> Vec<String> {
+        if self.config.notification.status_count != crate::config::StatusCount::OtherSessions {
+            return Vec::new();
+        }
+        let mut names: Vec<String> = Vec::new();
+        for (pane, _) in self.notices.by_priority() {
+            let Some((owner, _)) = self.locate_pane(pane) else {
+                continue;
+            };
+            if owner == session_id {
+                continue;
+            }
+            if let Some(s) = self.sessions.get(&owner)
+                && !names.contains(&s.name)
+            {
+                names.push(s.name.clone());
+            }
+        }
+        names
+    }
+
+    /// The place in the list of notifications of the first one that is not in this session: what
+    /// a click on the counter chooses.
+    fn first_notice_elsewhere(&self, session_id: u64) -> usize {
+        self.notices
+            .by_priority()
+            .iter()
+            .position(|(pane, _)| {
+                self.locate_pane(*pane)
+                    .is_some_and(|(s, _)| s != session_id)
+            })
+            .unwrap_or(0)
+    }
+
+    /// A click on the counter: the list of notifications, on the most urgent one of the other
+    /// sessions.
+    pub(super) fn open_notifications_from_counter(&mut self, session_id: u64) {
+        let selected = self.first_notice_elsewhere(session_id);
+        if let Err(why) = self.open_notifications(session_id, selected)
+            && let Some(s) = self.sessions.get_mut(&session_id)
+        {
+            s.key_state
+                .show_message(why, crate::status::MessageKind::Information, Instant::now());
+        }
+    }
+
     /// Open the list of notifications with the line at `selected` chosen.
     pub(super) fn open_notifications(
         &mut self,
@@ -552,10 +601,12 @@ impl Server {
                     (true, true) => String::new(),
                 };
                 let name = format!("{mark} {}  {}", n.class.name(), n.source);
+                // Where it is first (session, window, pane), so that a notification of another
+                // session cannot be taken for one here, then what it says and how long it waited.
                 let detail = format!(
-                    "{text}  waited {}s  {}",
-                    now.duration_since(n.since).as_secs(),
-                    self.notice_place(pane)
+                    "{}  {text}  waited {}s",
+                    self.notice_place(pane),
+                    now.duration_since(n.since).as_secs()
                 );
                 Item::new(pane as usize, name, detail.clone(), false).also_found_by(&detail)
             })
@@ -679,6 +730,41 @@ impl Server {
         let result = if had { "cleared" } else { "nothing to clear" };
         self.log_signal("cli", None, "cli", Some(pane), result);
         (true, result.to_string())
+    }
+
+    /// `arcade notify list`: the notifications that wait, the most urgent first, one per line with
+    /// tab-separated fields: session, window number, window name, pane number, pane label, class,
+    /// source, seconds waited, title, message.
+    pub(super) fn notify_list(&self) -> (bool, String) {
+        let now = Instant::now();
+        let lines: Vec<String> = self
+            .notices
+            .by_priority()
+            .into_iter()
+            .map(|(pane, n)| {
+                let (session, number, window) = self
+                    .locate_pane(pane)
+                    .and_then(|(s, w)| {
+                        let session = self.sessions.get(&s)?;
+                        let window = session.window(w)?;
+                        Some((session.name.clone(), window.number, window.name.clone()))
+                    })
+                    .unwrap_or_else(|| ("?".to_string(), 0, String::new()));
+                format!(
+                    "{session}\t{number}\t{window}\t{pane}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    self.pane_label(pane),
+                    n.class.name(),
+                    n.source,
+                    now.duration_since(n.since).as_secs(),
+                    n.title,
+                    n.message
+                )
+            })
+            .collect();
+        (
+            true,
+            lines.join("\n") + if lines.is_empty() { "" } else { "\n" },
+        )
     }
 
     /// `arcade notify log`: the latest signals, oldest first, one per line with tab-separated

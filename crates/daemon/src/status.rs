@@ -18,6 +18,9 @@ pub struct TabSpan {
     pub to: u16,
     /// This is the marker at an end of the bar that tells tabs are hidden, not a tab.
     pub marker: bool,
+    /// This is the counter for the other sessions, not a tab (a click on it opens the list of
+    /// notifications).
+    pub counter: bool,
 }
 
 /// A piece of the text of a tab; a quiet piece (the program's own title) is drawn fainter than
@@ -136,6 +139,9 @@ pub struct StatusInfo {
     /// How many panes of the session have a notification, per class in the order of
     /// `Class::BY_URGENCY`.
     pub notices: [usize; 4],
+    /// The sessions that hold the notifications the counter counts, the one with the most urgent
+    /// notification first; empty when the counter counts the session's own panes too.
+    pub notice_sessions: Vec<String>,
     /// A line shown in place of the bar until the next key.
     pub message: Option<String>,
     pub message_kind: MessageKind,
@@ -143,6 +149,55 @@ pub struct StatusInfo {
     /// The key hint, shown in place of the bar while the prefix is waiting for a key.
     pub hint: Option<String>,
 }
+
+/// The counter for the other sessions, one piece of the bar's style, the most urgent class first:
+/// the symbol of each class in its colour and the count in the bar's text colour, on a tab's
+/// surface. With `named` and when the sessions that hold the notifications are known it starts
+/// with the name of the session that holds the most urgent one (cut in the middle to 12 cells)
+/// and, when there are more, how many other sessions hold some.
+fn counter_cells(info: &StatusInfo, named: bool) -> Vec<Cell> {
+    let bar = theme::style(Role::StatusBar);
+    let name = theme::style(Role::PillName);
+    let mut inner: Vec<Cell> = Vec::new();
+    if named && let Some(first) = info.notice_sessions.first() {
+        let shown = shorten_pieces(&[TabPiece::plain(first.clone())], COUNTER_NAME_CELLS);
+        let mut label: String = shown.iter().map(|p| p.text.as_str()).collect();
+        if info.notice_sessions.len() > 1 {
+            label.push_str(&format!(" +{}", info.notice_sessions.len() - 1));
+        }
+        inner.extend(text_cells(&format!(" {label}"), name));
+    }
+    let mut groups = 0;
+    for (class, count) in Class::BY_URGENCY.iter().zip(info.notices) {
+        if count > 0 {
+            // One space after the name, two between the classes.
+            let sep = if groups == 0 { " " } else { "  " };
+            groups += 1;
+            inner.extend(text_cells(sep, name));
+            inner.extend(text_cells(
+                theme::notice_symbol(*class),
+                theme::notice_style(*class),
+            ));
+            inner.extend(text_cells(&count.to_string(), name));
+        }
+    }
+    if inner.is_empty() {
+        return Vec::new();
+    }
+    inner.extend(text_cells(" ", name));
+    let mut cells = capped(
+        info.style,
+        inner,
+        cap(Symbol::PillCapLeft, name),
+        cap(Symbol::PillCapRight, name),
+    );
+    cells.insert(0, blank(bar));
+    cells.push(blank(bar));
+    cells
+}
+
+/// The longest a session's name is in the counter, in cells.
+const COUNTER_NAME_CELLS: usize = 12;
 
 /// The cells of the bar, and the column the host's cursor should go to while a prompt is open.
 #[cfg(test)]
@@ -755,34 +810,6 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
         Some(CopyState::VisualLine) => select_word = Some("V-LINE".to_string()),
         Some(CopyState::Jump(typed)) => select_word = Some(format!("JUMP {typed}")),
     }
-    // The counters are one piece of the bar's style, the most urgent class first: the symbol of
-    // each class in its colour and the count in the bar's text colour, on a tab's surface.
-    let mut counters: Vec<Cell> = Vec::new();
-    {
-        let name = theme::style(Role::PillName);
-        let mut inner: Vec<Cell> = Vec::new();
-        for (class, count) in Class::BY_URGENCY.iter().zip(info.notices) {
-            if count > 0 {
-                inner.extend(text_cells(if inner.is_empty() { " " } else { "  " }, name));
-                inner.extend(text_cells(
-                    theme::notice_symbol(*class),
-                    theme::notice_style(*class),
-                ));
-                inner.extend(text_cells(&count.to_string(), name));
-            }
-        }
-        if !inner.is_empty() {
-            inner.extend(text_cells(" ", name));
-            counters = capped(
-                info.style,
-                inner,
-                cap(Symbol::PillCapLeft, name),
-                cap(Symbol::PillCapRight, name),
-            );
-            counters.insert(0, blank(bar));
-            counters.push(blank(bar));
-        }
-    }
     let mut shown_words: Vec<(&str, Role)> = words
         .iter()
         .map(|w| (w.as_str(), Role::Indicator))
@@ -803,6 +830,27 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
     let gap = usize::from(!words_cells.is_empty());
     let half = width / 2;
     let left_needed = tabs_needed(info, label.len() + 1, current_tab);
+    // The counter says which session holds what it counts while everything else shows whole; it
+    // is the first thing to give way: the name goes before any tab is cut, then the counter goes
+    // down to the symbols and counts alone, and those go before the current tab is touched.
+    let counters = {
+        let short = counter_cells(info, false);
+        let long = counter_cells(info, true);
+        let fitting = Fitting::new(info);
+        let natural_tabs: usize = (0..info.tabs.len())
+            .map(|i| fitting.width(i, fitting.natural[i]))
+            .sum();
+        let gap = usize::from(!words_cells.is_empty());
+        if long.len() > short.len()
+            && label.len() + 1 + natural_tabs + long.len() + words_cells.len() + gap <= width
+        {
+            long
+        } else if left_needed + short.len() + words_cells.len() + gap <= width {
+            short
+        } else {
+            Vec::new()
+        }
+    };
     // A question that is asked takes its room before the current tab does; a message does not.
     let kept_for_tabs = if info.prompt.is_some() {
         label.len() + 1
@@ -813,6 +861,7 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
         .saturating_sub(words_cells.len() + gap)
         .min(width.saturating_sub(kept_for_tabs + counters.len() + words_cells.len() + gap));
     let (message, message_cursor) = message_cells(info, message_room);
+    let counter_len = counters.len();
     let mut right = counters.clone();
     let message_at = right.len();
     right.extend(message.iter().cloned());
@@ -870,8 +919,19 @@ pub fn build_with_tabs(cols: u16, info: &StatusInfo) -> (Vec<Cell>, Option<u16>,
             from: from as u16,
             to: to.min(room) as u16,
             marker,
+            counter: false,
         })
         .collect();
+    let mut spans: Vec<TabSpan> = spans;
+    if counter_len > 0 {
+        spans.push(TabSpan {
+            index: 0,
+            from: room as u16,
+            to: (room + counter_len).min(width) as u16,
+            marker: false,
+            counter: true,
+        });
+    }
     (cells, cursor, spans)
 }
 
@@ -1068,6 +1128,7 @@ mod tests {
             unlock_key: None,
             copy: None,
             notices: [0; 4],
+            notice_sessions: Vec::new(),
             message: None,
             message_kind: MessageKind::Information,
             prompt: None,
@@ -1326,7 +1387,11 @@ mod tests {
                     let mut quiet = info();
                     quiet.style = style;
                     let (_, _, quiet_spans) = build_with_tabs(width, &quiet);
-                    let shows = |spans: &[TabSpan]| spans.iter().any(|s| !s.marker && s.index == 1);
+                    let shows = |spans: &[TabSpan]| {
+                        spans
+                            .iter()
+                            .any(|s| !s.marker && !s.counter && s.index == 1)
+                    };
                     // A prompt takes its room before the current tab does.
                     if shows(&quiet_spans) && name != "question" && name != "prompt" {
                         assert!(shows(&spans), "the current tab is gone: {context}");
@@ -1632,6 +1697,100 @@ mod tests {
         let (_, _) = theme::drawing_the_bar(true, || ());
         assert_eq!(theme::notice_style(Class::Input), outside);
         theme::set_state_look(theme::StateLook::default());
+    }
+
+    /// The counter names the session that holds what it counts: one session by name, several by
+    /// the name of the one with the most urgent notification and how many others there are; the
+    /// name is cut in the middle to 12 cells.
+    #[test]
+    fn the_counter_names_the_session_that_holds_what_it_counts() {
+        let mut i = info();
+        i.notices = [0, 0, 0, 1];
+        i.notice_sessions = vec!["hahaa".to_string()];
+        let line = text(&build(110, &i).0);
+        assert!(line.contains(" hahaa \u{25cf}1 "), "{line:?}");
+        i.notices = [1, 0, 0, 2];
+        i.notice_sessions = vec!["hahaa".to_string(), "web".to_string()];
+        let line = text(&build(110, &i).0);
+        assert!(line.contains(" hahaa +1 \u{25b2}1  \u{25cf}2 "), "{line:?}");
+        i.notice_sessions = vec!["a-very-long-session-name".to_string()];
+        let line = text(&build(110, &i).0);
+        let counter = line.trim_end();
+        assert!(
+            counter.contains("a-ver\u{2026}-name") || counter.contains('\u{2026}'),
+            "{line:?}"
+        );
+        assert!(!counter.contains("a-very-long-session-name"), "{line:?}");
+        // Without the names (the counter counts every pane) it is as it was.
+        i.notice_sessions = Vec::new();
+        let line = text(&build(110, &i).0);
+        assert!(line.contains(" \u{25b2}1  \u{25cf}2 "), "{line:?}");
+    }
+
+    /// On a narrow bar the name is the first to give way, then the whole counter, and the current
+    /// tab shows at every width from 20 to 200.
+    #[test]
+    fn the_counter_gives_way_before_the_tabs_do_and_the_current_tab_always_shows() {
+        let mut i = info();
+        i.tabs.push(Tab {
+            number: 3,
+            text: vec![TabPiece::plain("a-long-window-name")],
+            current: false,
+            zoomed: false,
+            notice: None,
+            progress: None,
+            command: None,
+        });
+        i.notices = [1, 0, 0, 2];
+        i.notice_sessions = vec!["hahaa".to_string(), "web".to_string()];
+        let rank = |cells: &[Cell]| {
+            let line = text(cells);
+            if line.contains("hahaa") {
+                0
+            } else if line.contains('\u{25b2}') {
+                1
+            } else {
+                2
+            }
+        };
+        let mut previous = 0;
+        for width in (20..=200u16).rev() {
+            let (cells, _, spans) = build_with_tabs(width, &i);
+            assert_eq!(cells.len(), usize::from(width));
+            let now = rank(&cells);
+            assert!(now >= previous, "width {width}: {:?}", text(&cells));
+            previous = now;
+            let current = i.tabs.iter().position(|t| t.current).unwrap();
+            assert!(
+                spans
+                    .iter()
+                    .any(|s| !s.marker && !s.counter && s.index == current),
+                "width {width}: the current tab is missing in {:?}",
+                text(&cells)
+            );
+            if now == 0 {
+                // The name stays only while every tab shows whole.
+                assert!(spans.iter().all(|s| !s.marker), "width {width}");
+                let line = text(&cells);
+                assert!(
+                    line.contains("a-long-window-name"),
+                    "width {width}: {line:?}"
+                );
+            }
+            // A click on the counter lands on the counter, where it is.
+            if let Some(counter) = spans.iter().find(|s| s.counter) {
+                let line: Vec<char> = text(&cells).chars().collect();
+                let shown: String = line[usize::from(counter.from)..usize::from(counter.to)]
+                    .iter()
+                    .collect();
+                assert!(
+                    shown.contains('\u{25cf}') || shown.contains('\u{25b2}'),
+                    "{shown:?}"
+                );
+            }
+        }
+        // All three forms were seen.
+        assert_eq!(previous, 2);
     }
 
     /// With a number a quiet tab is as narrow as it was before the status had a place of its
@@ -2527,7 +2686,8 @@ mod tests {
                             format!("width {width} {style:?} {number:?} notice on {notice_on}");
                         let (cells, _, spans) = build_with_tabs(width, &i);
                         assert_eq!(cells.len(), usize::from(width), "{ctx}");
-                        let tabs: Vec<&TabSpan> = spans.iter().filter(|s| !s.marker).collect();
+                        let tabs: Vec<&TabSpan> =
+                            spans.iter().filter(|s| !s.marker && !s.counter).collect();
                         let markers: Vec<&TabSpan> = spans.iter().filter(|s| s.marker).collect();
                         // The current tab always shows.
                         assert!(tabs.iter().any(|s| s.index == 2), "{ctx}: {}", text(&cells));
@@ -2688,16 +2848,26 @@ mod tests {
                 }
                 theme::set_state_look(theme::StateLook::default());
             }
-            // A bar with the counters at the right, at 110 columns.
-            {
+            // A bar with the counter at the right, at 110 columns: one other session holds a
+            // notification, and two sessions hold some.
+            for (file, notices, sessions) in [
+                ("one", [0, 0, 0, 1], vec!["hahaa"]),
+                ("two", [1, 0, 0, 2], vec!["hahaa", "web"]),
+            ] {
                 let mut i = info();
                 i.style = style;
-                i.notices = [1, 0, 2, 3];
+                i.notices = notices;
+                i.notice_sessions = sessions.into_iter().map(String::from).collect();
                 let (cells, _) = build(110, &i);
                 let mut bytes = Vec::new();
                 crate::render::push_row(&mut bytes, 0, &cells, &[]);
                 bytes.extend_from_slice(b"\x1b[0m\n");
-                std::fs::write(format!("{dir}/counters-{name}-110.bin"), bytes).unwrap();
+                std::fs::write(format!("{dir}/counters-{file}-{name}-110.bin"), bytes).unwrap();
+                std::fs::write(
+                    format!("{dir}/counters-{file}-{name}-110.txt"),
+                    format!("{}\n", text(&cells)),
+                )
+                .unwrap();
             }
             // The top row of a window of two panes whose left pane wears the mark of an info
             // notification in its corner (the cell the frame draws with `notice_style`).

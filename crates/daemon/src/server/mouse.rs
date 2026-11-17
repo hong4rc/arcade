@@ -148,8 +148,14 @@ impl Server {
                     .map(|(window, _, _)| *window),
                 _ => None,
             };
+            let on_counter = matches!(m.kind, MouseKind::Press(0))
+                && session
+                    .counter_bar
+                    .is_some_and(|(from, to)| (from..to).contains(&m.x));
             self.set_drag(session_id, None);
-            if let Some(window) = target {
+            if on_counter {
+                self.open_notifications_from_counter(session_id);
+            } else if let Some(window) = target {
                 self.select_window(session_id, window);
             }
             return;

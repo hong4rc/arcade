@@ -198,6 +198,7 @@ impl Server {
             "notify.send" => return self.notify_send(args),
             "notify.clear" => return self.notify_clear(args),
             "notify.log" => return self.notify_log(),
+            "notify.list" => return self.notify_list(),
             "server.kill" => {
                 self.stopping = Some(Instant::now() + KILL_GRACE);
                 for p in self.panes.values() {

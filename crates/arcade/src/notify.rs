@@ -26,6 +26,7 @@ struct Flags {
     source: Option<String>,
     strict: bool,
     all: bool,
+    json: bool,
 }
 
 fn parse(args: &[String]) -> Result<Flags, String> {
@@ -39,6 +40,7 @@ fn parse(args: &[String]) -> Result<Flags, String> {
         match name {
             "--strict" => flags.strict = true,
             "--all" => flags.all = true,
+            "--json" => flags.json = true,
             "--class" | "--title" | "--message" | "--target" | "--source" => {
                 let value = match inline {
                     Some(v) => v,
@@ -138,14 +140,16 @@ fn finish(strict: bool, result: Result<(bool, String), String>) -> u8 {
 
 pub fn run(socket: &Path, rest: &[String]) -> u8 {
     let (word, tail) = match rest.split_first() {
-        Some((w, t)) if matches!(w.as_str(), "clear" | "check" | "log") => (w.as_str(), t),
+        Some((w, t)) if matches!(w.as_str(), "clear" | "check" | "log" | "list") => (w.as_str(), t),
         _ => ("send", rest),
     };
     let flags = match parse(tail) {
         Ok(f) => f,
         Err(why) => {
             // A hook with a wrong option must not break the program that called it.
-            return if tail.iter().any(|a| a == "--strict") || matches!(word, "check" | "log") {
+            return if tail.iter().any(|a| a == "--strict")
+                || matches!(word, "check" | "log" | "list")
+            {
                 eprintln!("arcade: notify: {why}");
                 1
             } else {
@@ -157,6 +161,7 @@ pub fn run(socket: &Path, rest: &[String]) -> u8 {
         "clear" => clear(socket, &flags),
         "check" => check(socket, &flags),
         "log" => log(socket),
+        "list" => list(socket, flags.json),
         _ => send(socket, &flags),
     }
 }
@@ -243,6 +248,75 @@ fn check(socket: &Path, flags: &Flags) -> u8 {
         }
     }
     u8::from(failed)
+}
+
+/// `arcade notify list`: the notifications that wait, one per line (or a JSON list), and nothing
+/// when there are none. It only reads.
+fn list(socket: &Path, json: bool) -> u8 {
+    match exchange(socket, "notify.list", Vec::new(), MANUAL_BUDGET) {
+        Ok((true, output)) => {
+            let rows: Vec<Vec<&str>> = output
+                .lines()
+                .map(|line| line.splitn(10, '\t').collect::<Vec<&str>>())
+                .filter(|f| f.len() == 10)
+                .collect();
+            if json {
+                let items: Vec<String> = rows
+                    .iter()
+                    .map(|f| {
+                        format!(
+                            "{{\"session\":{},\"window\":{},\"window_name\":{},\"pane\":{},\"pane_label\":{},\"class\":{},\"source\":{},\"waited_seconds\":{},\"title\":{},\"message\":{}}}",
+                            json_text(f[0]),
+                            f[1].parse::<u64>().unwrap_or(0),
+                            json_text(f[2]),
+                            f[3].parse::<u64>().unwrap_or(0),
+                            json_text(f[4]),
+                            json_text(f[5]),
+                            json_text(f[6]),
+                            f[7].parse::<u64>().unwrap_or(0),
+                            json_text(f[8]),
+                            json_text(f[9]),
+                        )
+                    })
+                    .collect();
+                println!("[{}]", items.join(","));
+            } else {
+                for f in rows {
+                    let what = match (f[8].is_empty(), f[9].is_empty()) {
+                        (false, false) => format!("{}: {}", f[8], f[9]),
+                        (false, true) => f[8].to_string(),
+                        _ => f[9].to_string(),
+                    };
+                    println!(
+                        "{}\t{} {}\tpane {} {}\t{}\t{}\t{}s\t{}",
+                        f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], what
+                    );
+                }
+            }
+            0
+        }
+        Ok((false, why)) | Err(why) => {
+            eprintln!("arcade: notify list: {}", why.trim_end());
+            1
+        }
+    }
+}
+
+/// A text as a JSON string.
+fn json_text(text: &str) -> String {
+    let mut out = String::from("\"");
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn log(socket: &Path) -> u8 {

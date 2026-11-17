@@ -370,6 +370,9 @@ struct Session {
     /// The columns of the status bar that each window's tab covers, as the bar was last drawn:
     /// the window, from, to (not included). Empty while something else takes the bar's place.
     tab_bar: Vec<(u64, u16, u16)>,
+    /// Where the counter for the other sessions is on the bar (a click on it opens the list of
+    /// notifications).
+    counter_bar: Option<(u16, u16)>,
     /// When the windows' names are to be looked at again because the last look was skipped.
     names_due: Option<Instant>,
     /// The attached client's keyboard bytes that are not complete yet.
@@ -486,6 +489,7 @@ impl Session {
             title_inputs: None,
             sent_progress: None,
             tab_bar: Vec::new(),
+            counter_bar: None,
             names_due: None,
             keys: KeyReader::new(),
             key_state: KeyState::new(),

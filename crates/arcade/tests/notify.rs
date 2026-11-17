@@ -327,3 +327,58 @@ fn the_log_lists_what_became_of_the_signals_and_keeps_no_text() {
     assert!(text.contains("cli") && text.contains("error"), "{text}");
     assert!(!text.contains("secret"), "{text}");
 }
+
+/// `arcade notify list` prints the waiting notifications one per line (session, window, pane,
+/// class, source, time waited, message), the most urgent first, and nothing when there are none;
+/// `--json` gives a list for scripts. It reads only.
+#[test]
+fn notify_list_prints_what_waits_and_nothing_when_nothing_does() {
+    let daemon = TestDaemon::start();
+    let (_client, first) = two_panes(&daemon);
+    let o = run(daemon.socket(), None, &["notify", "list"]);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(out(&o), "", "{}", err(&o));
+    let o = run(daemon.socket(), None, &["notify", "list", "--json"]);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(out(&o).trim(), "[]");
+    for (class, message) in [("info", "done \"one\""), ("approval", "ok to run?")] {
+        let o = run(
+            daemon.socket(),
+            None,
+            &[
+                "notify",
+                "--target",
+                &first.to_string(),
+                "--class",
+                class,
+                "--source",
+                "agent",
+                "--message",
+                message,
+            ],
+        );
+        assert_eq!(o.status.code(), Some(0));
+    }
+    let o = run(daemon.socket(), None, &["notify", "list"]);
+    assert_eq!(o.status.code(), Some(0));
+    let text = out(&o);
+    let lines: Vec<&str> = text.lines().collect();
+    // One notification per pane: the later one (approval) replaced the first.
+    assert_eq!(lines.len(), 1, "{text}");
+    let f: Vec<&str> = lines[0].split('\t').collect();
+    assert_eq!(f[0], "work", "{text}");
+    assert!(f[1].starts_with("1 "), "window: {text}");
+    assert!(f[2].starts_with(&format!("pane {first} ")), "pane: {text}");
+    assert_eq!(f[3], "approval", "{text}");
+    assert_eq!(f[4], "agent", "{text}");
+    assert!(f[5].ends_with('s'), "{text}");
+    assert_eq!(f[6], "ok to run?", "{text}");
+    let o = run(daemon.socket(), None, &["notify", "list", "--json"]);
+    let json = out(&o);
+    assert!(json.starts_with("[{\"session\":\"work\""), "{json}");
+    assert!(json.contains("\"class\":\"approval\""), "{json}");
+    assert!(json.contains("\"message\":\"ok to run?\""), "{json}");
+    assert_eq!(err(&o), "");
+    let o = run(daemon.socket(), None, &["notify", "list", "--bogus"]);
+    assert_eq!(o.status.code(), Some(1));
+}

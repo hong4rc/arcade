@@ -306,14 +306,20 @@ pub fn swap_hint_line(table: &Table, width: usize) -> String {
 /// The hint that takes the place of the status bar after the prefix: the commonly used keys of
 /// `table` in a fixed order, cut from the end to fit in `width` cells, always ending with the key
 /// that lists every key. Taken from the table, so a rebound key shows as it is bound now.
-pub fn hint_line(table: &Table, width: usize) -> String {
+pub fn hint_line(table: &Table, width: usize, notes_first: bool) -> String {
     let last = hint_key(table, "keys.list", None).map(|k| format!("{k} all keys"));
-    let items: Vec<String> = HINT_ITEMS
+    let mut items: Vec<String> = HINT_ITEMS
         .iter()
         .filter_map(|(commands, label)| {
             hint_keys(table, commands).map(|keys| format!("{keys} {label}"))
         })
         .collect();
+    // Notifications of other sessions are waiting (the counter is on the bar): the key of the
+    // list that tells where they are goes first, so a narrow line keeps it.
+    if notes_first && let Some(at) = items.iter().position(|i| i.ends_with(" notes")) {
+        let notes = items.remove(at);
+        items.insert(0, notes);
+    }
     let join = |count: usize| {
         let mut parts: Vec<&str> = items.iter().take(count).map(String::as_str).collect();
         if let Some(last) = &last {
@@ -782,7 +788,7 @@ mod tests {
 
     #[test]
     fn the_hint_line_names_the_common_keys_and_ends_with_the_key_list() {
-        let line = hint_line(&default_map().prefix, 200);
+        let line = hint_line(&default_map().prefix, 200, false);
         assert_eq!(
             line,
             " | - split  hjkl focus  HJKL size  c new  1-9 win  t tree  a notes  z zoom  [ copy  ? all keys"
@@ -792,14 +798,14 @@ mod tests {
     #[test]
     fn a_narrow_hint_line_is_cut_from_the_end_but_keeps_the_key_list() {
         for width in [20usize, 40, 60, 79] {
-            let line = hint_line(&default_map().prefix, width);
+            let line = hint_line(&default_map().prefix, width, false);
             assert!(line.chars().count() <= width, "{width}: {line}");
             assert!(line.ends_with("? all keys"), "{width}: {line}");
             if width >= 30 {
                 assert!(line.starts_with(" | - split"), "{width}: {line}");
             }
         }
-        assert!(hint_line(&default_map().prefix, 12).chars().count() <= 12);
+        assert!(hint_line(&default_map().prefix, 12, false).chars().count() <= 12);
     }
 
     #[test]
@@ -815,12 +821,12 @@ mod tests {
             mods: Mods::NONE,
         };
         bind(&mut map.prefix, new_zoom, "pane.zoom", &[], false);
-        let line = hint_line(&map.prefix, 200);
+        let line = hint_line(&map.prefix, 200, false);
         assert!(line.contains("b zoom"), "{line}");
         assert!(!line.contains("z zoom"), "{line}");
         // A command with no key at all is left out.
         map.prefix.remove(&new_zoom);
-        assert!(!hint_line(&map.prefix, 200).contains("zoom"));
+        assert!(!hint_line(&map.prefix, 200, false).contains("zoom"));
     }
 
     #[test]
@@ -829,7 +835,7 @@ mod tests {
             nav: ['h', 'n', 'e', 'i'],
             ..KeysConfig::default()
         };
-        let line = hint_line(&Keymap::defaults(&config).prefix, 200);
+        let line = hint_line(&Keymap::defaults(&config).prefix, 200, false);
         assert!(
             line.contains("hnei focus") && line.contains("HNEI size"),
             "{line}"
@@ -1064,5 +1070,26 @@ mod tests {
             !map.copy.values().any(|b| b.command == "copy.search-next"),
             "no key is left for it"
         );
+    }
+
+    #[test]
+    fn the_notes_hint_goes_first_when_other_sessions_wait_and_a_narrow_line_keeps_it() {
+        let map = default_map();
+        let plain = hint_line(&map.prefix, 200, false);
+        let first = hint_line(&map.prefix, 200, true);
+        assert!(plain.contains(" notes") && first.contains(" notes"));
+        assert!(
+            first
+                .trim_start()
+                .split("  ")
+                .next()
+                .unwrap()
+                .ends_with(" notes")
+        );
+        // The width that cuts the notes item out of the plain line keeps it in the other.
+        let at = plain.find(" notes").unwrap();
+        let narrow = at;
+        assert!(!hint_line(&map.prefix, narrow, false).contains(" notes"));
+        assert!(hint_line(&map.prefix, narrow.max(30), true).contains(" notes"));
     }
 }

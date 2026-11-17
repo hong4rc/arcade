@@ -131,6 +131,7 @@ fn status_info(
             crate::config::StatusCount::All => notices.counts(s.all_panes()),
             crate::config::StatusCount::OtherSessions => notices.counts_outside(&s.all_panes()),
         },
+        notice_sessions: Vec::new(),
         message: s.key_state.message.clone(),
         message_kind: s.key_state.message_kind,
         prompt: s.key_state.status_prompt(),
@@ -379,6 +380,7 @@ impl Server {
         let status_position = self.config.status_position;
         let unlock_key = self.unlock_key_name();
         let blink_dim = self.blink_dim_at(Instant::now());
+        let notice_sessions = self.notice_sessions(session_id);
         // Panes get the sizes the dragged divider gave them, once per frame.
         let stale = self
             .sessions
@@ -607,6 +609,7 @@ impl Server {
                 // the direction of a swap is not a hint but the question the swap is waiting on.
                 let swapping =
                     matches!(session.key_state.prefix, keys::PrefixState::Swapping { .. });
+                let notes_first = !notice_sessions.is_empty();
                 let hint = ((self.config.keys.hint || swapping)
                     && session.picker.is_none()
                     && session.tree.is_none()
@@ -616,10 +619,10 @@ impl Server {
                     if swapping {
                         crate::keymap::swap_hint_line(&self.keymap.prefix, width)
                     } else {
-                        crate::keymap::hint_line(&self.keymap.prefix, width)
+                        crate::keymap::hint_line(&self.keymap.prefix, width, notes_first)
                     }
                 });
-                let info = status_info(
+                let mut info = status_info(
                     session,
                     &self.config,
                     &self.panes,
@@ -628,14 +631,17 @@ impl Server {
                     &self.notices,
                     hint,
                 );
+                info.notice_sessions = notice_sessions;
                 let dim = blink_dim;
                 let ((cells, prompt_cursor, spans), blinks) =
                     crate::theme::drawing_the_bar(dim, || status::build_with_tabs(cols, &info));
                 session.bar_blinks = blinks;
                 session.bar_blink_dim = dim;
                 // Where the tabs are as drawn, for a click on one.
+                session.counter_bar = spans.iter().find(|t| t.counter).map(|t| (t.from, t.to));
                 session.tab_bar = spans
                     .iter()
+                    .filter(|t| !t.counter)
                     .filter_map(|t| Some((session.windows.get(t.index)?.id, t.from, t.to)))
                     .collect();
                 session.screen.set_row(y, cells);

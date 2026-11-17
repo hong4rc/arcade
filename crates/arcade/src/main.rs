@@ -45,6 +45,8 @@ commands:
                                   take a notification away
   notify check [--target <pane>]  show which pane and socket would be used, and send a test
   notify log                      show what became of the latest signals
+  notify list [--json]            show the notifications that wait: session, window, pane,
+                                  class, source, time waited, message (nothing if none)
   version, --version              print the version
 ";
 
