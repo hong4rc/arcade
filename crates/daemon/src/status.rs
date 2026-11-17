@@ -285,7 +285,7 @@ fn tab_cells_with(tab: &Tab, pieces: &[TabPiece], info: &StatusInfo) -> Vec<Cell
     // cell after the name is kept for it, so the tab's width does not depend on what it says.
     if info.number == NumberPosition::Off {
         match status_mark(tab) {
-            Some(mark) => text.extend(mark_cells(mark, name)),
+            Some(mark) => text.extend(mark_cells(mark, name, tab.current)),
             None => text.extend(text_cells(" ", name)),
         }
         text.extend(text_cells(" ", name));
@@ -385,9 +385,9 @@ fn mark_parts(mark: Mark) -> (&'static str, theme::Tint) {
 }
 
 /// The cell of a mark on the block it stands on, in the mark's colour.
-fn mark_cells(mark: Mark, block: arcade_term::Style) -> Vec<Cell> {
+fn mark_cells(mark: Mark, block: arcade_term::Style, current: bool) -> Vec<Cell> {
     let (symbol, tint) = mark_parts(mark);
-    text_cells(symbol, theme::cell_style(tint, block))
+    text_cells(symbol, theme::cell_style_on(tint, block, current))
 }
 
 /// The badge of a tab and its colours: the number on the grey badge (the accent one for the
@@ -409,13 +409,16 @@ fn badge_cells(
     let look = theme::state_style();
     let padded = format!(" {symbol}{} ", " ".repeat(digits - 1));
     match look {
-        theme::StateStyle::Plain => (text_cells(&padded, theme::cell_style(tint, name)), name),
+        theme::StateStyle::Plain => (
+            text_cells(&padded, theme::cell_style_on(tint, name, tab.current)),
+            name,
+        ),
         theme::StateStyle::Number => {
-            let badge = theme::state_badge(look, tint);
+            let badge = theme::state_badge_on(look, tint, tab.current);
             (text_cells(&format!(" {} ", tab.number), badge), badge)
         }
         theme::StateStyle::Dark | theme::StateStyle::Filled => {
-            let badge = theme::state_badge(look, tint);
+            let badge = theme::state_badge_on(look, tint, tab.current);
             (text_cells(&padded, badge), badge)
         }
     }
@@ -587,7 +590,7 @@ fn marker_cells(
         })
         .min_by_key(|m| m.rank());
     if let Some(mark) = urgent {
-        cells.extend(mark_cells(mark, bar));
+        cells.extend(mark_cells(mark, bar, false));
     }
     let nearest = if before {
         *hidden.end()
@@ -2859,6 +2862,172 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The tab of the window that is current stays the one the eye finds while its state shows:
+    /// a state that asks nothing (running, a level, paused, finished) has its symbol in the accent
+    /// of the current tab; approval, input, error and a failure keep their own colours; a colour
+    /// the settings give wins.
+    #[test]
+    fn a_quiet_state_on_the_current_tab_takes_the_accent_colour() {
+        let accent = theme::style(Role::PillBadgeCurrent).bg;
+        let symbol_style = |mark: &str,
+                            look: theme::StateStyle,
+                            setting: &theme::StateLook,
+                            current: bool,
+                            prepare: &dyn Fn(&mut Tab)| {
+            let mut state = *setting;
+            state.style = look;
+            theme::set_state_look(state);
+            let mut i = info();
+            prepare(&mut i.tabs[usize::from(current)]);
+            let (cells, _, spans) = build_with_tabs(120, &i);
+            let span = &spans[usize::from(current)];
+            let shown = shown_text(&cells, span);
+            let from = shown.find(mark).unwrap();
+            let col = usize::from(span.from) + shown[..from].chars().count();
+            cells[col].style
+        };
+        let running = |t: &mut Tab| t.command = Some(CommandMark::Running);
+        let approval = |t: &mut Tab| t.notice = Some(Class::Approval);
+        let none = theme::StateLook::default();
+        for look in [theme::StateStyle::Dark, theme::StateStyle::Plain] {
+            let off = symbol_style(theme::running_symbol(), look, &none, false, &running);
+            let on = symbol_style(theme::running_symbol(), look, &none, true, &running);
+            // The symbol is the accent on the current tab (made readable on its block), and the
+            // palette's running colour on the others.
+            assert_ne!(on.fg, off.fg, "{look:?}");
+            let block = theme::style(if look == theme::StateStyle::Plain {
+                Role::PillNameCurrent
+            } else {
+                Role::PillBadge
+            });
+            if look == theme::StateStyle::Dark {
+                assert_eq!(on.fg, accent, "{look:?}");
+                assert_ne!(off.fg, accent, "{look:?}");
+            } else {
+                assert_eq!(
+                    on.fg,
+                    theme::cell_style_on(theme::Tint::Running, block, true).fg
+                );
+            }
+            // What asks for the user keeps its colour on the current tab.
+            let a_off = symbol_style(
+                theme::notice_symbol(Class::Approval),
+                look,
+                &none,
+                false,
+                &approval,
+            );
+            let a_on = symbol_style(
+                theme::notice_symbol(Class::Approval),
+                look,
+                &none,
+                true,
+                &approval,
+            );
+            if look == theme::StateStyle::Dark {
+                assert_eq!(a_on.fg, a_off.fg, "{look:?}");
+            } else {
+                // On its own block, the colour of the class and no other.
+                let own = theme::cell_style(theme::Tint::Class(Class::Approval), block);
+                assert_eq!(a_on.fg, own.fg, "{look:?}");
+            }
+        }
+        // A colour the settings give wins, current tab or not.
+        let mut set = theme::StateLook::default();
+        set.set(
+            theme::StateName::Running,
+            theme::StateSetting {
+                symbol: None,
+                color: theme::parse_color("#ff8800"),
+            },
+        );
+        let own = theme::parse_color("#ff8800").unwrap();
+        assert_eq!(
+            symbol_style(
+                theme::running_symbol(),
+                theme::StateStyle::Dark,
+                &set,
+                true,
+                &running
+            )
+            .fg,
+            own
+        );
+        assert_eq!(
+            symbol_style(
+                theme::running_symbol(),
+                theme::StateStyle::Dark,
+                &set,
+                false,
+                &running
+            )
+            .fg,
+            own
+        );
+        theme::set_state_look(theme::StateLook::default());
+    }
+
+    /// The current tab with a state, for looking at: the symbol in the accent on the dark badge
+    /// (what is built) and, to compare, the badge in the accent with the dark symbol.
+    #[test]
+    fn sample_current_tab_with_a_running_state() {
+        let Ok(dir) = std::env::var("ARCADE_SAMPLE_DIR") else {
+            return;
+        };
+        let accent_badge = theme::style(Role::PillBadgeCurrent);
+        for (name, style) in [("pill", TabStyle::Pill), ("flat", TabStyle::Flat)] {
+            for (word, look) in [
+                ("plain", theme::StateStyle::Plain),
+                ("dark", theme::StateStyle::Dark),
+                ("filled", theme::StateStyle::Filled),
+                ("number", theme::StateStyle::Number),
+            ] {
+                let mut state = theme::StateLook::default();
+                state.style = look;
+                theme::set_state_look(state);
+                let mut i = info();
+                i.style = style;
+                i.tabs[1].command = Some(CommandMark::Running);
+                let (cells, _) = build(110, &i);
+                let write = |tag: &str, cells: &[Cell]| {
+                    let mut bytes = Vec::new();
+                    crate::render::push_row(&mut bytes, 0, cells, &[]);
+                    bytes.extend_from_slice(b"\x1b[0m\n");
+                    std::fs::write(
+                        format!("{dir}/current-running-{tag}-{word}-{name}-110.bin"),
+                        bytes,
+                    )
+                    .unwrap();
+                };
+                write("symbol-in-accent", &cells);
+                // The other reading: the badge itself in the accent colours.
+                let dark = theme::state_badge(
+                    if look == theme::StateStyle::Plain {
+                        theme::StateStyle::Dark
+                    } else {
+                        look
+                    },
+                    theme::Tint::Running,
+                );
+                let mut badge_accent = cells.clone();
+                for c in &mut badge_accent {
+                    if (c.style.bg, c.style.fg) == (dark.bg, accent_badge.bg)
+                        || (c.style.bg, c.style.fg) == (accent_badge.bg, dark.fg)
+                    {
+                        c.style = accent_badge;
+                    }
+                }
+                write("badge-in-accent", &badge_accent);
+                let at = cells
+                    .iter()
+                    .position(|c| c.text == theme::running_symbol())
+                    .map(|n| (cells[n].style.fg, cells[n].style.bg));
+                eprintln!("{word} {name}: symbol (fg, bg) on the current tab = {at:?}");
+            }
+        }
+        theme::set_state_look(theme::StateLook::default());
     }
 
     /// Writes the bar as the host terminal receives it, in both styles, to the folder named by

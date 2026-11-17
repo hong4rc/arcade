@@ -616,9 +616,34 @@ fn tint_colour(tint: Tint) -> Color {
 /// the palette's colour, made lighter only as far as it takes to read at a contrast of 4.5. A
 /// colour the settings gave is used as it is, whatever its contrast.
 pub fn cell_style(tint: Tint, block: Style) -> Style {
+    cell_style_on(tint, block, false)
+}
+
+/// Whether a state is one that asks nothing of the user: on the tab of the window that is
+/// current its symbol takes the colour of the current tab (the accent), so the tab stays the one
+/// the eye finds. Approval, input, error and a failed command keep their own colours.
+fn quiet_tint(tint: Tint) -> bool {
+    matches!(
+        tint,
+        Tint::Running | Tint::Progress | Tint::Paused | Tint::Finished
+    )
+}
+
+/// The colour of the state's symbol on a tab: the settings' colour wins, then the accent on the
+/// current tab for a quiet state, then the palette's.
+fn tint_colour_on(tint: Tint, current: bool) -> Color {
+    if current && quiet_tint(tint) && custom_colour(StateName::of_tint(tint)).is_none() {
+        return palette::MAUVE;
+    }
+    tint_colour(tint)
+}
+
+/// `cell_style` for a tab that is `current` or not.
+pub fn cell_style_on(tint: Tint, block: Style, current: bool) -> Style {
     let name = StateName::of_tint(tint);
     let fg = match custom_colour(name) {
         Some(colour) => colour,
+        None if current && quiet_tint(tint) => readable_on(palette::MAUVE, block.bg),
         None => readable_on(default_tint_colour(tint), block.bg),
     };
     let fg = blinked(name, fg);
@@ -637,8 +662,14 @@ pub fn cell_style(tint: Tint, block: Style) -> Style {
 ///   colour for the symbol;
 /// - `filled` and `number`: the state's colour as the background and the dark text colour of the
 ///   bar on it (for the symbol, or for the number).
+#[cfg(test)]
 pub fn state_badge(look: StateStyle, tint: Tint) -> Style {
-    let colour = blinked(StateName::of_tint(tint), tint_colour(tint));
+    state_badge_on(look, tint, false)
+}
+
+/// `state_badge` for a tab that is `current` or not.
+pub fn state_badge_on(look: StateStyle, tint: Tint, current: bool) -> Style {
+    let colour = blinked(StateName::of_tint(tint), tint_colour_on(tint, current));
     Style {
         bold: true,
         ..match look {
