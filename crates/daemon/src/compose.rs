@@ -244,7 +244,21 @@ impl Screen {
         let up = |r: Rect| Rect::new(r.x, r.y.saturating_sub(origin_y), r.w, r.h);
         let focus = focus.map(up);
         let panes: Vec<Rect> = panes.iter().copied().map(up).collect();
-        for d in dividers {
+        // The cells of divider `o` that lie on the edge of pane `r`, corners included.
+        let touches_edge = |o: &Divider, r: Rect| {
+            (0..o.len).any(|j| {
+                let (x, y) = if o.vertical {
+                    (i32::from(o.x), i32::from(o.y + j))
+                } else {
+                    (i32::from(o.x + j), i32::from(o.y))
+                };
+                x >= i32::from(r.x) - 1
+                    && x <= i32::from(r.x + r.w)
+                    && y >= i32::from(r.y) - 1
+                    && y <= i32::from(r.y + r.h)
+            })
+        };
+        for (di, d) in dividers.iter().enumerate() {
             // The panes on each side of the divider, over its whole length.
             let side = |dx: i32, dy: i32| {
                 let mut found: Vec<Option<usize>> = Vec::new();
@@ -272,7 +286,16 @@ impl Screen {
             } else {
                 (side(0, -1), side(0, 1))
             };
-            let between_two = before_side.len() == 1 && after_side.len() == 1;
+            // Halves only when the two panes touch no divider but this one: colouring whole edges
+            // would then give both panes the same cells along this stretch.
+            let alone = |side: &[Option<usize>]| match side {
+                [Some(p)] => !dividers
+                    .iter()
+                    .enumerate()
+                    .any(|(k, o)| k != di && touches_edge(o, panes[*p])),
+                _ => false,
+            };
+            let between_two = alone(&before_side) && alone(&after_side);
             for i in 0..d.len {
                 let (x, y) = if d.vertical {
                     (d.x, d.y + i)
@@ -590,28 +613,30 @@ mod tests {
             ]
         );
         // The upper right pane: all of its left edge down to the corner where the divider
-        // under it joins; the divider under it, which has one pane on each side, on the half
-        // of the pane in focus.
+        // under it joins, and all of the divider under it. That divider has one pane on each
+        // side, but the upper right pane also touches the divider on its left, so the whole
+        // stretch is marked, not a half.
         assert_eq!(
             drawn(7, &dividers, &panes, 1),
             [
                 "     #     ",
                 "     #     ",
                 "     #     ",
-                "     ####..",
+                "     ######",
                 "     .     ",
                 "     .     ",
                 "     .     "
             ]
         );
-        // The lower right pane: its left edge from the corner down, and the other half.
+        // The lower right pane: its left edge from the corner down, and the whole divider
+        // above it, for the same reason.
         assert_eq!(
             drawn(7, &dividers, &panes, 2),
             [
                 "     .     ",
                 "     .     ",
                 "     .     ",
-                "     #..###",
+                "     ######",
                 "     #     ",
                 "     #     ",
                 "     #     "
@@ -629,21 +654,21 @@ mod tests {
             Rect::new(0, 4, 5, 3),
             Rect::new(6, 4, 5, 3),
         ];
-        // The upper left pane: its edge below, to the crossing, and the half of the divider
-        // beside it (which has one pane on each side) on its side.
+        // The upper left pane touches the divider beside it and the divider below it, so both
+        // are marked along their whole edge, the corner included.
         assert_eq!(
             drawn(7, &dividers, &panes, 0),
             [
                 "     #     ",
                 "     #     ",
-                "     .     ",
+                "     #     ",
                 "######.....",
                 "     .     ",
                 "     .     ",
                 "     .     "
             ]
         );
-        // The lower right pane: its edge above from the crossing, and the lower half beside it.
+        // The lower right pane: the whole divider above it and the whole divider beside it.
         assert_eq!(
             drawn(7, &dividers, &panes, 3),
             [
@@ -651,7 +676,7 @@ mod tests {
                 "     .     ",
                 "     .     ",
                 ".....######",
-                "     .     ",
+                "     #     ",
                 "     #     ",
                 "     #     "
             ]
@@ -669,7 +694,8 @@ mod tests {
             Rect::new(9, 4, 2, 3),
         ];
         // The lower right pane: along its top edge (the divider above has the upper pane on one
-        // side and two on the other), and the lower half of the divider beside it.
+        // side and two on the other), and the whole divider beside it, because the pane on its
+        // left touches the divider above as well.
         assert_eq!(
             drawn(7, &dividers, &panes, 3),
             [
@@ -677,7 +703,7 @@ mod tests {
                 "     .     ",
                 "     .     ",
                 "     ...###",
-                "     .  .  ",
+                "     .  #  ",
                 "     .  #  ",
                 "     .  #  "
             ]

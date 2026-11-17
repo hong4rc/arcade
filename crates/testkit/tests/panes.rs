@@ -148,8 +148,9 @@ fn the_divider_next_to_the_focused_pane_has_the_focus_color_on_the_focused_pane_
     let (above, below) = (3, 26);
     let (short_left, short_right) = ((15, 60), (15, 90)); // row, column
     let color = |c: &TestClient, row: u16, col: u16| c.style_at(row, col);
-    // The focus is on C (lower right). It is after the long divider, so it marks the lower half
-    // of it (where it touches C); the short divider is above C, so C marks its right half.
+    // The focus is on C (lower right). C touches the long divider only on its lower part, and
+    // it touches the short divider along its whole top edge, so the whole short divider is
+    // marked.
     client.wait_until(Duration::from_millis(300), |_| false);
     let (plain, lit) = (
         color(&client, above, divider_x),
@@ -157,16 +158,16 @@ fn the_divider_next_to_the_focused_pane_has_the_focus_color_on_the_focused_pane_
     );
     assert_ne!(plain, lit, "the divider is one color all along");
     assert_eq!(color(&client, short_right.0, short_right.1), lit);
-    assert_eq!(color(&client, short_left.0, short_left.1), plain);
-    // Focus on B (upper right): the long divider has two panes on its right, so the whole
-    // edge of B is marked, which is the upper part of the divider; the lower part touches C
-    // and stays plain. The short divider is below B, so its left half is lit.
+    assert_eq!(color(&client, short_left.0, short_left.1), lit);
+    // Focus on B (upper right): the whole edge of B is marked along the long divider, which is
+    // its upper part; the lower part touches C and stays plain. B touches the short divider
+    // along its whole bottom edge, so the whole short divider is marked too.
     run(&daemon, "pane.focus-up");
     client.wait_until(Duration::from_millis(300), |_| false);
     assert_eq!(color(&client, above, divider_x), lit);
     assert_eq!(color(&client, below, divider_x), plain);
     assert_eq!(color(&client, short_left.0, short_left.1), lit);
-    assert_eq!(color(&client, short_right.0, short_right.1), plain);
+    assert_eq!(color(&client, short_right.0, short_right.1), lit);
     // Focus on A: A touches the whole long divider, so all of it is lit; the short one does
     // not touch A.
     run(&daemon, "pane.focus-left");
