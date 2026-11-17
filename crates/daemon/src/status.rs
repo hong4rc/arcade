@@ -1692,7 +1692,7 @@ mod tests {
     #[test]
     fn a_blinking_symbol_alternates_its_colour_and_nothing_else() {
         let mut setting = theme::StateLook::default();
-        setting.set_blink(theme::StateName::Input, true);
+        setting.set_blink(theme::StateName::Approval, false);
         theme::set_state_look(setting);
         let mut i = info();
         i.tabs[0].notice = Some(Class::Input);

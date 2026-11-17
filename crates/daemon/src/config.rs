@@ -1751,9 +1751,14 @@ position = "top"
     #[test]
     fn blinking_has_an_empty_list_and_half_a_second_and_refuses_what_does_not_fit() {
         use crate::theme::StateName;
+        // By default the states that wait for a person blink; an empty list turns that off.
         let config = parse("").unwrap();
-        assert!(!config.state_look.any_blink());
+        assert!(config.state_look.blinks(StateName::Input));
+        assert!(config.state_look.blinks(StateName::Approval));
+        assert!(!config.state_look.blinks(StateName::Error));
         assert_eq!(config.state_look.blink_ms, 500);
+        let config = parse("[status]\nblink = []\n").unwrap();
+        assert!(!config.state_look.any_blink());
         let config =
             parse("[status]\nblink = [\"input\", \"approval\"]\nblink-interval = 200\n").unwrap();
         assert!(config.state_look.blinks(StateName::Input));

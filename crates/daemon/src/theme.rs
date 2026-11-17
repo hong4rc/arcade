@@ -463,10 +463,14 @@ pub const BLINK_DEFAULT_MS: u64 = 500;
 
 impl Default for StateLook {
     fn default() -> Self {
+        // The two states that wait for a person blink until something answers them.
+        let mut blink = [false; 9];
+        blink[StateName::Approval.index()] = true;
+        blink[StateName::Input.index()] = true;
         StateLook {
             style: StateStyle::default(),
             settings: [StateSetting::default(); 9],
-            blink: [false; 9],
+            blink,
             blink_ms: BLINK_DEFAULT_MS,
         }
     }

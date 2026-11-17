@@ -6,6 +6,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+/// A configuration that turns blinking off (the default blinks the states that wait for you).
+const NO_BLINK: &str = "[status]\nblink = []\n";
+
 use arcade_testkit::{AttachOptions, Screened, TestClient, TestDaemon, WAIT};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -173,7 +176,7 @@ fn nothing_is_woken_when_nothing_blinks() {
 
 #[test]
 fn a_reload_turns_blinking_on_and_off() {
-    let file = config_file("");
+    let file = config_file(NO_BLINK);
     let daemon = daemon_with(&file);
     let (mut client, first, _) = three_windows(&daemon);
     notify(&daemon, first, "input");
@@ -184,7 +187,7 @@ fn a_reload_turns_blinking_on_and_off() {
     assert!(daemon.command("arcade.reload-config", &[]).unwrap().0);
     let at = find(&client, '◆').unwrap();
     assert!(colours_of(&mut client, at, Duration::from_millis(1500)).len() >= 4);
-    std::fs::write(&file, "").unwrap();
+    std::fs::write(&file, NO_BLINK).unwrap();
     assert!(daemon.command("arcade.reload-config", &[]).unwrap().0);
     updates_in(&mut client, Duration::from_millis(1500));
     assert_eq!(updates_in(&mut client, Duration::from_millis(1200)), 0);
