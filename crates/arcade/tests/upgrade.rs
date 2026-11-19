@@ -1064,3 +1064,32 @@ fn a_key_after_a_program_that_pushed_keyboard_flags_through_an_upgrade_is_its_le
     }
     assert!(problems.is_empty(), "{problems:#?}");
 }
+
+/// `upgrade --force` of the build that runs says what happened, in a line of its own, with the
+/// client attached and without one: the upgrade ran, and the counts it kept are printed.
+#[test]
+fn a_forced_upgrade_of_the_same_build_says_what_happened() {
+    let env = Env::new();
+    let (live, client, _) = env.running_from_a_copy();
+    env.install_another_build_over(&live);
+    let out = env.plain_with(&live, &["upgrade"]);
+    assert!(out.status.success(), "{}", text(&out));
+    let mut client = Some(client);
+    for attached in [true, false] {
+        if !attached {
+            client.take();
+        }
+        let out = env.plain_with(&live, &["upgrade", "--force"]);
+        let shown = text(&out);
+        assert!(out.status.success(), "attached {attached}: {shown}");
+        assert!(
+            shown.contains("upgraded 0.1.5 -> 0.1.5: kept 1 sessions"),
+            "attached {attached}: {shown}"
+        );
+        assert_eq!(
+            shown.lines().filter(|l| l.starts_with("upgraded ")).count(),
+            1,
+            "{shown}"
+        );
+    }
+}
