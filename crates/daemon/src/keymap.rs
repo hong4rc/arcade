@@ -572,6 +572,7 @@ impl Keymap {
         bind(t, ch('-'), "pane.split-down", &[], false);
         bind(t, ch(';'), "pane.focus-last", &[], false);
         bind(t, ch('z'), "pane.zoom", &[], false);
+        bind(t, ch('o'), "pane.copy-info", &[], false);
         bind(t, ch('x'), "pane.close", &[], false);
         bind(t, ch('!'), "pane.break", &[], false);
         bind(t, ch(' '), "window.layout-next", &[], true);

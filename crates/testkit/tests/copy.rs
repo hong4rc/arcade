@@ -788,3 +788,20 @@ fn the_prompt_and_output_keys_work_in_copy_mode_of_a_real_pane() {
     wait_clipboard(&mut client, 2);
     assert_eq!(client.clipboard_writes[1], b"$ ls\nalpha\nbeta".to_vec());
 }
+
+#[test]
+fn prefix_then_o_copies_one_line_about_the_pane_in_focus() {
+    let daemon = quiet_daemon();
+    let mut client = client(&daemon);
+    let pane = client.focused_pane_id();
+    client.send(b"\x1b[109;5u");
+    client.send(b"o");
+    wait_clipboard(&mut client, 1);
+    let text = String::from_utf8(client.clipboard_writes[0].clone()).unwrap();
+    assert!(!text.contains('\n'), "{text}");
+    assert!(text.contains("session \"copy\""), "{text}");
+    assert!(text.contains("window 1 "), "{text}");
+    assert!(text.contains(&format!("pane {pane} ")), "{text}");
+    assert!(text.starts_with("arcade "), "{text}");
+    message_has(&mut client, "copied");
+}

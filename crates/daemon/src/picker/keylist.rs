@@ -91,6 +91,7 @@ pub fn label_of(command: &str, args: &[String]) -> String {
         "pane.split-right" => "split to the right",
         "pane.split-down" => "split downward",
         "pane.zoom" => "zoom",
+        "pane.copy-info" => "copy pane info",
         "pane.close" => "close pane",
         "pane.paste" => "paste",
         "pane.break" => "break to window",

@@ -144,6 +144,7 @@ The four default movement keys are `h` (left), `j` (down), `k` (up), `l` (right)
 | `-` | Split the pane downwards |
 | `;` | Go back to the previous pane |
 | `z` | Zoom or unzoom the pane |
+| `o` | Copy one line about the pane in focus to the clipboard, the way copy mode does, to paste to whoever traces a problem: `arcade 0.1.5 · session "main work" · window 1 "everfit-api" · pane 147 "title" · at 8272.0 s` (the Arcade version, the session, the window number and name, the pane number that `arcade notify list` prints, the pane's title, and the seconds since the daemon started, the clock of `arcade window log`). No environment and no screen contents are in it. The command is `pane.copy-info`; it is also in the command list |
 | `x` | Close the pane. The status bar asks `Close this pane? (y/n)` first: `y` closes it, any other key leaves it. The question is always asked; no setting turns it off |
 | `Space` | Next layout, in a cycle: panes side by side with equal widths, stacked with equal heights, one main pane on the left (the first pane, 60 percent of the width) with the others stacked on the right |
 | `=` | Make the panes equal in size (the way of splitting stays; panes along the same axis differ by at most one cell) |

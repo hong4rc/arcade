@@ -16,6 +16,24 @@ pub(super) struct Ctx {
     pub pane: u64,
 }
 
+/// The line `pane.copy-info` copies: the version, the session, the window, the pane (the number
+/// `arcade notify list` prints), its title, and the daemon clock that `arcade window log` prints.
+/// Names are quoted so that spaces are plain. Nothing else is in it: no environment and no
+/// screen contents.
+fn pane_info_line(
+    version: &str,
+    session: &str,
+    window_number: usize,
+    window_name: &str,
+    pane: u64,
+    title: &str,
+    at_seconds: f64,
+) -> String {
+    format!(
+        "arcade {version} · session {session:?} · window {window_number} {window_name:?} · pane {pane} {title:?} · at {at_seconds:.1} s"
+    )
+}
+
 /// How far one resize step moves a divider.
 const RESIZE_COLS: u16 = 5;
 const RESIZE_ROWS: u16 = 2;
@@ -324,6 +342,7 @@ impl Server {
             Command::WindowLayoutEven => self.layout_even(ctx),
             Command::PaneSplit(axis) => self.split_pane(ctx, axis),
             Command::PaneZoom => self.zoom_pane(ctx),
+            Command::PaneCopyInfo => self.copy_pane_info(ctx),
             Command::PaneClose => {
                 if let Some(pane) = self.panes.get_mut(&ctx.pane) {
                     pane.exit_note = Some("closed".to_string());
@@ -593,6 +612,34 @@ impl Server {
             self.send_output(client, &bytes);
         }
         self.set_message(session_id, &format!("{}{note}", sent.message));
+    }
+
+    /// Copy one line that says where the pane in focus is and what it is called, for a person to
+    /// paste to whoever traces a problem. It goes the way a copy does (see `copy_text`).
+    fn copy_pane_info(&mut self, ctx: Ctx) -> Result<String, String> {
+        let session = self
+            .sessions
+            .get(&ctx.session)
+            .ok_or_else(|| "no such session".to_string())?;
+        let window = session
+            .window(ctx.window)
+            .ok_or_else(|| "no such window".to_string())?;
+        let title = self
+            .panes
+            .get(&ctx.pane)
+            .and_then(|p| p.title.as_deref())
+            .unwrap_or("");
+        let line = pane_info_line(
+            env!("CARGO_PKG_VERSION"),
+            &session.name,
+            window.number,
+            &window.name,
+            ctx.pane,
+            title,
+            self.started.elapsed().as_secs_f64(),
+        );
+        self.copy_text_noted(ctx.session, &line, " (pane info)");
+        Ok(String::new())
     }
 
     /// Copy the output of the last command that finished in the pane (see `copy::last_output`).
@@ -1918,5 +1965,30 @@ fn direction_name(direction: Direction) -> &'static str {
         Direction::Down => "down",
         Direction::Up => "up",
         Direction::Right => "right",
+    }
+}
+
+#[cfg(test)]
+mod pane_info_tests {
+    use super::pane_info_line;
+
+    #[test]
+    fn the_info_line_names_version_session_window_pane_title_and_the_clock_on_one_line() {
+        assert_eq!(
+            pane_info_line(
+                "0.1.5",
+                "main work",
+                1,
+                "everfit-api",
+                147,
+                "vim notes.txt",
+                8272.04
+            ),
+            "arcade 0.1.5 · session \"main work\" · window 1 \"everfit-api\" · pane 147 \"vim notes.txt\" · at 8272.0 s"
+        );
+        // A title with a line break or a quote cannot break the line.
+        let line = pane_info_line("0.1.5", "a", 2, "b", 3, "x\ny\"z", 1.0);
+        assert!(!line.contains('\n'), "{line}");
+        assert!(line.contains("pane 3 \"x\\ny\\\"z\""), "{line}");
     }
 }

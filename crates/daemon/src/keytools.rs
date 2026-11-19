@@ -296,6 +296,17 @@ mod tests {
     }
 
     #[test]
+    fn the_prefix_key_o_copies_the_pane_info_by_default() {
+        let lines = list_lines(&Config::default());
+        let line = lines
+            .iter()
+            .find(|l| l.contains("pane.copy-info"))
+            .unwrap_or_else(|| panic!("{lines:?}"));
+        assert!(line.trim_start().starts_with("o "), "{line}");
+        assert!(line.ends_with("default"), "{line}");
+    }
+
+    #[test]
     fn the_default_tables_are_listed_with_their_source_and_a_stable_order() {
         let config = Config::default();
         let first = list_lines(&config);

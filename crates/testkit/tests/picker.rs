@@ -534,3 +534,10 @@ fn the_palette_leaves_out_the_commands_of_the_lists_and_lists_the_rest_in_order(
     assert_eq!(names, sorted);
     assert!(output.contains("pane.zoom\tctrl+m z"), "{output}");
 }
+
+#[test]
+fn the_palette_lists_the_command_that_copies_the_pane_info_with_its_key() {
+    let daemon = TestDaemon::start();
+    let (_, output) = run(&daemon, "command.list", &[]);
+    assert!(output.contains("pane.copy-info\tctrl+m o"), "{output}");
+}
