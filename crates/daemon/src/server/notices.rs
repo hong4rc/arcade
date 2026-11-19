@@ -81,7 +81,7 @@ impl Server {
             session: s.name.clone(),
             gained: focused,
         };
-        keep_change(&mut s.changes, at, kind);
+        keep_change(&mut s.focus_changes, at, kind);
         // Looking at a pane again lets go of what it had; the screen is built to do it.
         s.relayout = true;
         s.chrome_dirty = true;

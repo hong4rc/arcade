@@ -1634,7 +1634,7 @@ impl Server {
         session.current = window_id;
         session.relayout = true;
         session.chrome_dirty = true;
-        keep_change(&mut session.changes, at, kind);
+        keep_change(&mut session.window_changes, at, kind);
     }
 
     /// The cause of a window change as it is kept: what was set, or a plain statement that none
@@ -1669,7 +1669,12 @@ impl Server {
         let mut lines: Vec<(f64, String)> = self
             .sessions
             .values()
-            .flat_map(|s| s.changes.iter().map(|c| (c.at, c.kind.text())))
+            .flat_map(|s| {
+                s.window_changes
+                    .iter()
+                    .chain(s.focus_changes.iter())
+                    .map(|c| (c.at, c.kind.text()))
+            })
             .collect();
         lines.sort_by(|a, b| b.0.total_cmp(&a.0));
         lines
@@ -1821,7 +1826,7 @@ impl Server {
                 cause,
             };
             session.current = next;
-            keep_change(&mut session.changes, at, kind);
+            keep_change(&mut session.window_changes, at, kind);
         }
         session.relayout = true;
         session.chrome_dirty = true;

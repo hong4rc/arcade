@@ -364,7 +364,7 @@ fn is_key_cause(cause: &str) -> bool {
     cause.starts_with("key ") || cause.starts_with("prefix then ")
 }
 
-/// How many changes a session keeps for `arcade window log`.
+/// How many changes of each kind a session keeps for `arcade window log`.
 const CHANGES_KEPT: usize = 20;
 
 /// Keep a change, dropping the oldest one when there are already `CHANGES_KEPT`.
@@ -426,9 +426,11 @@ struct Session {
     /// The bar as drawn in each half of a blink, so that a blink draws it again without building
     /// it (`None` while nothing blinks).
     bar_cache: Option<BarCache>,
-    /// The latest changes of the window shown, and of the host terminal's focus, newest last
-    /// (`arcade window log`).
-    changes: std::collections::VecDeque<WindowChange>,
+    /// The latest changes of the window shown, newest last, and separately the latest changes of
+    /// the host terminal's focus (`arcade window log`): a focus change never pushes out a window
+    /// change.
+    window_changes: std::collections::VecDeque<WindowChange>,
+    focus_changes: std::collections::VecDeque<WindowChange>,
     /// What the client's screen should show, and what it was last sent.
     screen: Screen,
     renderer: Renderer,
@@ -562,7 +564,8 @@ impl Session {
             bar_number_phase: false,
             blink_due: false,
             bar_cache: None,
-            changes: std::collections::VecDeque::new(),
+            window_changes: std::collections::VecDeque::new(),
+            focus_changes: std::collections::VecDeque::new(),
             screen: Screen::new(),
             renderer: Renderer::new(),
             last_frame: None,

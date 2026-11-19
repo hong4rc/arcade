@@ -63,9 +63,10 @@ fn a_command_run_from_outside_names_itself_as_the_reason() {
 }
 
 #[test]
-fn the_log_keeps_the_latest_twenty_changes_of_a_session() {
+fn the_log_keeps_the_latest_twenty_changes_of_each_kind_and_focus_does_not_push_out_window_changes()
+{
     let daemon = TestDaemon::start();
-    let _client = start(&daemon);
+    let mut client = start(&daemon);
     run(&daemon, "window.new", &[]);
     for n in 0..25 {
         run(
@@ -74,11 +75,17 @@ fn the_log_keeps_the_latest_twenty_changes_of_a_session() {
             &[if n % 2 == 0 { "1" } else { "2" }],
         );
     }
-    let changes = log(&daemon)
-        .iter()
-        .filter(|l| l.contains("  window "))
-        .count();
-    assert_eq!(changes, 20);
+    // Many focus changes after the window changes must not take the window changes out.
+    for _ in 0..25 {
+        client.send(FOCUS_OUT);
+        client.send(FOCUS_IN);
+    }
+    client.wait_until(Duration::from_millis(300), |_| false);
+    let lines = log(&daemon);
+    let windows = lines.iter().filter(|l| l.contains("  window ")).count();
+    let focus = lines.iter().filter(|l| l.contains("host focus")).count();
+    assert_eq!(windows, 20, "{lines:?}");
+    assert_eq!(focus, 20, "{lines:?}");
 }
 
 #[test]
