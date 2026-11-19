@@ -79,10 +79,12 @@ mod palette {
     /// Pure white is outside the palette. It is used only for the text on the current tab's
     /// block, by the author's choice: no palette colour reads at 4.5 on `SURFACE2`.
     pub const WHITE: Color = Color::Rgb(0xff, 0xff, 0xff);
+    pub const OVERLAY0: Color = Color::Rgb(0x73, 0x79, 0x94);
     pub const OVERLAY2: Color = Color::Rgb(0x94, 0x9c, 0xbb);
     pub const TEXT: Color = Color::Rgb(0xc6, 0xd0, 0xf5);
     pub const SUBTEXT0: Color = Color::Rgb(0xb5, 0xbf, 0xe2);
     pub const MAUVE: Color = Color::Rgb(0xca, 0x9e, 0xe6);
+    pub const SAPPHIRE: Color = Color::Rgb(0x85, 0xc1, 0xdc);
     pub const GREEN: Color = Color::Rgb(0xa6, 0xd1, 0x89);
     pub const RED: Color = Color::Rgb(0xe7, 0x82, 0x84);
     pub const YELLOW: Color = Color::Rgb(0xe5, 0xc8, 0x90);
@@ -161,13 +163,6 @@ fn readable_on(colour: Color, background: Color) -> Color {
     Color::Rgb(255, 255, 255)
 }
 
-fn fg(color: u8) -> Style {
-    Style {
-        fg: Color::Indexed(color),
-        ..Style::default()
-    }
-}
-
 pub fn style(role: Role) -> Style {
     match role {
         Role::StatusBar => on(palette::SUBTEXT0, palette::MANTLE),
@@ -226,10 +221,16 @@ pub fn style(role: Role) -> Style {
             ..on(palette::CRUST, palette::YELLOW)
         },
         Role::PromptText => on(palette::TEXT, palette::SURFACE0),
-        Role::Divider => fg(8),
+        // The dividers stand on the terminal's own background, which is not known: the quiet
+        // grey is visible on a dark one and on the bar's, and the focus colour is the accent.
+        Role::Divider => Style {
+            fg: palette::OVERLAY0,
+            ..Style::default()
+        },
         Role::DividerFocus => Style {
+            fg: palette::MAUVE,
             bold: true,
-            ..fg(4)
+            ..Style::default()
         },
         // The floating lists and the tree use the palette of the bar, not the 16 colours of the
         // terminal: text on the bar's background, a quiet frame and second text, an accent for
@@ -257,31 +258,20 @@ pub fn style(role: Role) -> Style {
             bold: true,
             ..on(palette::CRUST, palette::MAUVE)
         },
-        Role::ScrollPosition => Style {
-            fg: Color::Indexed(0),
-            bg: Color::Indexed(3),
-            ..Style::default()
-        },
+        // Copy mode: the position mark and the cells a jump matches look as the bar's question
+        // does (dark on yellow), the label of a match is dark bold on red, and a selection is
+        // dark on sapphire; the four are told apart from each other.
+        Role::ScrollPosition => on(palette::CRUST, palette::YELLOW),
         Role::LinkUnderline => Style {
             underline: arcade_term::Underline::Dotted,
             ..Style::default()
         },
-        Role::JumpMatch => Style {
-            fg: Color::Indexed(0),
-            bg: Color::Indexed(3),
-            ..Style::default()
-        },
+        Role::JumpMatch => on(palette::CRUST, palette::YELLOW),
         Role::JumpLabel => Style {
-            fg: Color::Indexed(15),
-            bg: Color::Indexed(1),
             bold: true,
-            ..Style::default()
+            ..on(palette::CRUST, palette::RED)
         },
-        Role::Selection => Style {
-            fg: Color::Indexed(0),
-            bg: Color::Indexed(6),
-            ..Style::default()
-        },
+        Role::Selection => on(palette::CRUST, palette::SAPPHIRE),
     }
 }
 
@@ -1210,6 +1200,147 @@ mod tests {
             assert!(
                 on_badge >= 3.0,
                 "{class:?} on the chosen line: {on_badge:.2}"
+            );
+        }
+    }
+
+    /// No role of the theme is drawn with one of the terminal's 16 (or 256) colours, whatever the
+    /// terminal's theme is; the roles that have a background read on it at 4.5 or more. The
+    /// match has no catch-all arm, so a new role has to be listed here.
+    #[test]
+    fn no_role_uses_an_indexed_colour_and_every_text_reads() {
+        fn kind(role: Role) -> bool {
+            // true: has its own background, so the pair is checked; false: sits on whatever is
+            // under it (the dividers) or only draws a line under text.
+            match role {
+                Role::Divider | Role::DividerFocus | Role::LinkUnderline => false,
+                Role::StatusBar
+                | Role::Indicator
+                | Role::MessageInfo
+                | Role::MessageError
+                | Role::MessageQuestion
+                | Role::PromptLabel
+                | Role::PromptText
+                | Role::Picker
+                | Role::PickerFrame
+                | Role::PickerTitle
+                | Role::PickerQuiet
+                | Role::PickerKey
+                | Role::PickerNumber
+                | Role::PickerNumberSelected
+                | Role::PickerSelected
+                | Role::PickerSelectedBadge
+                | Role::PickerHeading
+                | Role::Selection
+                | Role::IndicatorSelect
+                | Role::ScrollPosition
+                | Role::JumpMatch
+                | Role::JumpLabel
+                | Role::PillName
+                | Role::PillNameCurrent
+                | Role::PillQuiet
+                | Role::PillQuietCurrent
+                | Role::PillBadge
+                | Role::PillBadgeCurrent
+                | Role::SessionBadge
+                | Role::SessionName => true,
+            }
+        }
+        let roles = [
+            Role::StatusBar,
+            Role::Indicator,
+            Role::MessageInfo,
+            Role::MessageError,
+            Role::MessageQuestion,
+            Role::PromptLabel,
+            Role::PromptText,
+            Role::Divider,
+            Role::DividerFocus,
+            Role::Picker,
+            Role::PickerFrame,
+            Role::PickerTitle,
+            Role::PickerQuiet,
+            Role::PickerKey,
+            Role::PickerNumber,
+            Role::PickerNumberSelected,
+            Role::PickerSelected,
+            Role::PickerSelectedBadge,
+            Role::PickerHeading,
+            Role::Selection,
+            Role::IndicatorSelect,
+            Role::ScrollPosition,
+            Role::LinkUnderline,
+            Role::JumpMatch,
+            Role::JumpLabel,
+            Role::PillName,
+            Role::PillNameCurrent,
+            Role::PillQuiet,
+            Role::PillQuietCurrent,
+            Role::PillBadge,
+            Role::PillBadgeCurrent,
+            Role::SessionBadge,
+            Role::SessionName,
+        ];
+        for role in roles {
+            let st = style(role);
+            assert!(
+                !matches!(st.fg, Color::Indexed(_)),
+                "{role:?} fg {:?}",
+                st.fg
+            );
+            assert!(
+                !matches!(st.bg, Color::Indexed(_)),
+                "{role:?} bg {:?}",
+                st.bg
+            );
+            if kind(role) {
+                let ratio = contrast(st);
+                assert!(ratio >= 4.5, "{role:?}: {ratio:.2}");
+            }
+        }
+        // The dividers: the focus colour is the accent, the others a quiet grey; both read on
+        // the bar's background and on the base colour of the theme.
+        assert_eq!(style(Role::DividerFocus).fg, palette::MAUVE);
+        assert!(style(Role::DividerFocus).bold);
+        assert_ne!(style(Role::Divider).fg, style(Role::DividerFocus).fg);
+        let base = Color::Rgb(0x30, 0x34, 0x46);
+        for (name, fg) in [
+            ("divider", style(Role::Divider).fg),
+            ("focus", style(Role::DividerFocus).fg),
+        ] {
+            let on_mantle = contrast_of(fg, palette::MANTLE);
+            let on_base = contrast_of(fg, base);
+            println!("{name}: {on_mantle:.2} on MANTLE, {on_base:.2} on BASE");
+            assert!(on_mantle >= 3.0 && on_base >= 2.5, "{name}");
+        }
+        // Copy mode: the position mark, the jump match, the label and the selection differ.
+        let looks = [
+            style(Role::ScrollPosition).bg,
+            style(Role::JumpLabel).bg,
+            style(Role::Selection).bg,
+        ];
+        assert_ne!(looks[0], looks[1]);
+        assert_ne!(looks[0], looks[2]);
+        assert_ne!(looks[1], looks[2]);
+        assert_ne!(style(Role::JumpMatch).bg, style(Role::JumpLabel).bg);
+        assert_ne!(style(Role::JumpMatch).bg, style(Role::Selection).bg);
+        // The focus colour is not the colour of a state that can colour a border.
+        use crate::notify::Class;
+        for tint in [
+            Tint::Class(Class::Approval),
+            Tint::Class(Class::Input),
+            Tint::Class(Class::Error),
+            Tint::Class(Class::Info),
+            Tint::ProgressError,
+            Tint::Progress,
+            Tint::Running,
+            Tint::Paused,
+            Tint::Finished,
+        ] {
+            assert_ne!(
+                style(Role::DividerFocus).fg,
+                default_tint_colour(tint),
+                "{tint:?}"
             );
         }
     }
