@@ -155,6 +155,77 @@ fn settle(client: &mut TestClient) {
     }
 }
 
+/// The cells of a row as `(text, foreground, background)`, read from its debug form.
+/// How many times a pair of screens that differ only by the phase of an alternation is taken again.
+const PHASE_RETRIES: usize = 3;
+
+fn cells_of(row: &str) -> Vec<(String, String, String)> {
+    row.split("Cell { text: \"")
+        .skip(1)
+        .map(|cell| {
+            let text = cell.split('"').next().unwrap_or_default().to_string();
+            let field = |name: &str, end: &str| {
+                cell.split(name)
+                    .nth(1)
+                    .and_then(|rest| rest.split(end).next())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            (text, field("fg: ", ", bg"), field("bg: ", ", underline"))
+        })
+        .collect()
+}
+
+/// Whether two screens differ only where a tab with a state shows its number in one of them and
+/// its symbol in the other, in the same colours: the two phases of the alternation. Such a
+/// difference is legitimate when the two screens were taken on either side of a phase change.
+fn differs_only_by_phase(before: &[String], after: &[String]) -> bool {
+    let mut differs = false;
+    for (a, b) in before.iter().zip(after) {
+        let (ca, cb) = (cells_of(a), cells_of(b));
+        if ca.len() != cb.len() {
+            return false;
+        }
+        for (x, y) in ca.iter().zip(&cb) {
+            if x == y {
+                continue;
+            }
+            let digit = |t: &str| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit());
+            let symbol = |t: &str| t.chars().next().is_some_and(|c| !c.is_ascii());
+            let pair = (digit(&x.0) && symbol(&y.0)) || (symbol(&x.0) && digit(&y.0));
+            if !pair || x.1 != y.1 || x.2 != y.2 {
+                return false;
+            }
+            differs = true;
+        }
+    }
+    differs
+}
+
+#[cfg(test)]
+mod phase_check {
+    use super::differs_only_by_phase;
+
+    fn row(text: &str, fg: &str) -> String {
+        format!(
+            "[Cell {{ text: \"{text}\", width: Narrow, style: Style {{ fg: {fg}, bg: Rgb(35, 38, 52), underline_color: Default }} }}]"
+        )
+    }
+
+    #[test]
+    fn a_number_and_a_symbol_in_the_same_colours_are_a_phase_but_another_colour_is_not() {
+        let teal = "Rgb(129, 200, 190)";
+        let number = vec![row("2", teal)];
+        let symbol = vec![row("\u{25cf}", teal)];
+        assert!(differs_only_by_phase(&number, &symbol));
+        assert!(!differs_only_by_phase(&number, &number));
+        let other = vec![row("\u{25cf}", "Rgb(244, 184, 228)")];
+        assert!(!differs_only_by_phase(&number, &other));
+        let wrong_text = vec![row("x", teal)];
+        assert!(!differs_only_by_phase(&number, &wrong_text));
+    }
+}
+
 fn rows_of(client: &mut TestClient) -> Vec<String> {
     client
         .screen
@@ -726,17 +797,34 @@ impl Soak {
         let Some(name) = self.attached_name() else {
             self.fail("no session has a client");
         };
-        let before = rows_of(&mut self.client);
+        let mut before = rows_of(&mut self.client);
         let (c, r) = self.size;
-        let mut fresh = match self
-            .daemon
-            .attach(AttachOptions::new().size(c, r).existing(Some(&name)))
-        {
-            Ok(client) => client,
-            Err(e) => self.fail(&format!("the takeover could not attach: {e}")),
+        // The two screens are taken a moment apart. A tab with a state takes turns between its
+        // symbol and its number, so a phase change between the two can show one in one screen and
+        // the other in the second: such a pair is taken again one phase later. A difference that
+        // is not a phase, or that stays after the retries, still fails.
+        let mut retries = 0;
+        let (fresh, after) = loop {
+            let mut fresh = match self
+                .daemon
+                .attach(AttachOptions::new().size(c, r).existing(Some(&name)))
+            {
+                Ok(client) => client,
+                Err(e) => self.fail(&format!("the takeover could not attach: {e}")),
+            };
+            settle(&mut fresh);
+            let after = rows_of(&mut fresh);
+            if before == after
+                || retries == PHASE_RETRIES
+                || !differs_only_by_phase(&before, &after)
+            {
+                break (fresh, after);
+            }
+            retries += 1;
+            std::thread::sleep(Duration::from_millis(2100));
+            settle(&mut self.client);
+            before = rows_of(&mut self.client);
         };
-        settle(&mut fresh);
-        let after = rows_of(&mut fresh);
         if before != after {
             let row = before
                 .iter()
