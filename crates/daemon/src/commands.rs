@@ -59,6 +59,8 @@ pub enum ListCommand {
     Lift,
     /// In the list of notifications: clear the one on the chosen line.
     Clear,
+    /// In the list of sessions: make a session, show it and ask for its name.
+    New,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -229,6 +231,7 @@ const NAMES: &[(&str, Command)] = &[
     ("list.right", Command::List(ListCommand::Right)),
     ("list.lift", Command::List(ListCommand::Lift)),
     ("list.clear", Command::List(ListCommand::Clear)),
+    ("list.new", Command::List(ListCommand::New)),
     ("notification.next", Command::NotificationNext),
     ("notification.list", Command::NotificationList),
     ("notification.clear", Command::NotificationClear),

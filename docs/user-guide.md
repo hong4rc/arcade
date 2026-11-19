@@ -159,7 +159,7 @@ The four default movement keys are `h` (left), `j` (down), `k` (up), `l` (right)
 | `,` | Rename the window |
 | `$` | Rename the session |
 | `C` | New session: the session is made at once, in the directory of the pane you are in, and shown; the status bar then asks for its name. `Enter` with a name renames it, an empty `Enter` or `Esc` keeps the automatic name, and a name that another session has keeps the prompt open with `Name in use:` in front |
-| `s` | List of sessions, in the order they were made; its last line, `+ new session`, is always there (also when the filter matches nothing). `Enter` on it makes the session and shows it, then asks for its name as `C` does, starting from what you typed to filter |
+| `s` | List of sessions, in the order they were made; it holds only sessions, so when the filter matches nothing it is empty. `+` makes a session and shows it, then asks for its name as `C` does, starting from what you typed to filter; the `+` is not typed into the filter here (in the other lists it is). The key line of the list says `+ new session`; the key is `list.new` in `[keys.list]` and can be rebound |
 | `w` | List of the windows of this session; type to filter by name, `Enter` to go there |
 | `t` | Tree of sessions, windows and panes: look and jump (section 3.5) |
 | `m` | Lift the current pane to put it down somewhere else (section 3.5). `m` used to move a window to another session; the command `window.move-to-session` is still in the command palette (`:`) but has no default key |

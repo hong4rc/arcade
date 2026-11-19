@@ -268,6 +268,7 @@ pub struct ListKeys {
     pub cancel: Option<String>,
     pub filter_clear: Option<String>,
     pub clear: Option<String>,
+    pub new: Option<String>,
 }
 
 impl ListKeys {
@@ -283,6 +284,7 @@ impl ListKeys {
             cancel: key("list.cancel"),
             filter_clear: key("list.filter-clear"),
             clear: key("list.clear"),
+            new: key("list.new"),
         }
     }
 }
@@ -683,6 +685,8 @@ impl Keymap {
             &[],
             false,
         );
+        // Only the list of sessions uses this one; in the other lists a `+` is typed.
+        bind(t, ch('+'), "list.new", &[], false);
     }
 
     fn fill_copy(&mut self, config: &KeysConfig) {

@@ -1,4 +1,4 @@
-//! Making a session from the keyboard (prefix `C`), from the session list (the last line) and
+//! Making a session from the keyboard (prefix `C`), from the session list (the `+` key) and
 //! from a script (`arcade run session.new`).
 
 use arcade_testkit::{AttachOptions, Screened, TestClient, TestDaemon, WAIT};
@@ -140,18 +140,18 @@ fn a_session_may_keep_the_name_it_got_automatically() {
 }
 
 #[test]
-fn the_session_list_line_makes_the_session_on_enter_and_asks_for_its_name_there() {
+fn plus_in_the_session_list_makes_the_session_and_asks_for_its_name_there() {
     let daemon = TestDaemon::start();
     let mut client = start(&daemon);
     client.send(PREFIX);
     client.send(b"s");
+    // The key line names the key; there is no line for it among the sessions.
     screen_has(&mut client, "+ new session");
-    screen_has(&mut client, "go or new session");
-    // With a filter that matches no session the line is still there. Enter on it makes the
-    // session, shows it, and asks for the name on its prompt, starting from the filter.
+    // With a filter that matches no session the key still works. It makes the session, shows
+    // it, and asks for the name on its prompt, starting from the filter; the `+` itself is not
+    // typed into the filter.
     client.send(b"zzz");
-    screen_has(&mut client, "+ new session");
-    client.send(b"\r");
+    client.send(b"+");
     bar_has(&mut client, "Session name: zzz");
     let automatic = automatic_name(&daemon, &["alpha", "zzz"]);
     assert_eq!(sessions(&daemon), ["alpha", automatic.as_str()]);
@@ -161,20 +161,39 @@ fn the_session_list_line_makes_the_session_on_enter_and_asks_for_its_name_there(
 }
 
 #[test]
-fn the_new_session_line_without_a_filter_opens_an_empty_prompt_on_a_new_session() {
+fn plus_without_a_filter_opens_an_empty_prompt_on_a_new_session() {
     let daemon = TestDaemon::start();
     let mut client = start(&daemon);
     client.send(PREFIX);
     client.send(b"s");
     screen_has(&mut client, "+ new session");
-    // Down from the only session to the last line.
-    client.send(b"\x1b[B");
-    client.send(b"\r");
+    client.send(b"+");
     bar_has(&mut client, "Session name: ");
     assert_eq!(sessions(&daemon).len(), 2);
     client.send(b"\x1b");
     bar_lacks(&mut client, "Session name: ");
     assert_eq!(sessions(&daemon).len(), 2);
+}
+
+#[test]
+fn enter_and_down_in_the_session_list_never_make_a_session() {
+    let daemon = TestDaemon::start();
+    let mut client = start(&daemon);
+    client.send(PREFIX);
+    client.send(b"s");
+    screen_has(&mut client, "+ new session");
+    // There is only one line, the session shown: Down stays on it and Enter goes there.
+    client.send(b"\x1b[B");
+    client.send(b"\r");
+    bar_lacks(&mut client, "Session name: ");
+    assert_eq!(sessions(&daemon), ["alpha"]);
+    // With a filter that matches nothing Enter only closes the list.
+    client.send(PREFIX);
+    client.send(b"s");
+    client.send(b"zzz");
+    client.send(b"\r");
+    bar_lacks(&mut client, "Session name: ");
+    assert_eq!(sessions(&daemon), ["alpha"]);
 }
 
 #[test]

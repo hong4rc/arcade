@@ -238,7 +238,7 @@ impl Server {
             ListCommand::Left => tree.left(),
             ListCommand::Right => tree.right(),
             ListCommand::Lift => tree.toggle_lift(),
-            ListCommand::Clear => {}
+            ListCommand::Clear | ListCommand::New => {}
             ListCommand::FilterDelete => tree.delete_char(),
             ListCommand::FilterClear => tree.clear_filter(),
             ListCommand::Cancel => {

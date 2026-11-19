@@ -210,9 +210,7 @@ fn lines_of_the_list(client: &mut TestClient) -> Vec<String> {
             .take(right.saturating_sub(left + 1))
             .collect();
         let inside = inside.trim().to_string();
-        // The last line of the session list makes a session; it is not a session.
-        let is_new_row = inside.trim_start_matches("> ").starts_with("+ new session");
-        if !inside.is_empty() && !inside.starts_with('/') && !is_new_row {
+        if !inside.is_empty() && !inside.starts_with('/') {
             lines.push(inside);
         }
     }
@@ -540,4 +538,35 @@ fn the_palette_lists_the_command_that_copies_the_pane_info_with_its_key() {
     let daemon = TestDaemon::start();
     let (_, output) = run(&daemon, "command.list", &[]);
     assert!(output.contains("pane.copy-info\tctrl+m o"), "{output}");
+}
+
+#[test]
+fn the_session_list_holds_only_sessions_with_and_without_a_filter() {
+    let daemon = TestDaemon::start();
+    let mut client = a_ab_b(&daemon);
+    client.send(PREFIX);
+    client.send(b"s");
+    names_in_list(&mut client, &["a", "ab", "b"]);
+    // The key line names the key that makes a session; the list has no such line.
+    screen_has(&mut client, "+ new session");
+    client.send(b"zzz");
+    // Nothing matches: the box says so and holds no other line.
+    screen_has(&mut client, "no match");
+    let lines = lines_of_the_list(&mut client);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    client.send(b"\x15");
+    names_in_list(&mut client, &["a", "ab", "b"]);
+}
+
+#[test]
+fn a_plus_goes_into_the_filter_of_the_other_lists() {
+    let daemon = TestDaemon::start();
+    let mut client = two_sessions(&daemon);
+    client.send(PREFIX);
+    client.send(b"w");
+    screen_has(&mut client, "Windows");
+    client.send(b"+");
+    screen_has(&mut client, "/ +");
+    let (_, output) = run(&daemon, "session.list", &[]);
+    assert_eq!(output.lines().count(), 2, "{output}");
 }

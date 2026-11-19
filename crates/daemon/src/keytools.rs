@@ -296,6 +296,17 @@ mod tests {
     }
 
     #[test]
+    fn the_plus_key_makes_a_session_in_the_session_list_by_default() {
+        let lines = list_lines(&Config::default());
+        let line = lines
+            .iter()
+            .find(|l| l.contains("list.new"))
+            .unwrap_or_else(|| panic!("{lines:?}"));
+        assert!(line.trim_start().starts_with("+ "), "{line}");
+        assert!(line.ends_with("default"), "{line}");
+    }
+
+    #[test]
     fn the_prefix_key_o_copies_the_pane_info_by_default() {
         let lines = list_lines(&Config::default());
         let line = lines

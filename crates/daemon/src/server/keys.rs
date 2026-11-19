@@ -380,7 +380,11 @@ impl Server {
             s.chrome_dirty = true;
         }
         if let Some(tree) = s.tree.as_mut() {
-            if let Some(b) = Keymap::get(&self.keymap.list, key).cloned() {
+            // The key that makes a session in the list of sessions is typed here.
+            if let Some(b) = Keymap::get(&self.keymap.list, key)
+                .filter(|b| b.command != "list.new")
+                .cloned()
+            {
                 self.run_binding(session_id, &b);
             } else if let Some(text) = typed_text(key, raw) {
                 tree.notice = None;
@@ -392,8 +396,11 @@ impl Server {
         }
         if let Some(picker) = s.picker.as_mut() {
             // The keys that only the tree has are nothing here: a space is typed into the filter.
+            // The key that makes a session is nothing outside the list of sessions.
+            let sessions = picker.kind == PickerKind::Sessions;
             let bound = Keymap::get(&self.keymap.list, key).filter(|b| {
                 !matches!(b.command.as_str(), "list.left" | "list.right" | "list.lift")
+                    && (sessions || b.command != "list.new")
             });
             if let Some(b) = bound.cloned() {
                 self.run_binding(session_id, &b);

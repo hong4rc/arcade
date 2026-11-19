@@ -793,7 +793,7 @@ impl Server {
         // In the order they were made, so a new session comes last.
         let mut sessions: Vec<&Session> = self.sessions.values().collect();
         sessions.sort_by_key(|s| s.id);
-        let mut items: Vec<Item> = sessions
+        let items: Vec<Item> = sessions
             .iter()
             .filter(|s| kind == PickerKind::Sessions || s.id != session_id)
             .enumerate()
@@ -809,9 +809,6 @@ impl Server {
             return Err("no other session".to_string());
         }
         let selected = items.iter().position(|i| i.current).unwrap_or(0);
-        if kind == PickerKind::Sessions {
-            items.push(Item::new_session_row(items.len()));
-        }
         let title = match kind {
             PickerKind::Sessions => "Sessions",
             PickerKind::MoveWindow => "Move window to",
@@ -912,6 +909,21 @@ impl Server {
                     }
                 }
             }
+            ListCommand::New => {
+                if picker.kind == PickerKind::Sessions {
+                    // The key is the confirmation: the session is made and shown as with the
+                    // session.new key, and its name is asked for on its prompt, starting from
+                    // what was typed to filter.
+                    let typed = picker.filter().to_string();
+                    session.picker = None;
+                    session.relayout = true;
+                    session.chrome_dirty = true;
+                    if let Some(pane) = self.focus_pane_of(session_id) {
+                        self.new_session_then_name(session_id, pane, typed);
+                    }
+                    return Ok(String::new());
+                }
+            }
             ListCommand::Up => picker.up(),
             ListCommand::Down => picker.down(),
             ListCommand::FilterDelete | ListCommand::FilterClear => {
@@ -931,23 +943,12 @@ impl Server {
             ListCommand::Select => {
                 let kind = picker.kind;
                 let chosen = picker.chosen().map(|i| (i.id, i.name.clone()));
-                let new_row = picker.chosen().is_some_and(|i| i.new_row);
-                let typed = picker.filter().to_string();
                 session.picker = None;
                 session.relayout = true;
                 session.chrome_dirty = true;
                 let Some((index, name)) = chosen else {
                     return Ok(String::new());
                 };
-                if new_row {
-                    // The Enter on this row is the confirmation: the session is made and shown
-                    // as with the session.new key, and its name is asked for on its prompt,
-                    // starting from what was typed to filter.
-                    if let Some(pane) = self.focus_pane_of(session_id) {
-                        self.new_session_then_name(session_id, pane, typed);
-                    }
-                    return Ok(String::new());
-                }
                 return match kind {
                     PickerKind::Keys => {
                         // The rows were made from the tables in this order, and nothing in them
