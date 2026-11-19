@@ -19,6 +19,7 @@ Run from the repository root. The first time on a new machine, run `./scripts/fe
 | Lint | `cargo lint` |
 | Compare the parsers (decision 001) | `cargo parser-eval all` |
 | Benchmark (direct, tmux, Arcade) | `cargo bench-run` (add `--quick` to run fast; `--subjects` and `--tests` run a part) |
+| Compare two versions on the benchmark | `scripts/bench-compare.sh <commit-or-dir-A> <commit-or-dir-B>` (add `--full` for every load; exit 1 when B is more than 2 percent slower) |
 | Tests on Linux in a container | `./scripts/test-linux.sh` (needs Docker running) |
 
 A change counts as done only when the test, format and lint commands all run clean.
