@@ -342,6 +342,30 @@ fn log(socket: &Path) -> u8 {
     }
 }
 
+/// `arcade window log`: the latest changes of the window shown in each session, and of the host
+/// terminal's focus, newest first, each with the reason the daemon recorded.
+pub fn window_log(socket: &Path) -> u8 {
+    match exchange(socket, "window.log", Vec::new(), MANUAL_BUDGET) {
+        Ok((true, output)) => {
+            if output.is_empty() {
+                println!("no window change since the daemon started");
+                return 0;
+            }
+            println!(
+                "the latest changes, newest first (seconds since the daemon started, session, window, reason):"
+            );
+            for line in output.lines() {
+                println!("  {line}");
+            }
+            0
+        }
+        Ok((false, why)) | Err(why) => {
+            eprintln!("arcade: window log: {}", why.trim_end());
+            1
+        }
+    }
+}
+
 /// `arcade keys stray`: the key bytes the daemon wrote to a pane that no key stands for.
 pub fn stray(socket: &Path) -> u8 {
     match exchange(socket, "keys.stray", Vec::new(), MANUAL_BUDGET) {

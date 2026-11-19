@@ -38,6 +38,7 @@ commands:
                                   print every key binding in force, with its source
   keys test [<file>]              show the name of each key Arcade receives (Ctrl+C quits)
   keys stray                      key bytes written to a pane that no key stands for (a diagnostic)
+  window log                      the latest changes of the window shown, newest first, with the reason (a diagnostic)
   notify [--class <info|input|approval|error>] [--title <text>] [--message <text>]
          [--target <pane>] [--source <name>] [--strict]
                                   tell Arcade that a pane needs attention (for hooks: it
@@ -183,6 +184,9 @@ fn run(mut args: Vec<String>) -> u8 {
         },
         "keys" if rest.first().map(String::as_str) == Some("stray") => {
             notify::stray(&options.socket)
+        }
+        "window" if rest.first().map(String::as_str) == Some("log") => {
+            notify::window_log(&options.socket)
         }
         "keys" => keytool::run(rest, default_config_path()),
         "notify" => notify::run(&options.socket, rest),

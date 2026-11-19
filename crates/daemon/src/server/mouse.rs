@@ -156,7 +156,10 @@ impl Server {
             if on_counter {
                 self.open_notifications_from_counter(session_id);
             } else if let Some(window) = target {
-                self.select_window(session_id, window);
+                let column = m.x;
+                self.with_cause(format!("a click on the bar, column {column}"), |s| {
+                    s.select_window(session_id, window)
+                });
             }
             return;
         }

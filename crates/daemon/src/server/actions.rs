@@ -191,6 +191,21 @@ impl Server {
         args: &[String],
         from_pane: Option<u64>,
     ) -> (bool, String) {
+        // A command run by a key, the bar or a list keeps the cause that asked for it.
+        if self.cause.is_some() {
+            return self.run_command_body(name, args, from_pane);
+        }
+        self.with_cause(format!("command {name}"), |s| {
+            s.run_command_body(name, args, from_pane)
+        })
+    }
+
+    fn run_command_body(
+        &mut self,
+        name: &str,
+        args: &[String],
+        from_pane: Option<u64>,
+    ) -> (bool, String) {
         match name {
             "server.ping" => return (true, "pong".to_string()),
             "server.version" => return (true, crate::program_version()),
@@ -203,6 +218,7 @@ impl Server {
                 let lines: Vec<&str> = self.stray_keys.1.iter().map(String::as_str).collect();
                 return (true, format!("{}\n{}", self.stray_keys.0, lines.join("\n")));
             }
+            "window.log" => return (true, self.window_log()),
             "server.kill" => {
                 self.stopping = Some(Instant::now() + KILL_GRACE);
                 for p in self.panes.values() {
@@ -915,13 +931,15 @@ impl Server {
                             .and_then(|s| s.windows.get(index))
                             .map(|w| w.id);
                         if let Some(window) = window {
-                            self.select_window(session_id, window);
+                            self.with_cause("the window list", |s| {
+                                s.select_window(session_id, window)
+                            });
                         }
                         Ok(String::new())
                     }
-                    PickerKind::Notifications => {
-                        self.jump_to(session_id, TreeKey::Pane(index as u64))
-                    }
+                    PickerKind::Notifications => self.with_cause("the notification list", |s| {
+                        s.jump_to(session_id, TreeKey::Pane(index as u64))
+                    }),
                     PickerKind::Sessions => self.switch_session(session_id, &name),
                     PickerKind::MoveWindow => {
                         let ctx = self.current_ctx(session_id)?;
@@ -1596,16 +1614,63 @@ impl Server {
 
     /// Show another window; the one shown now becomes the one to go back to.
     pub(super) fn select_window(&mut self, session_id: u64, window_id: u64) {
+        let at = self.started.elapsed().as_secs_f64();
+        let cause = self.cause_text();
         let Some(session) = self.sessions.get_mut(&session_id) else {
             return;
         };
         if session.current == window_id || session.window(window_id).is_none() {
             return;
         }
+        let from = session.window(session.current).map_or(0, |w| w.number);
+        let to = session.window(window_id).map_or(0, |w| w.number);
+        let kind = ChangeKind::Window {
+            session: session.name.clone(),
+            from,
+            to,
+            cause,
+        };
         session.last_window = Some(session.current);
         session.current = window_id;
         session.relayout = true;
         session.chrome_dirty = true;
+        keep_change(&mut session.changes, at, kind);
+    }
+
+    /// The cause of a window change as it is kept: what was set, or a plain statement that none
+    /// was recorded.
+    fn cause_text(&self) -> String {
+        self.cause
+            .clone()
+            .unwrap_or_else(|| "not from a key, the bar, a command or a list".to_string())
+    }
+
+    /// Run `f` with `cause` as the reason for any window change it makes, then put back the
+    /// reason that was there.
+    pub(super) fn with_cause<T>(
+        &mut self,
+        cause: impl Into<String>,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.cause.replace(cause.into());
+        let out = f(self);
+        self.cause = previous;
+        out
+    }
+
+    /// The latest changes of the windows shown, in every session, newest first.
+    fn window_log(&self) -> String {
+        let mut lines: Vec<(f64, String)> = self
+            .sessions
+            .values()
+            .flat_map(|s| s.changes.iter().map(|c| (c.at, c.kind.text())))
+            .collect();
+        lines.sort_by(|a, b| b.0.total_cmp(&a.0));
+        lines
+            .iter()
+            .map(|(at, text)| format!("{at:>10.3} s  {text}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// The next window (`step` 1) or the previous one (`step` -1), going round at the ends.
@@ -1723,6 +1788,8 @@ impl Server {
     /// window and its panes carry on; the caller decides what becomes of them.
     pub(super) fn take_window(&mut self, ctx: Ctx) -> Option<Window> {
         let (base_index, renumber) = (self.config.base_index, self.config.renumber);
+        let at = self.started.elapsed().as_secs_f64();
+        let cause = self.cause_text();
         let session = self.sessions.get_mut(&ctx.session)?;
         let index = session.windows.iter().position(|w| w.id == ctx.window)?;
         let window = session.windows.remove(index);
@@ -1740,7 +1807,15 @@ impl Server {
                 .take()
                 .filter(|id| session.windows.iter().any(|w| w.id == *id))
                 .unwrap_or_else(|| session.windows[index.min(session.windows.len() - 1)].id);
+            let to = session.window(next).map_or(0, |w| w.number);
+            let kind = ChangeKind::Window {
+                session: session.name.clone(),
+                from: window.number,
+                to,
+                cause,
+            };
             session.current = next;
+            keep_change(&mut session.changes, at, kind);
         }
         session.relayout = true;
         session.chrome_dirty = true;

@@ -353,7 +353,23 @@ impl Server {
         }
     }
 
+    /// A key the host sent: the reason of any window change it makes is the key, as the window
+    /// log names it (`prefix then <key>` after the prefix).
     fn handle_key(&mut self, session_id: u64, original: Key, raw: &[u8]) {
+        let prefix = self
+            .sessions
+            .get(&session_id)
+            .is_some_and(|s| s.key_state.prefix_active());
+        let name = crate::keymap::key_name(original);
+        let cause = if prefix {
+            format!("prefix then {name}")
+        } else {
+            format!("key {name}")
+        };
+        self.with_cause(cause, |s| s.handle_key_body(session_id, original, raw));
+    }
+
+    fn handle_key_body(&mut self, session_id: u64, original: Key, raw: &[u8]) {
         // Tables are looked up by the normal form; a pane gets the key as it came (`:` and
         // not Shift and `;`).
         let key = keymap::normalize(original);

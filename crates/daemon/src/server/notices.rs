@@ -69,6 +69,7 @@ impl Server {
     /// sent out while it had not, the client goes to the pane of the newest one that still
     /// stands, and the return key goes back.
     pub(super) fn host_focus(&mut self, session_id: u64, focused: bool) {
+        let at = self.started.elapsed().as_secs_f64();
         let Some(s) = self.sessions.get_mut(&session_id) else {
             return;
         };
@@ -76,6 +77,11 @@ impl Server {
             return;
         }
         s.host_focused = focused;
+        let kind = ChangeKind::Focus {
+            session: s.name.clone(),
+            gained: focused,
+        };
+        keep_change(&mut s.changes, at, kind);
         // Looking at a pane again lets go of what it had; the screen is built to do it.
         s.relayout = true;
         s.chrome_dirty = true;
@@ -93,7 +99,11 @@ impl Server {
         {
             return;
         }
-        if self.jump_to(session_id, TreeKey::Pane(pane)).is_ok()
+        let jumped = self.with_cause(
+            "a notification jump, when the host terminal got the focus back",
+            |s| s.jump_to(session_id, TreeKey::Pane(pane)),
+        );
+        if jumped.is_ok()
             && let Some(from) = from
             && let Some((landed, _)) = self.locate_pane(pane)
             && let Some(s) = self.sessions.get_mut(&landed)

@@ -259,7 +259,7 @@ impl Server {
 
     fn do_tree_action(&mut self, session_id: u64, action: Action) -> Result<String, String> {
         match action {
-            Action::Jump(key) => self.jump_to(session_id, key),
+            Action::Jump(key) => self.with_cause("the tree", |s| s.jump_to(session_id, key)),
             Action::PaneBeside { pane, target } => {
                 self.move_pane(session_id, pane, PaneDest::Beside(target))
             }
@@ -411,7 +411,7 @@ impl Server {
                 window_id
             }
         };
-        self.select_window(dst_session, moved_into);
+        self.with_cause("the tree", |s| s.select_window(dst_session, moved_into));
         if let Some(s) = self.sessions.get_mut(&dst_session) {
             s.relayout = true;
             s.chrome_dirty = true;
@@ -504,7 +504,7 @@ impl Server {
         destination.chrome_dirty = true;
         destination.relayout = true;
         self.apply_window_sizes(dst_session, window);
-        self.select_window(dst_session, window);
+        self.with_cause("the tree", |s| s.select_window(dst_session, window));
         self.follow(from, dst_session, emptied)
     }
 
@@ -552,7 +552,7 @@ impl Server {
             return Err("that session is gone".to_string());
         }
         if let Some(window) = window {
-            self.select_window(target, window);
+            self.with_cause("the tree", |s| s.select_window(target, window));
             if let Some(pane) = pane {
                 let ctx = Ctx {
                     session: target,

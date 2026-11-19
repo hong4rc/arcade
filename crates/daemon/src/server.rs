@@ -324,6 +324,52 @@ impl Window {
     }
 }
 
+/// One change kept for `arcade window log`: when it happened, seconds after the daemon started.
+struct WindowChange {
+    at: f64,
+    kind: ChangeKind,
+}
+
+enum ChangeKind {
+    /// The window shown changed from one number to another, for this reason.
+    Window {
+        session: String,
+        from: usize,
+        to: usize,
+        cause: String,
+    },
+    /// The host terminal got or lost the focus while this session was attached.
+    Focus { session: String, gained: bool },
+}
+
+impl ChangeKind {
+    fn text(&self) -> String {
+        match self {
+            ChangeKind::Window {
+                session,
+                from,
+                to,
+                cause,
+            } => format!("{session}  window {from} -> {to}  {cause}"),
+            ChangeKind::Focus { session, gained } => format!(
+                "{session}  host focus {}",
+                if *gained { "gained" } else { "lost" }
+            ),
+        }
+    }
+}
+
+/// How many changes a session keeps for `arcade window log`.
+const CHANGES_KEPT: usize = 20;
+
+/// Keep a change, dropping the oldest one when there are already `CHANGES_KEPT`.
+fn keep_change(changes: &mut std::collections::VecDeque<WindowChange>, at: f64, kind: ChangeKind) {
+    if changes.len() >= CHANGES_KEPT {
+        changes.pop_front();
+    }
+    changes.push_back(WindowChange { at, kind });
+}
+
 /// The bar of a session as it was drawn in each half of a blink.
 struct BarCache {
     /// The cells of the bar's row, by half (`dim as usize`).
@@ -366,6 +412,9 @@ struct Session {
     /// The bar as drawn in each half of a blink, so that a blink draws it again without building
     /// it (`None` while nothing blinks).
     bar_cache: Option<BarCache>,
+    /// The latest changes of the window shown, and of the host terminal's focus, newest last
+    /// (`arcade window log`).
+    changes: std::collections::VecDeque<WindowChange>,
     /// What the client's screen should show, and what it was last sent.
     screen: Screen,
     renderer: Renderer,
@@ -497,6 +546,7 @@ impl Session {
             bar_blink_dim: false,
             blink_due: false,
             bar_cache: None,
+            changes: std::collections::VecDeque::new(),
             screen: Screen::new(),
             renderer: Renderer::new(),
             last_frame: None,
@@ -610,6 +660,9 @@ struct Server {
     /// Key bytes written to a pane that no key stands for, for `arcade keys stray`: how many,
     /// and the latest few (the host bytes of that one key and what was written).
     stray_keys: (u64, std::collections::VecDeque<String>),
+    /// Why the window shown changes, as the key, the bar or the command that changed it said. It
+    /// is set while that is handled (see `with_cause`).
+    cause: Option<String>,
     stopping: Option<Instant>,
     killed_hard: bool,
     ever_had_session: bool,
@@ -690,6 +743,7 @@ fn new_server(config: &DaemonConfig, mut listener: UnixListener) -> io::Result<S
         notices: crate::notify::Store::default(),
         notice_log: notices::new_log(),
         stray_keys: (0, std::collections::VecDeque::new()),
+        cause: None,
         stopping: None,
         killed_hard: false,
         ever_had_session: false,
