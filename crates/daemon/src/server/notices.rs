@@ -408,6 +408,37 @@ impl Server {
         }
     }
 
+    /// When the first standing `info` notification is to go away by itself, if the setting is on.
+    pub(super) fn info_expiry_due(&self) -> Option<Instant> {
+        let after = self.config.notification.expire_info_after?;
+        self.notices
+            .standing()
+            .into_iter()
+            .filter(|(_, n)| n.class == Class::Info)
+            .map(|(_, n)| n.since + after)
+            .min()
+    }
+
+    /// Take away the `info` notifications that nobody looked at for `[notification]
+    /// expire-info-after` seconds, as if their panes had been looked at.
+    pub(super) fn wake_info_expiry(&mut self) {
+        let Some(after) = self.config.notification.expire_info_after else {
+            return;
+        };
+        let now = Instant::now();
+        let due: Vec<u64> = self
+            .notices
+            .standing()
+            .into_iter()
+            .filter(|(_, n)| n.class == Class::Info && n.since + after <= now)
+            .map(|(pane, _)| pane)
+            .collect();
+        for pane in due {
+            self.notices.clear(pane);
+            self.notices_changed(pane);
+        }
+    }
+
     /// When the running mark of `pane` is to show, if it has not yet.
     pub(super) fn running_mark_due(&self, pane: &Pane) -> Option<Instant> {
         let limits = self.command_limits();

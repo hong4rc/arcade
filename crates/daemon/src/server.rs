@@ -928,6 +928,7 @@ impl Server {
             self.wake_name_checks();
             self.wake_running_marks();
             self.wake_progress_expiry();
+            self.wake_info_expiry();
             self.wake_blink();
             self.tick_drag_scrolls();
             self.send_frames();
@@ -1000,6 +1001,9 @@ impl Server {
             if let Some(t) = p.compress_at {
                 consider(t);
             }
+        }
+        if let Some(t) = self.info_expiry_due() {
+            consider(t);
         }
         for s in self.sessions.values() {
             // One clock for the blinking symbols and the phases of the tabs that take turns: the

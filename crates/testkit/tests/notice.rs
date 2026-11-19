@@ -723,3 +723,45 @@ fn the_intervals_come_from_the_settings() {
     assert_eq!(client.host_notifications.len(), 2);
     assert_eq!(client.bells, 2);
 }
+
+// ---- An info notification that nobody looked at goes away by itself, when asked ----
+
+fn counting_all_with_expiry(after: Option<Duration>) -> TestDaemon {
+    TestDaemon::start_with(move |c| {
+        c.config.notification.status_count = arcade_daemon::config::StatusCount::All;
+        c.config.notification.expire_info_after = after;
+        c.config.state_look.alternate = false;
+    })
+}
+
+#[test]
+fn an_unlooked_at_info_notification_goes_away_after_the_expiry_and_an_input_one_stays() {
+    let daemon = counting_all_with_expiry(Some(Duration::from_secs(1)));
+    let (mut client, [p1, p2, _]) = three_panes(&daemon);
+    notify(&daemon, p1, "info", "a", "done");
+    notify(&daemon, p2, "input", "b", "waiting");
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
+    assert!(
+        client.wait_until(WAIT, |c| !bar(c).contains("●")),
+        "the info mark stayed: {}",
+        bar(&client)
+    );
+    assert!(bar(&client).contains("◆1"), "{}", bar(&client));
+    // Nothing of the info notification is left to go to.
+    let (ok, _) = daemon.command("notification.next", &[]).unwrap();
+    assert!(ok);
+    assert_eq!(client.focused_pane_id(), p2);
+}
+
+#[test]
+fn with_the_expiry_off_an_unlooked_at_info_notification_stays() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, [p1, _, _]) = three_panes(&daemon);
+    notify(&daemon, p1, "info", "a", "done");
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
+    assert!(
+        !nothing_shown_for(&mut client, "●1", Duration::from_millis(2500)),
+        "{}",
+        bar(&client)
+    );
+}

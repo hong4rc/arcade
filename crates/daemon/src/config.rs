@@ -163,6 +163,9 @@ pub struct NotificationConfig {
     /// How seldom a pane sends a signal out, and how seldom a client is rung.
     pub push_interval: Duration,
     pub bell_interval: Duration,
+    /// How long a notification of the class `info` that nobody has looked at stands before it
+    /// goes away by itself; `None` (the default) keeps it until it is looked at.
+    pub expire_info_after: Option<Duration>,
     /// Signals from these sources are dropped.
     pub muted_sources: Vec<String>,
     /// Go to the pane that sent a signal out when the host terminal gets the focus back.
@@ -208,6 +211,7 @@ impl Default for NotificationConfig {
             osc: OscKind::Osc777,
             push_interval: Duration::from_secs(5),
             bell_interval: Duration::from_secs(2),
+            expire_info_after: None,
             muted_sources: Vec::new(),
             auto_jump: false,
             tab_mark: true,
@@ -621,6 +625,7 @@ fn read_notification(r: &mut Reader<'_>, table: &DeTable<'_>, config: &mut Notif
         "osc",
         "push-interval",
         "bell-interval",
+        "expire-info-after",
         "mute-sources",
         "tab-mark",
         "pane-mark",
@@ -682,6 +687,18 @@ fn read_notification(r: &mut Reader<'_>, table: &DeTable<'_>, config: &mut Notif
             "bell-interval" => {
                 if let Some(s) = r.integer("bell-interval", v) {
                     config.bell_interval = Duration::from_secs(s as u64);
+                }
+            }
+            "expire-info-after" => {
+                if let Some(s) = r.integer("expire-info-after", v) {
+                    if s == 0 {
+                        r.error(
+                            v.span().start,
+                            "expire-info-after must be a whole number of seconds, one or more (leave it out to keep info notifications until they are looked at)",
+                        );
+                    } else {
+                        config.expire_info_after = Some(Duration::from_secs(s as u64));
+                    }
                 }
             }
             "mute-sources" => match v.get_ref() {
@@ -1614,12 +1631,32 @@ position = "top"
     }
 
     #[test]
+    fn info_notifications_expire_only_when_asked_and_a_bad_value_is_reported() {
+        assert_eq!(
+            parse("[notification]\nexpire-info-after = 90\n")
+                .unwrap()
+                .notification
+                .expire_info_after,
+            Some(Duration::from_secs(90))
+        );
+        for bad in ["0", "-5", "\"soon\"", "1.5"] {
+            let text = format!("[notification]\nexpire-info-after = {bad}\n");
+            let errors = parse(&text).unwrap_err();
+            assert!(
+                errors[0].message.contains("expire-info-after"),
+                "{bad}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn the_notification_settings_have_the_defaults_of_the_spec_and_can_be_changed() {
         let d = parse("").unwrap().notification;
         assert_eq!(d, NotificationConfig::default());
         assert!(!d.auto_jump && d.push_when_host_focused);
         assert_eq!(d.push_interval, Duration::from_secs(5));
         assert_eq!(d.bell_interval, Duration::from_secs(2));
+        assert_eq!(d.expire_info_after, None);
         // Approval, input, error ring and ask; info only asks and goes away when looked at.
         assert!(d.class(crate::notify::Class::Approval).bell);
         assert!(!d.class(crate::notify::Class::Info).bell);
