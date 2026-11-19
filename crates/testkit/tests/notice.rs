@@ -539,7 +539,7 @@ const BACK: &[u8] = b"\x1b[111;7u";
 #[test]
 fn when_the_terminal_gets_the_focus_back_the_client_goes_to_the_pane_that_sent_a_notification_out_and_the_return_key_goes_back()
  {
-    let daemon = TestDaemon::start_counting_all();
+    let daemon = daemon_with("[notification]\nauto-jump = true\n");
     let (mut client, [first, _, third]) = three_panes(&daemon);
     client.send(FOCUS_OUT);
     notify(&daemon, first, "approval", "claude", "may I");
@@ -556,7 +556,7 @@ fn when_the_terminal_gets_the_focus_back_the_client_goes_to_the_pane_that_sent_a
 
 #[test]
 fn no_jump_when_the_notification_is_gone_or_the_terminal_was_looked_at_all_the_time() {
-    let daemon = TestDaemon::start_counting_all();
+    let daemon = daemon_with("[notification]\nauto-jump = true\n");
     let (mut client, [first, _, third]) = three_panes(&daemon);
     client.send(FOCUS_OUT);
     notify(&daemon, first, "approval", "claude", "may I");
@@ -573,6 +573,42 @@ fn no_jump_when_the_notification_is_gone_or_the_terminal_was_looked_at_all_the_t
     client.send(FOCUS_OUT);
     client.send(FOCUS_IN);
     assert_eq!(client.focused_pane_id(), third);
+}
+
+/// With the default settings the jump is off: a notification sent out from another window while
+/// the host terminal had no focus does not change the window or the pane when the focus comes
+/// back, and the window log has the two focus changes and no window change.
+#[test]
+fn coming_back_with_the_default_settings_changes_neither_window_nor_pane() {
+    let daemon = daemon_with("");
+    let (mut client, [first, _, _]) = three_panes(&daemon);
+    let (ok, why) = daemon.command("window.new", &[]).unwrap();
+    assert!(ok, "{why}");
+    assert!(
+        client.wait_until(WAIT, |c| bar(c).contains(" 2 ")),
+        "{}",
+        bar(&client)
+    );
+    let shown = client.focused_pane_id();
+    let window_changes = |daemon: &TestDaemon| {
+        let (ok, log) = daemon.command("window.log", &[]).unwrap();
+        assert!(ok, "{log}");
+        log.lines().filter(|l| l.contains("  window ")).count()
+    };
+    let before = window_changes(&daemon);
+    client.send(FOCUS_OUT);
+    notify(&daemon, first, "approval", "claude", "may I");
+    assert!(mark_shown(&mut client, "▲"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(200));
+    client.send(FOCUS_IN);
+    settle(&mut client, Duration::from_millis(300));
+    assert_eq!(client.focused_pane_id(), shown);
+    assert_eq!(window_changes(&daemon), before);
+    let (_, log) = daemon.command("window.log", &[]).unwrap();
+    assert!(
+        log.contains("host focus lost") && log.contains("host focus gained"),
+        "{log}"
+    );
 }
 
 #[test]

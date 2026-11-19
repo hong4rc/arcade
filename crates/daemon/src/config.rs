@@ -209,7 +209,7 @@ impl Default for NotificationConfig {
             push_interval: Duration::from_secs(5),
             bell_interval: Duration::from_secs(2),
             muted_sources: Vec::new(),
-            auto_jump: true,
+            auto_jump: false,
             tab_mark: true,
             pane_mark: true,
             status_count: StatusCount::OtherSessions,
@@ -1586,7 +1586,7 @@ position = "top"
     fn the_notification_settings_have_the_defaults_of_the_spec_and_can_be_changed() {
         let d = parse("").unwrap().notification;
         assert_eq!(d, NotificationConfig::default());
-        assert!(d.auto_jump && d.push_when_host_focused);
+        assert!(!d.auto_jump && d.push_when_host_focused);
         assert_eq!(d.push_interval, Duration::from_secs(5));
         assert_eq!(d.bell_interval, Duration::from_secs(2));
         // Approval, input, error ring and ask; info only asks and goes away when looked at.
