@@ -45,6 +45,9 @@ pub struct Item {
     search: String,
     /// What a row of the key list says besides its action.
     pub keys: Option<KeyCells>,
+    /// The most urgent notification of what the line stands for (a session or a window), shown
+    /// as the tree shows it: the plain symbol of its class after the name.
+    pub notice: Option<crate::notify::Class>,
 }
 
 impl Item {
@@ -58,7 +61,14 @@ impl Item {
             current,
             search,
             keys: None,
+            notice: None,
         }
+    }
+
+    /// The line stands for something that holds a notification of this class.
+    pub fn with_notice(mut self, notice: Option<crate::notify::Class>) -> Item {
+        self.notice = notice;
+        self
     }
 
     /// The line is a row of the key list.
@@ -190,10 +200,14 @@ impl Picker {
         } else {
             ""
         };
+        let notice = item
+            .notice
+            .map(|class| format!(" {}", theme::notice_symbol(class)))
+            .unwrap_or_default();
         if item.detail.is_empty() {
-            format!("{mark}{}{current}", item.name)
+            format!("{mark}{}{notice}{current}", item.name)
         } else {
-            format!("{mark}{}  {}{current}", item.name, item.detail)
+            format!("{mark}{}{notice}  {}{current}", item.name, item.detail)
         }
     }
 
@@ -763,5 +777,19 @@ mod tests {
         );
         let windows = Picker::new(PickerKind::Windows, "Windows", items(&["one"]), 0);
         assert!(!windows.key_line(&keys(), false).contains("new session"));
+    }
+
+    #[test]
+    fn a_line_with_a_notification_carries_the_plain_symbol_of_its_class_after_the_name() {
+        use crate::notify::Class;
+        let input = theme::notice_symbol(Class::Input);
+        let with =
+            Item::new(0, "go".into(), "1 window".into(), false).with_notice(Some(Class::Input));
+        let without = Item::new(1, "plain".into(), "1 window".into(), false);
+        let p = Picker::new(PickerKind::Sessions, "Sessions", vec![with, without], 0);
+        let lines: Vec<String> = p.shown().map(|i| p.line(i, false)).collect();
+        assert_eq!(lines[0], format!("  go {input}  1 window"));
+        // No state: no symbol and no extra spaces.
+        assert_eq!(lines[1], "  plain  1 window");
     }
 }

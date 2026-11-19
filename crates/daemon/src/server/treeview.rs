@@ -38,6 +38,24 @@ enum WindowDest {
 }
 
 impl Server {
+    /// The most urgent notification among the panes of a window: what the tree, the window list
+    /// and the tab badge show for it.
+    pub(super) fn window_notice(&self, window: &Window) -> Option<crate::notify::Class> {
+        self.notices
+            .highest(window.layout.rects().into_iter().map(|(p, _)| p))
+    }
+
+    /// The most urgent notification among the panes of a session: what the tree and the session
+    /// list show for it.
+    pub(super) fn session_notice(&self, session: &Session) -> Option<crate::notify::Class> {
+        self.notices.highest(
+            session
+                .windows
+                .iter()
+                .flat_map(|w| w.layout.rects().into_iter().map(|(p, _)| p)),
+        )
+    }
+
     /// What the tree shows now: every session (in the order they were made), its windows, and
     /// their panes.
     fn tree_entries(&self, viewing: u64) -> Vec<Entry> {
@@ -47,13 +65,8 @@ impl Server {
         for s in sessions {
             let here = s.id == viewing;
             let session_at = entries.len();
-            let session_notice = self.notices.highest(
-                s.windows
-                    .iter()
-                    .flat_map(|w| w.layout.rects().into_iter().map(|(p, _)| p)),
-            );
             entries.push(Entry {
-                notice: session_notice,
+                notice: self.session_notice(s),
                 key: TreeKey::Session(s.id),
                 label: s.name.clone(),
                 parent: None,
@@ -65,9 +78,7 @@ impl Server {
                 let window_here = here && w.id == s.current;
                 let window_at = entries.len();
                 entries.push(Entry {
-                    notice: self
-                        .notices
-                        .highest(w.layout.rects().into_iter().map(|(p, _)| p)),
+                    notice: self.window_notice(w),
                     key: TreeKey::Window(w.id),
                     label: format!(
                         "{} {}{}",

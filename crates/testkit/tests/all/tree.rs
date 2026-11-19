@@ -141,20 +141,24 @@ fn the_tree_has_three_tiers_with_the_place_of_the_client_open_and_marked() {
     let daemon = TestDaemon::start();
     let mut client = world_sized(&daemon, 80, 24);
     open_tree(&mut client);
-    wait_chosen(&mut client, "● zsh");
+    wait_chosen(&mut client, "zsh *");
     let rows = box_rows(&client);
     let text = rows.join("\n");
     for expected in [
         "▾ alpha *",
         "    ▾ 1 editor *",
         "      nvim",
-        "● zsh",
         "▸ 2 server",
         "▸ beta",
         "Enter: go to pane zsh",
     ] {
         assert!(text.contains(expected), "no {expected:?} in\n{text}");
     }
+    // The pane the client is in ends with the current mark, as the lists mark theirs, and no
+    // line has a dot before its name.
+    let here = rows.iter().find(|r| r.contains("zsh in")).expect("zsh row");
+    assert!(here.trim_end_matches([' ', '│']).ends_with(" *"), "{here}");
+    assert!(!text.contains('●'), "{text}");
     // The branches that hold nothing of the client are closed: no htop, no emacs.
     assert!(!text.contains("htop") && !text.contains("emacs"), "{text}");
     // The tiers are indented one beneath the other.
@@ -190,12 +194,12 @@ fn up_and_down_keep_to_a_tier_and_left_and_right_go_out_and_in() {
     let daemon = TestDaemon::start();
     let mut client = world(&daemon);
     open_tree(&mut client);
-    wait_chosen(&mut client, "● zsh");
+    wait_chosen(&mut client, "zsh *");
     // Down from the last pane of window 1 is the first pane of window 2.
     client.send(DOWN);
     wait_chosen(&mut client, "htop");
     client.send(UP);
-    wait_chosen(&mut client, "● zsh");
+    wait_chosen(&mut client, "zsh *");
     client.send(UP);
     wait_chosen(&mut client, "nvim");
     // The first of its tier: Up stays.
@@ -214,10 +218,10 @@ fn up_and_down_keep_to_a_tier_and_left_and_right_go_out_and_in() {
     client.send(RIGHT);
     wait_chosen(&mut client, "▾ 1 editor *");
     client.send(RIGHT);
-    wait_chosen(&mut client, "● zsh");
+    wait_chosen(&mut client, "zsh *");
     client.send(RIGHT);
     quiet(&mut client);
-    wait_chosen(&mut client, "● zsh");
+    wait_chosen(&mut client, "zsh *");
 }
 
 fn quiet(client: &mut TestClient) {
@@ -516,7 +520,7 @@ fn a_place_that_cannot_take_the_pane_says_why_and_enter_changes_nothing() {
     // The pane itself.
     lift_pane(&mut client);
     client.send(RIGHT);
-    wait_chosen(&mut client, "● zsh [lifted]");
+    wait_chosen(&mut client, "zsh * [lifted]");
     wait_footer(&mut client, "lifted");
     // Its own window: the pane is in it already.
     client.send(LEFT);

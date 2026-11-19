@@ -159,8 +159,8 @@ The four default movement keys are `h` (left), `j` (down), `k` (up), `l` (right)
 | `,` | Rename the window |
 | `$` | Rename the session |
 | `C` | New session: the session is made at once, in the directory of the pane you are in, and shown; the status bar then asks for its name. `Enter` with a name renames it, an empty `Enter` or `Esc` keeps the automatic name, and a name that another session has keeps the prompt open with `Name in use:` in front |
-| `s` | List of sessions, in the order they were made; it holds only sessions, so when the filter matches nothing it is empty. `+` makes a session and shows it, then asks for its name as `C` does, starting from what you typed to filter; the `+` is not typed into the filter here (in the other lists it is). The key line of the list says `+ new session`; the key is `list.new` in `[keys.list]` and can be rebound |
-| `w` | List of the windows of this session; type to filter by name, `Enter` to go there |
+| `s` | List of sessions, in the order they were made; it holds only sessions, so when the filter matches nothing it is empty. A session that holds a notification shows the symbol of its most urgent one after its name, as in the tree and in the counter (`work ■  1 window *`, `go ◆  1 window`); one with nothing to say shows nothing extra. `+` makes a session and shows it, then asks for its name as `C` does, starting from what you typed to filter; the `+` is not typed into the filter here (in the other lists it is). The key line of the list says `+ new session`; the key is `list.new` in `[keys.list]` and can be rebound |
+| `w` | List of the windows of this session; type to filter by name, `Enter` to go there. A window that holds a notification shows the symbol of its most urgent one after its name, the same as on its tab and in the tree (`arcade ■  #1 *`); a window with nothing to say shows nothing extra |
 | `t` | Tree of sessions, windows and panes: look and jump (section 3.5) |
 | `m` | Lift the current pane to put it down somewhere else (section 3.5). `m` used to move a window to another session; the command `window.move-to-session` is still in the command palette (`:`) but has no default key |
 | `M` | Lift the current window to put it down somewhere else (section 3.5) |
@@ -269,6 +269,8 @@ The prefix then `t` opens a tree with three tiers: sessions, the windows inside 
 The box has the same fixed size and place as the other lists (section 3.4). It has two lines at the bottom. The first says in words what `Enter` will do (for example `Enter: put pane beside 2 server`), or why `Enter` does nothing (for example `Enter does nothing: nothing matches`). The second is the key line, and it follows what the tree is doing: looking (`up down move  left right close/open  enter go  space lift  type to filter  esc close`), moving something (`up down choose where  enter put down  esc cancel the lift`), or filtering (`up down move  enter go  ctrl+u clear filter  esc close`, without folding and lifting). While something is lifted the title says what, for example `Tree · moving pane zsh`.
 
 A pane line carries the mark of its own notification (`▲`, `◆`, `■` or `●`, section 5.8), and a window or session line carries the most urgent mark of the panes inside it, even when its branch is closed, so that you can see from the tree where something is waiting. The marks have the same colours as on the status bar.
+
+The place you are in is marked the same way in every tier: the session, the window and the pane you are in end with ` *` after the name, as in the lists, and no tier has a `●` before a name, because `●` means only a notification of class `info` (or a command that ended well) everywhere it is drawn.
 
 `m` opens the tree with the current pane already lifted (the choice on its window); `M` opens the tree with the current window already lifted (the choice on its session). Putting down works like this:
 

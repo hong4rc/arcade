@@ -561,11 +561,7 @@ impl Tree {
         } else {
             let indent = "    ".repeat(self.depth(index));
             let opener = match e.key {
-                Key::Pane(_) => theme::symbol(if e.here {
-                    Symbol::TreeHere
-                } else {
-                    Symbol::TreeOtherPane
-                }),
+                Key::Pane(_) => theme::symbol(Symbol::TreeOtherPane),
                 _ if self.open.contains(&e.key) => theme::symbol(Symbol::TreeOpen),
                 _ => theme::symbol(Symbol::TreeClosed),
             };
@@ -577,7 +573,9 @@ impl Tree {
         } else {
             e.label.clone()
         };
-        let here = if e.here && !matches!(e.key, Key::Pane(_)) {
+        // Where the client is, in every tier, is marked the way the lists mark the current line:
+        // a `●` before a name would read as a notification.
+        let here = if e.here {
             theme::symbol(Symbol::PickerCurrentMark)
         } else {
             ""
@@ -746,18 +744,39 @@ mod tests {
             theme::symbol(Symbol::TreeOpen),
             theme::symbol(Symbol::TreeClosed),
         );
-        let here = theme::symbol(Symbol::TreeHere);
+        let other = theme::symbol(Symbol::TreeOtherPane);
         assert_eq!(
             lines(&t),
             vec![
                 format!("  {open}work *"),
                 format!("{}{open}1 editor *", spaces(6)),
-                format!("> {}{here}nvim", spaces(8)),
-                format!("{}zsh", spaces(12)),
+                format!("> {}{other}nvim *", spaces(8)),
+                format!("{}{other}zsh", spaces(10)),
                 format!("{}{closed}2 server", spaces(6)),
                 format!("  {closed}notes"),
             ]
         );
+    }
+
+    #[test]
+    fn the_pane_of_the_client_ends_with_the_current_mark_and_a_dot_means_only_info() {
+        let mut list = entries();
+        // Another pane has an info notification; the pane the client is in has none.
+        let info = list
+            .iter_mut()
+            .find(|e| e.key == Key::Pane(102))
+            .expect("pane 102");
+        info.notice = Some(crate::notify::Class::Info);
+        let t = Tree::new(list, Key::Pane(101), None);
+        let rows = lines(&t);
+        let dot = theme::notice_symbol(crate::notify::Class::Info);
+        let here = rows
+            .iter()
+            .find(|l| l.ends_with("nvim *"))
+            .expect("nvim row");
+        assert!(!here.contains(dot), "{here}");
+        let other = rows.iter().find(|l| l.contains("zsh")).expect("zsh row");
+        assert!(other.contains(dot), "{other}");
     }
 
     #[test]
@@ -821,7 +840,8 @@ mod tests {
         t.delete_char();
         assert_eq!(t.rows().len(), 2);
         let all = lines(&t);
-        assert_eq!(all[0], "> work › 1 editor › nvim");
+        // The pane the client is in carries the current mark here, too.
+        assert_eq!(all[0], "> work › 1 editor › nvim *");
         assert_eq!(all[1], "  notes › 1 todo › vim");
         t.down();
         assert_eq!(t.selected_key(), Key::Pane(104));

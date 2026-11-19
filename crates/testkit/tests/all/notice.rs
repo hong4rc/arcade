@@ -866,3 +866,93 @@ fn with_the_host_terminal_out_of_focus_the_info_of_a_visible_pane_stays() {
     settle(&mut client, Duration::from_millis(600));
     assert!(bar(&client).contains("●1"), "{}", bar(&client));
 }
+
+// ---- The lists and the tree show the same state symbols ----
+
+/// The rows of the screen that contain `needle`.
+fn rows_with(client: &TestClient, needle: &str) -> Vec<String> {
+    client
+        .screen_text()
+        .lines()
+        .filter(|l| l.contains(needle))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn the_session_list_marks_a_session_that_holds_an_input_notification_and_only_that_one() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, first, _) = two_panes(&daemon);
+    let (ok, why) = daemon.command("session.new", &["plain"]).unwrap();
+    assert!(ok, "{why}");
+    notify(&daemon, first, "input", "a", "waiting");
+    assert!(mark_shown(&mut client, "◆"), "{}", bar(&client));
+    client.send(PREFIX);
+    client.send(b"s");
+    assert!(
+        client.wait_until(WAIT, |c| !rows_with(c, "plain").is_empty()),
+        "{}",
+        client.screen_text()
+    );
+    let input = rows_with(&client, "work");
+    let input = input
+        .iter()
+        .find(|l| l.contains("window"))
+        .expect("work row");
+    assert!(input.contains("work ◆  "), "{input}");
+    let quiet = rows_with(&client, "plain");
+    let quiet = quiet
+        .iter()
+        .find(|l| l.contains("window"))
+        .expect("plain row");
+    assert!(!quiet.contains('◆'), "{quiet}");
+    assert!(quiet.contains("plain  1 window"), "{quiet}");
+}
+
+#[test]
+fn the_window_list_marks_a_window_whose_pane_has_an_error() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, first, _) = two_panes(&daemon);
+    notify(&daemon, first, "error", "a", "broken");
+    assert!(mark_shown(&mut client, "■"), "{}", bar(&client));
+    client.send(PREFIX);
+    client.send(b"w");
+    assert!(
+        client.wait_until(WAIT, |c| rows_with(c, "#1").iter().any(|l| l.contains('■'))),
+        "{}",
+        client.screen_text()
+    );
+}
+
+#[test]
+fn the_pane_you_are_in_has_the_current_mark_in_the_tree_and_a_dot_means_only_info() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, first, _) = two_panes(&daemon);
+    client.send(FOCUS_OUT);
+    settle(&mut client, Duration::from_millis(100));
+    notify(&daemon, first, "info", "a", "done");
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
+    client.send(PREFIX);
+    client.send(b"t");
+    assert!(
+        client.wait_until(WAIT, |c| c.screen_text().contains("Tree")),
+        "{}",
+        client.screen_text()
+    );
+    // Two pane rows: the one in the pane that has the info carries the dot and no current mark;
+    // the other is the pane the client is in and carries the current mark and no dot.
+    let pane_rows: Vec<String> = client
+        .screen_text()
+        .lines()
+        .filter(|l| l.contains(" *") && l.contains('│'))
+        .map(str::to_string)
+        .collect();
+    let all = client.screen_text();
+    assert!(all.matches('●').count() >= 1, "{all}");
+    for row in pane_rows {
+        assert!(
+            !row.contains('●') || !row.trim_end().ends_with('*'),
+            "{row}"
+        );
+    }
+}

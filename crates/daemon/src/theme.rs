@@ -842,7 +842,6 @@ pub enum Symbol {
     TreeOpen,
     TreeClosed,
     /// In front of the pane the client is in, and of the others (blank).
-    TreeHere,
     TreeOtherPane,
     /// After the line of the item that is lifted.
     TreeLifted,
@@ -883,7 +882,6 @@ pub fn symbol(symbol: Symbol) -> &'static str {
         Symbol::HintSeparator => " · ",
         Symbol::TreeOpen => "▾ ",
         Symbol::TreeClosed => "▸ ",
-        Symbol::TreeHere => "● ",
         Symbol::TreeOtherPane => "  ",
         Symbol::TreeLifted => " [lifted]",
         Symbol::TreePathSeparator => " › ",

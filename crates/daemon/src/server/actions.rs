@@ -774,6 +774,7 @@ impl Server {
                         format!("#{}", w.number),
                         w.id == session.current,
                     )
+                    .with_notice(self.window_notice(w))
                 })
                 .collect();
             let selected = items.iter().position(|i| i.current).unwrap_or(0);
@@ -803,6 +804,7 @@ impl Server {
                     n => format!("{n} windows"),
                 };
                 Item::new(id, s.name.clone(), detail, s.id == session_id)
+                    .with_notice(self.session_notice(s))
             })
             .collect();
         if items.is_empty() {
