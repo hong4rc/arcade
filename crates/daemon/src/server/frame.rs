@@ -157,6 +157,40 @@ fn panes_wearing_a_mark(
         .collect()
 }
 
+/// The panes out of focus that carry a state (a notification of any class, or the end of a
+/// command left on them), each with the style its edges take, most urgent first.
+fn bordered_panes(
+    notices: &crate::notify::Store,
+    panes: &HashMap<u64, Pane>,
+    in_focus: PaneId,
+    visible: &[(PaneId, Rect)],
+) -> Vec<(Rect, arcade_term::Style)> {
+    let mut found: Vec<(usize, Rect, arcade_term::Style)> = Vec::new();
+    for (pane, rect) in visible {
+        if *pane == in_focus {
+            continue;
+        }
+        let state = if let Some(n) = notices.get(*pane) {
+            let rank = crate::notify::Class::BY_URGENCY
+                .iter()
+                .position(|c| *c == n.class)
+                .unwrap_or(0);
+            Some((rank, crate::theme::Tint::Class(n.class)))
+        } else {
+            match panes.get(pane).and_then(|p| p.command.finished) {
+                Some(false) => Some((10, crate::theme::Tint::ProgressError)),
+                Some(true) => Some((11, crate::theme::Tint::Finished)),
+                None => None,
+            }
+        };
+        if let Some((rank, tint)) = state {
+            found.push((rank, *rect, crate::theme::divider_state_style(tint)));
+        }
+    }
+    found.sort_by_key(|(rank, _, _)| *rank);
+    found.into_iter().map(|(_, r, st)| (r, st)).collect()
+}
+
 /// A pane narrower than this has no room for the mark of its notification.
 const MARK_MIN_WIDTH: u16 = 12;
 
@@ -615,9 +649,15 @@ impl Server {
                 window.layout.dividers()
             };
             let rects: Vec<crate::layout::Rect> = visible.iter().map(|(_, r)| *r).collect();
+            // With dividers drawn there is a border to colour; a single pane or a zoomed one has none.
+            let bordered = if dividers.is_empty() {
+                Vec::new()
+            } else {
+                bordered_panes(&self.notices, &self.panes, focus, &visible)
+            };
             session
                 .screen
-                .draw_dividers(&dividers, origin, focus_rect, &rects);
+                .draw_dividers(&dividers, origin, focus_rect, &rects, &bordered);
             if let Some(y) = status_row(rows, status_position) {
                 let copy_on = self
                     .panes

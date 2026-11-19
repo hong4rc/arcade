@@ -59,7 +59,7 @@ fn a_symbol_from_the_file_reaches_the_tab_and_the_corner_and_a_reload_changes_it
     let file = dir.join("config.toml");
     std::fs::write(
         &file,
-        "[status.state.input]\nsymbol = \"X\"\ncolor = \"#102030\"\n",
+        "[notification]\npane-mark = true\n[status.state.input]\nsymbol = \"X\"\ncolor = \"#102030\"\n",
     )
     .unwrap();
     let path = file.clone();
@@ -84,7 +84,11 @@ fn a_symbol_from_the_file_reaches_the_tab_and_the_corner_and_a_reload_changes_it
     );
 
     // Reloaded with another symbol: no restart, the new symbol shows, the old one is gone.
-    std::fs::write(&file, "[status.state.input]\nsymbol = \"Y\"\n").unwrap();
+    std::fs::write(
+        &file,
+        "[notification]\npane-mark = true\n[status.state.input]\nsymbol = \"Y\"\n",
+    )
+    .unwrap();
     let (ok, message) = reload(&daemon);
     assert!(ok, "{message}");
     assert!(client.wait_until(WAIT, |c| {
@@ -92,7 +96,7 @@ fn a_symbol_from_the_file_reaches_the_tab_and_the_corner_and_a_reload_changes_it
         text.chars().filter(|ch| *ch == 'Y').count() == 2 && !text.contains('X')
     }));
     // Reloaded with the entry gone: the default symbol is back.
-    std::fs::write(&file, "").unwrap();
+    std::fs::write(&file, "[notification]\npane-mark = true\n").unwrap();
     let (ok, message) = reload(&daemon);
     assert!(ok, "{message}");
     assert!(client.wait_until(WAIT, |c| {

@@ -118,7 +118,7 @@ fn a_command_that_ends_in_a_hidden_pane_of_the_window_leaves_a_mark_that_goes_wh
 }
 
 #[test]
-fn a_command_that_ends_in_a_pane_that_is_drawn_leaves_no_mark_even_without_the_focus() {
+fn a_command_that_ends_in_a_pane_that_is_drawn_without_the_focus_leaves_its_mark_for_a_glance() {
     let path = config();
     let daemon = TestDaemon::start_with(|c| c.config_path = Some(path.clone()));
     let mut client = daemon.attach(AttachOptions::new().size(100, 30)).unwrap();
@@ -126,8 +126,17 @@ fn a_command_that_ends_in_a_pane_that_is_drawn_leaves_no_mark_even_without_the_f
     long_command(&mut client, 2, 0);
     let (ok, why) = daemon.command("pane.split-right", &[]).unwrap();
     assert!(ok, "{why}");
-    client.wait_until(Duration::from_secs(5), |_| false);
-    assert!(!bar_has_mark(&mut client), "{}", client.status_row());
+    // The pane is drawn but not in focus: the mark shows, and goes by itself after the glance.
+    assert!(
+        client.wait_until(Duration::from_secs(6), bar_has_mark),
+        "no mark: {}",
+        client.status_row()
+    );
+    assert!(
+        client.wait_until(Duration::from_secs(6), |c| !bar_has_mark(c)),
+        "the mark stayed: {}",
+        client.status_row()
+    );
 }
 
 #[test]

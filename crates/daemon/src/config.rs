@@ -172,7 +172,8 @@ pub struct NotificationConfig {
     pub auto_jump: bool,
     /// The mark on the tab of a window that has a notification.
     pub tab_mark: bool,
-    /// The mark at the top right of a pane out of focus, in a window of several panes.
+    /// The small mark at the top right of a pane out of focus, in a window of several panes. Off
+    /// by default: the border of the pane says it.
     pub pane_mark: bool,
     /// The count at the right end of the status bar.
     pub status_count: StatusCount,
@@ -215,7 +216,7 @@ impl Default for NotificationConfig {
             muted_sources: Vec::new(),
             auto_jump: false,
             tab_mark: true,
-            pane_mark: true,
+            pane_mark: false,
             status_count: StatusCount::OtherSessions,
         }
     }
@@ -1678,13 +1679,13 @@ position = "top"
     #[test]
     fn the_places_of_the_notification_marks_can_be_turned_off() {
         let d = parse("").unwrap().notification;
-        assert!(d.tab_mark && d.pane_mark);
+        assert!(d.tab_mark && !d.pane_mark);
         assert_eq!(d.status_count, StatusCount::OtherSessions);
         let c =
-            parse("[notification]\ntab-mark = false\npane-mark = false\nstatus-count = \"off\"\n")
+            parse("[notification]\ntab-mark = false\npane-mark = true\nstatus-count = \"off\"\n")
                 .unwrap()
                 .notification;
-        assert!(!c.tab_mark && !c.pane_mark);
+        assert!(!c.tab_mark && c.pane_mark);
         assert_eq!(c.status_count, StatusCount::Off);
         let c = parse("[notification]\nstatus-count = \"all\"\n")
             .unwrap()

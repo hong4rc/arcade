@@ -33,7 +33,7 @@ fn wheel_up(client: &mut TestClient, x: u16, y: u16) {
 /// covered once, not twice.
 #[test]
 fn the_position_mark_ends_before_the_notification_mark_in_the_corner() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_with(|c| c.config.notification.pane_mark = true);
     let mut client = start(&daemon, 100);
     let first = client.focused_pane_id();
     client.type_line("i=1; while [ $i -le 80 ]; do echo line-$i; i=$((i+1)); done; echo filled");
@@ -73,7 +73,7 @@ fn the_position_mark_ends_before_the_notification_mark_in_the_corner() {
 /// symbol.
 #[test]
 fn the_corner_mark_is_a_symbol_on_the_bars_surface_and_not_a_block_of_the_class_colour() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_with(|c| c.config.notification.pane_mark = true);
     let mut client = start(&daemon, 100);
     let first = client.focused_pane_id();
     client.send(PREFIX);

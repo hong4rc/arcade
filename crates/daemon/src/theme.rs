@@ -700,6 +700,17 @@ fn tint_colour(tint: Tint) -> Color {
     custom_colour(StateName::of_tint(tint)).unwrap_or_else(|| default_tint_colour(tint))
 }
 
+/// The style of the divider cells around a pane that carries a state: the state's colour, the
+/// same as its mark on the tab, on the divider's own background (the terminal's, which the
+/// dividers leave as it is), bold as the focus colour is.
+pub fn divider_state_style(tint: Tint) -> Style {
+    Style {
+        fg: tint_colour(tint),
+        bold: true,
+        ..style(Role::Divider)
+    }
+}
+
 /// The status cell's symbol in a colour on the block it stands on, as the marks of the classes:
 /// the palette's colour, made lighter only as far as it takes to read at a contrast of 4.5. A
 /// colour the settings gave is used as it is, whatever its contrast.

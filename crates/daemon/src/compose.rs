@@ -217,12 +217,17 @@ impl Screen {
     /// divider that has a single pane on each side over its whole length: the focus colour
     /// would be the same whichever of the two has the focus, so it marks only the half on the
     /// focused pane's side (the upper or left half for the pane before it).
+    ///
+    /// `marked` are panes out of focus that carry a state, each with the style its edges take,
+    /// most urgent first; they follow the same rules as the focused pane, and where a cell would
+    /// be claimed by both the focused pane and a marked one, the marked one wins.
     pub fn draw_dividers(
         &mut self,
         dividers: &[Divider],
         origin_y: u16,
         focus: Option<Rect>,
         panes: &[Rect],
+        marked: &[(Rect, Style)],
     ) {
         // Every cell that holds a divider, and whether its line runs top to bottom, so that a
         // cell where two dividers meet can be drawn with the sign that joins them.
@@ -243,6 +248,7 @@ impl Screen {
         // The rectangles in the coordinates of the window area.
         let up = |r: Rect| Rect::new(r.x, r.y.saturating_sub(origin_y), r.w, r.h);
         let focus = focus.map(up);
+        let marked: Vec<(Rect, Style)> = marked.iter().map(|(r, st)| (up(*r), *st)).collect();
         let panes: Vec<Rect> = panes.iter().copied().map(up).collect();
         // The cells of divider `o` that lie on the edge of pane `r`, corners included.
         let touches_edge = |o: &Divider, r: Rect| {
@@ -302,7 +308,7 @@ impl Screen {
                 } else {
                     (d.x + i, d.y)
                 };
-                let touches = focus.is_some_and(|f| {
+                let touches = |f: Rect| {
                     if between_two {
                         let (before, after) = if d.vertical {
                             (f.contains(x.wrapping_sub(1), y), f.contains(x + 1, y))
@@ -320,12 +326,18 @@ impl Screen {
                             && cy >= i32::from(f.y) - 1
                             && cy <= i32::from(f.y + f.h)
                     }
-                });
-                let role = if touches {
-                    Role::DividerFocus
-                } else {
-                    Role::Divider
                 };
+                let cell_style = marked
+                    .iter()
+                    .find(|(r, _)| touches(*r))
+                    .map(|(_, st)| *st)
+                    .unwrap_or_else(|| {
+                        theme::style(if focus.is_some_and(touches) {
+                            Role::DividerFocus
+                        } else {
+                            Role::Divider
+                        })
+                    });
                 let (left, right) = (horizontal_at(x.wrapping_sub(1), y), horizontal_at(x + 1, y));
                 let (up, down) = (vertical_at(x, y.wrapping_sub(1)), vertical_at(x, y + 1));
                 let sym = if d.vertical {
@@ -355,7 +367,7 @@ impl Screen {
                 self.cells[usize::from(gy)][usize::from(x)] = Cell {
                     text: theme::symbol(sym).to_string(),
                     width: CellWidth::Narrow,
-                    style: theme::style(role),
+                    style: cell_style,
                 };
                 self.dirty[usize::from(gy)] = true;
             }
@@ -546,7 +558,7 @@ mod tests {
     fn drawn(h: u16, dividers: &[Divider], panes: &[Rect], focus: usize) -> Vec<String> {
         let mut screen = Screen::new();
         screen.resize(11, h);
-        screen.draw_dividers(dividers, 0, Some(panes[focus]), panes);
+        screen.draw_dividers(dividers, 0, Some(panes[focus]), panes, &[]);
         map(&screen, 11, h)
     }
 
@@ -582,6 +594,83 @@ mod tests {
         let line = [horizontal(0, 3, 11)];
         assert_eq!(drawn(7, &line, &stacked, 0)[3], "######.....");
         assert_eq!(drawn(7, &line, &stacked, 1)[3], ".....######");
+    }
+
+    /// Like `map`, with `N` for a cell in the style of a notified pane.
+    fn map_with_notice(screen: &Screen, w: u16, h: u16, notice: Style) -> Vec<String> {
+        let focus = theme::style(Role::DividerFocus);
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| {
+                        let style = screen.row(y)[usize::from(x)].style;
+                        if style == notice {
+                            'N'
+                        } else if style == focus {
+                            '#'
+                        } else {
+                            '.'
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_notified_pane_out_of_focus_gets_its_edges_in_the_colour_of_its_state() {
+        let notice = theme::divider_state_style(theme::Tint::Class(crate::notify::Class::Input));
+        assert_ne!(notice, theme::style(Role::DividerFocus));
+        assert_ne!(notice, theme::style(Role::Divider));
+        // Two panes side by side, the right one notified, the left one in focus: each marks its
+        // own half of the one line between them.
+        let side = [Rect::new(0, 0, 5, 6), Rect::new(6, 0, 5, 6)];
+        let mut screen = Screen::new();
+        screen.resize(11, 6);
+        screen.draw_dividers(
+            &[vertical(5, 0, 6)],
+            0,
+            Some(side[0]),
+            &side,
+            &[(side[1], notice)],
+        );
+        let column: String = map_with_notice(&screen, 11, 6, notice)
+            .iter()
+            .map(|row| row.chars().nth(5).unwrap())
+            .collect();
+        assert_eq!(column, "###NNN");
+        // With no pane in focus the notified pane's half is the only one coloured.
+        let mut screen = Screen::new();
+        screen.resize(11, 6);
+        screen.draw_dividers(&[vertical(5, 0, 6)], 0, None, &side, &[(side[1], notice)]);
+        let column: String = map_with_notice(&screen, 11, 6, notice)
+            .iter()
+            .map(|row| row.chars().nth(5).unwrap())
+            .collect();
+        assert_eq!(column, "...NNN");
+    }
+
+    #[test]
+    fn where_the_focused_pane_and_a_notified_pane_claim_a_cell_the_notification_wins() {
+        let notice = theme::divider_state_style(theme::Tint::Class(crate::notify::Class::Error));
+        let (dividers, panes) = three();
+        // The tall pane on the left is in focus and the upper right pane is notified: the cells
+        // that both touch (the vertical line down to the corner) are the notified pane's.
+        let mut screen = Screen::new();
+        screen.resize(11, 7);
+        screen.draw_dividers(&dividers, 0, Some(panes[0]), &panes, &[(panes[1], notice)]);
+        assert_eq!(
+            map_with_notice(&screen, 11, 7, notice),
+            [
+                ".....N.....",
+                ".....N.....",
+                ".....N.....",
+                ".....NNNNNN",
+                ".....#.....",
+                ".....#.....",
+                ".....#....."
+            ]
+        );
     }
 
     /// One pane on the left over the whole height, two on the right, one above the other.
@@ -741,6 +830,7 @@ mod tests {
             1,
             Some(Rect::new(0, 1, 5, 6)),
             &[Rect::new(0, 1, 5, 6), Rect::new(6, 1, 5, 6)],
+            &[],
         );
         assert_eq!(
             map(&screen, 11, 7)[1..],
@@ -845,7 +935,7 @@ mod link_tests {
             len: 1,
             vertical: true,
         };
-        screen.draw_dividers(&[divider], 0, None, &[]);
+        screen.draw_dividers(&[divider], 0, None, &[], &[]);
         assert_eq!(spans(&screen), [(0, 4), (5, 10)]);
         screen.set_row(0, text_cells("status", Style::default()));
         assert!(spans(&screen).is_empty());

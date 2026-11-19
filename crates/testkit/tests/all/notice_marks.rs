@@ -55,7 +55,7 @@ fn top_row(client: &TestClient) -> String {
 /// third time.
 #[test]
 fn a_notification_is_one_cell_on_the_tab_and_one_on_the_pane_and_not_counted_again() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_with(|c| c.config.notification.pane_mark = true);
     let mut client = start(&daemon);
     let first = two_panes(&mut client);
     notify(&daemon, first, "input");
@@ -116,7 +116,7 @@ fn the_count_at_the_right_end_is_for_the_other_sessions() {
 
 #[test]
 fn a_single_pane_and_the_pane_in_focus_wear_no_mark_of_their_own() {
-    let daemon = TestDaemon::start();
+    let daemon = TestDaemon::start_with(|c| c.config.notification.pane_mark = true);
     let mut client = start(&daemon);
     let only = client.focused_pane_id();
     notify(&daemon, only, "input");
@@ -143,7 +143,10 @@ fn a_single_pane_and_the_pane_in_focus_wear_no_mark_of_their_own() {
 #[test]
 fn each_setting_turns_its_place_off() {
     // The tab.
-    let daemon = TestDaemon::start_with(|c| c.config.notification.tab_mark = false);
+    let daemon = TestDaemon::start_with(|c| {
+        c.config.notification.tab_mark = false;
+        c.config.notification.pane_mark = true;
+    });
     let mut client = start(&daemon);
     let first = two_panes(&mut client);
     notify(&daemon, first, "input");

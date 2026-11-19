@@ -13,6 +13,10 @@ use crate::tree::Key as TreeKey;
 /// The version of the signal contract the daemon accepts over the socket.
 const SIGNAL_VERSION: u32 = 1;
 
+/// How long a window has to be looked at before what a glance takes away (info, the end of a
+/// command) goes from a pane that is shown but not in focus.
+pub(super) const GLANCE_LASTS: Duration = Duration::from_secs(3);
+
 /// How many entries the log keeps.
 const LOG_ENTRIES: usize = 100;
 
@@ -290,10 +294,12 @@ impl Server {
         let Some((session_id, _)) = self.locate_pane(pane) else {
             return Outcome::Blocked;
         };
+        // Only the pane in focus is looked at hard enough to refuse what a glance would take
+        // away; the other panes shown keep it for the length of a glance.
         let seen = self
             .sessions
             .get(&session_id)
-            .is_some_and(|s| Self::seen_panes(s).contains(&pane));
+            .is_some_and(|s| Self::seen_pane(s) == Some(pane));
         let policy = self.config.notification.class(signal.class);
         if self
             .config
@@ -312,36 +318,62 @@ impl Server {
         }
         let outcome = self.notices.signal(pane, signal, Instant::now());
         if outcome.took_effect() {
+            // A new signal starts its own glance.
+            if let Some(s) = self.sessions.get_mut(&session_id) {
+                s.glances.remove(&pane);
+            }
             self.notices_changed(pane);
         }
         outcome
     }
 
     /// Before a session's screen is built: let go of what the client has looked at, and bring in
-    /// the signals that waited for their second to end.
+    /// the signals that waited for their second to end. The pane in focus loses what a glance
+    /// takes away at once; another pane shown loses it when the glance at it has lasted
+    /// `GLANCE_LASTS`, and the glance is forgotten when the client looks away.
     pub(super) fn settle_notices(&mut self, session_id: u64) {
-        // What a command left on a tab is gone once the pane is looked at, as a notification of
-        // class info is.
-        let seen = self
+        let now = Instant::now();
+        let (seen, focused) = self
             .sessions
             .get(&session_id)
-            .map(Self::seen_panes)
+            .map(|s| (Self::seen_panes(s), Self::seen_pane(s)))
             .unwrap_or_default();
+        // The glances that go on, and the ones that began just now.
+        let mut ended: Vec<u64> = Vec::new();
+        let mut began: Vec<u64> = Vec::new();
         for pane in &seen {
-            self.forget_finished(*pane);
-        }
-        if self.notices.is_empty() {
-            return;
-        }
-        for (pane, outcome) in self.notices.release_held(Instant::now()) {
-            self.notices_changed(pane);
-            if outcome.took_effect()
-                && let Some(n) = self.notices.get(pane).cloned()
-            {
-                self.push_out(pane, n.class, &n.source, &n.title, &n.message);
+            if Some(*pane) == focused {
+                ended.push(*pane);
+            } else if self.holds_glance_state(*pane) {
+                began.push(*pane);
             }
         }
-        for pane in seen {
+        if let Some(s) = self.sessions.get_mut(&session_id) {
+            s.glances.retain(|p, _| began.contains(p));
+            for pane in began {
+                let since = *s.glances.entry(pane).or_insert(now);
+                if now.saturating_duration_since(since) >= GLANCE_LASTS {
+                    ended.push(pane);
+                }
+            }
+            for pane in &ended {
+                s.glances.remove(pane);
+            }
+        }
+        for pane in &ended {
+            self.forget_finished(*pane);
+        }
+        if !self.notices.is_empty() {
+            for (pane, outcome) in self.notices.release_held(now) {
+                self.notices_changed(pane);
+                if outcome.took_effect()
+                    && let Some(n) = self.notices.get(pane).cloned()
+                {
+                    self.push_out(pane, n.class, &n.source, &n.title, &n.message);
+                }
+            }
+        }
+        for pane in ended {
             if self
                 .notices
                 .get(pane)
@@ -349,6 +381,40 @@ impl Server {
             {
                 self.notices.clear(pane);
                 self.notices_changed(pane);
+            }
+        }
+    }
+
+    /// Whether a pane holds something that a glance takes away.
+    fn holds_glance_state(&self, pane: u64) -> bool {
+        self.notices
+            .get(pane)
+            .is_some_and(|n| self.config.notification.class(n.class).clear_on_focus)
+            || self
+                .panes
+                .get(&pane)
+                .is_some_and(|p| p.command.finished.is_some())
+    }
+
+    /// When the first glance that is going on is to end, if any.
+    pub(super) fn glance_due(&self) -> Option<Instant> {
+        // Only a session that is looked at builds screens, so only its glances can end.
+        self.sessions
+            .values()
+            .filter(|s| s.client.is_some() && s.host_focused)
+            .flat_map(|s| s.glances.values())
+            .map(|since| *since + GLANCE_LASTS)
+            .min()
+    }
+
+    /// The sessions whose glance has lasted long enough are built again, which lets go of what
+    /// the glance takes away.
+    pub(super) fn wake_glances(&mut self) {
+        let now = Instant::now();
+        for s in self.sessions.values_mut() {
+            if s.glances.values().any(|since| *since + GLANCE_LASTS <= now) {
+                s.relayout = true;
+                s.chrome_dirty = true;
             }
         }
     }
@@ -377,7 +443,7 @@ impl Server {
         let seen = self
             .sessions
             .get(&session_id)
-            .is_some_and(|s| Self::seen_panes(s).contains(&pane));
+            .is_some_and(|s| Self::seen_pane(s) == Some(pane));
         let limits = self.command_limits();
         let Some(p) = self.panes.get_mut(&pane) else {
             return;

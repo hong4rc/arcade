@@ -811,18 +811,163 @@ fn a_glance_at_the_window_clears_the_info_of_a_visible_pane_that_has_not_the_foc
     assert!(!standing(&daemon).contains("done"), "{}", standing(&daemon));
 }
 
+/// The style of the divider cell at the top of the line between two panes side by side: the
+/// half that belongs to the left pane, which is the one out of focus when the right one is
+/// split off and has the focus.
+fn left_border(client: &TestClient) -> arcade_term::Style {
+    let text = client.screen_text();
+    let (row, col) = text
+        .lines()
+        .enumerate()
+        .find_map(|(y, l)| l.chars().position(|c| c == '│').map(|x| (y, x)))
+        .expect("a divider on the screen");
+    client.style_at(row as u16, col as u16)
+}
+
+/// Wait until the left border has a style other than `plain`, and give it.
+fn coloured_border(
+    client: &mut TestClient,
+    plain: arcade_term::Style,
+) -> Option<arcade_term::Style> {
+    client
+        .wait_until(WAIT, |c| left_border(c) != plain)
+        .then(|| left_border(client))
+}
+
 #[test]
-fn a_new_info_signal_for_a_visible_pane_without_the_focus_is_blocked() {
+fn an_info_signal_for_a_visible_pane_without_the_focus_colours_its_border_and_goes_after_three_seconds()
+ {
     let daemon = counting_all_with_expiry(None);
     let (mut client, first, _) = two_panes(&daemon);
+    settle(&mut client, Duration::from_millis(300));
+    let plain = left_border(&client);
     notify(&daemon, first, "info", "a", "done");
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
+    let coloured = coloured_border(&mut client, plain).expect("the border changes colour");
+    // It is not the colour of the focus either.
+    assert_ne!(coloured, plain);
+    settle(&mut client, Duration::from_millis(1000));
     assert!(
-        nothing_shown_for(&mut client, "●", Duration::from_millis(400)),
+        bar(&client).contains("●1"),
+        "gone too soon: {}",
+        bar(&client)
+    );
+    assert_eq!(left_border(&client), coloured);
+    // After the glance the notification goes and the border is as it was.
+    assert!(
+        client.wait_until(Duration::from_secs(6), |c| !bar(c).contains("●1")),
         "{}",
         bar(&client)
     );
-    let (_, log) = daemon.command("notify.log", &[]).unwrap();
-    assert!(log.contains("blocked"), "{log}");
+    assert!(client.wait_until(WAIT, |c| left_border(c) == plain));
+}
+
+#[test]
+fn looking_away_before_three_seconds_keeps_the_info_and_the_next_glance_starts_again() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, first, _) = two_panes(&daemon);
+    notify(&daemon, first, "info", "a", "done");
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(1000));
+    client.send(FOCUS_OUT);
+    // Well past the three seconds of the first glance: it did not count.
+    settle(&mut client, Duration::from_millis(3500));
+    assert!(bar(&client).contains("●1"), "{}", bar(&client));
+    client.send(FOCUS_IN);
+    settle(&mut client, Duration::from_millis(1000));
+    assert!(
+        bar(&client).contains("●1"),
+        "a new glance starts: {}",
+        bar(&client)
+    );
+    assert!(
+        client.wait_until(Duration::from_secs(6), |c| !bar(c).contains("●1")),
+        "{}",
+        bar(&client)
+    );
+}
+
+#[test]
+fn an_input_signal_keeps_its_coloured_border_past_three_seconds() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, first, _) = two_panes(&daemon);
+    settle(&mut client, Duration::from_millis(300));
+    let plain = left_border(&client);
+    notify(&daemon, first, "input", "a", "waiting");
+    assert!(mark_shown(&mut client, "◆1"), "{}", bar(&client));
+    let coloured = coloured_border(&mut client, plain).expect("the border changes colour");
+    settle(&mut client, Duration::from_millis(3600));
+    assert!(bar(&client).contains("◆1"), "{}", bar(&client));
+    assert_eq!(left_border(&client), coloured);
+}
+
+#[test]
+fn the_border_colour_follows_the_class_of_the_notification() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, first, _) = two_panes(&daemon);
+    settle(&mut client, Duration::from_millis(300));
+    let plain = left_border(&client);
+    notify(&daemon, first, "input", "a", "waiting");
+    let input = coloured_border(&mut client, plain).expect("input colours the border");
+    notify(&daemon, first, "error", "a", "broke");
+    assert!(client.wait_until(WAIT, |c| left_border(c) != input && left_border(c) != plain));
+}
+
+#[test]
+fn focusing_a_pane_with_info_takes_it_and_its_border_colour_away_at_once() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, first, _) = two_panes(&daemon);
+    settle(&mut client, Duration::from_millis(300));
+    let plain = left_border(&client);
+    notify(&daemon, first, "info", "a", "done");
+    let coloured = coloured_border(&mut client, plain).expect("the border changes colour");
+    let (ok, why) = daemon.command("pane.focus-left", &[]).unwrap();
+    assert!(ok, "{why}");
+    // Long before the three seconds of a glance are over.
+    assert!(
+        client.wait_until(Duration::from_millis(1500), |c| !bar(c).contains("●1")),
+        "{}",
+        bar(&client)
+    );
+    assert_ne!(left_border(&client), coloured);
+}
+
+#[test]
+fn a_window_of_one_pane_has_no_border_to_colour() {
+    let daemon = counting_all_with_expiry(None);
+    let mut client = start(&daemon);
+    let only = client.focused_pane_id();
+    notify(&daemon, only, "input", "a", "waiting");
+    settle(&mut client, Duration::from_millis(300));
+    assert!(
+        !client.screen_text().contains('│'),
+        "{}",
+        client.screen_text()
+    );
+}
+
+#[test]
+fn the_corner_mark_is_off_by_default_and_comes_back_with_the_setting() {
+    let corner = |on: bool| {
+        let daemon = TestDaemon::start_with(move |c| {
+            c.config.notification.pane_mark = on;
+            c.config.notification.status_count = arcade_daemon::config::StatusCount::All;
+            c.config.state_look.alternate = false;
+        });
+        let (mut client, first, _) = two_panes(&daemon);
+        notify(&daemon, first, "input", "a", "waiting");
+        assert!(mark_shown(&mut client, "◆1"), "{}", bar(&client));
+        settle(&mut client, Duration::from_millis(300));
+        // The pane's own rows, not the status bar.
+        let status = bar(&client);
+        client
+            .screen_text()
+            .lines()
+            .filter(|l| **l != *status)
+            .any(|l| l.contains('◆'))
+    };
+    assert!(!corner(false));
+    assert!(corner(true));
 }
 
 #[test]

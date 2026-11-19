@@ -477,6 +477,11 @@ struct Session {
     /// The pane that sent the latest signal out while the host terminal was not looked at: where
     /// the client goes when the terminal gets the focus back.
     jump_candidate: Option<u64>,
+    /// The panes shown but not in focus that hold something a glance takes away (a notification
+    /// of a class that clears on focus, or the end of a command), with when the glance at them
+    /// began. It ends, and the pane is let go of, `GLANCE_LASTS` later; looking away (the host
+    /// terminal loses the focus, the window is left) forgets it, so the next glance starts again.
+    glances: HashMap<u64, Instant>,
     /// After such a jump: the pane it left and the pane it went to; the return key goes back.
     return_to: Option<(u64, u64)>,
     /// What the host terminal can send, once it has answered the question asked at attach.
@@ -587,6 +592,7 @@ impl Session {
             last_bell: None,
             bell_due: None,
             jump_candidate: None,
+            glances: HashMap::new(),
             return_to: None,
             host_keyboard: None,
             host_probe: None,
@@ -929,6 +935,7 @@ impl Server {
             self.wake_running_marks();
             self.wake_progress_expiry();
             self.wake_info_expiry();
+            self.wake_glances();
             self.wake_blink();
             self.tick_drag_scrolls();
             self.send_frames();
@@ -1003,6 +1010,9 @@ impl Server {
             }
         }
         if let Some(t) = self.info_expiry_due() {
+            consider(t);
+        }
+        if let Some(t) = self.glance_due() {
             consider(t);
         }
         for s in self.sessions.values() {
