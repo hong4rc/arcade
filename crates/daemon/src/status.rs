@@ -387,7 +387,7 @@ fn mark_parts(mark: Mark) -> (&'static str, theme::Tint) {
 /// The cell of a mark on the block it stands on, in the mark's colour.
 fn mark_cells(mark: Mark, block: arcade_term::Style, current: bool) -> Vec<Cell> {
     let (symbol, tint) = mark_parts(mark);
-    // The accent block of the current tab cannot carry a symbol, so there the symbol goes on the
+    // The name block of the current tab cannot carry a symbol, so there the symbol goes on the
     // dark badge, as the state's badge does.
     let style = if current {
         theme::state_badge_on(theme::StateStyle::Dark, tint, true)
@@ -449,7 +449,7 @@ fn symbol_look(
 ) -> (arcade_term::Style, arcade_term::Style) {
     match look {
         theme::StateStyle::Plain if !current => (theme::cell_style_on(tint, name, false), name),
-        // The accent block of the current tab cannot carry a symbol, so there the Plain look
+        // The name block of the current tab cannot carry a symbol, so there the Plain look
         // draws the state as the Dark look does: on the dark badge.
         theme::StateStyle::Plain => {
             let badge = theme::state_badge_on(theme::StateStyle::Dark, tint, true);
@@ -1286,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn the_current_tab_is_the_accent_block_in_both_tab_styles() {
+    fn the_current_tab_is_the_lighter_block_in_both_tab_styles() {
         for tab_style in [TabStyle::Pill, TabStyle::Flat] {
             let mut i = info();
             i.style = tab_style;
@@ -1300,19 +1300,20 @@ mod tests {
             );
             assert_eq!(at("sh"), theme::style(Role::PillName), "{tab_style:?}");
         }
-        // The name block of the current tab is the accent, and its number is the accent on the
-        // dark badge.
+        // The name block of the current tab is a lighter grey than the other tabs, and its number
+        // is the accent on the dark badge, so the two do not merge.
         let name = theme::style(Role::PillNameCurrent);
-        assert_eq!(name.bg, theme::style(Role::PillBadgeCurrent).fg);
-        assert_eq!(theme::style(Role::PillBadgeCurrent).bg, name.fg);
+        let badge = theme::style(Role::PillBadgeCurrent);
+        assert_ne!(name.bg, theme::style(Role::PillName).bg);
+        assert_ne!(badge.bg, name.bg);
+        assert_ne!(badge.fg, name.bg);
     }
 
     /// Every look, every place of the number (and none), both tab styles, every state a tab can
-    /// show: the state's symbol on the current tab is never on the accent block, and the tab is
+    /// show: the state's symbol on the current tab is never on the name block of the current tab, and the tab is
     /// as wide as it is without the state.
     #[test]
-    fn no_state_symbol_on_the_current_tab_sits_on_the_accent_block_and_no_state_changes_the_width()
-    {
+    fn no_state_symbol_on_the_current_tab_sits_on_the_name_block_and_no_state_changes_the_width() {
         use arcade_term::Progress;
         let accent = theme::style(Role::PillNameCurrent).bg;
         // Each state as (notification, progress report, command mark) on the current tab.

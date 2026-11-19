@@ -71,6 +71,7 @@ mod palette {
     pub const MANTLE: Color = Color::Rgb(0x29, 0x2c, 0x3c);
     pub const CRUST: Color = Color::Rgb(0x23, 0x26, 0x34);
     pub const SURFACE0: Color = Color::Rgb(0x41, 0x45, 0x59);
+    pub const SURFACE1: Color = Color::Rgb(0x51, 0x57, 0x6d);
     pub const OVERLAY2: Color = Color::Rgb(0x94, 0x9c, 0xbb);
     pub const TEXT: Color = Color::Rgb(0xc6, 0xd0, 0xf5);
     pub const SUBTEXT0: Color = Color::Rgb(0xb5, 0xbf, 0xe2);
@@ -154,13 +155,14 @@ pub fn style(role: Role) -> Style {
     match role {
         Role::StatusBar => on(palette::SUBTEXT0, palette::MANTLE),
         Role::PillName => on(palette::TEXT, palette::SURFACE0),
-        // The current tab's name is a block of the accent, with the dark text of the bar on it.
+        // The current tab's name is a block of a lighter grey than the other tabs, with bright
+        // bold text; the number badge beside it carries the accent.
         Role::PillNameCurrent => Style {
             bold: true,
-            ..on(palette::CRUST, palette::MAUVE)
+            ..on(palette::TEXT, palette::SURFACE1)
         },
         Role::PillQuiet => on(palette::SUBTEXT0, palette::SURFACE0),
-        Role::PillQuietCurrent => on(palette::CRUST, palette::MAUVE),
+        Role::PillQuietCurrent => on(palette::TEXT, palette::SURFACE1),
         Role::PillBadge => Style {
             bold: true,
             ..on(palette::CRUST, palette::OVERLAY2)
@@ -901,13 +903,12 @@ mod tests {
     }
 
     #[test]
-    fn the_current_tab_name_is_the_accent_block_with_dark_text_and_its_number_is_the_accent_on_dark()
-     {
+    fn the_current_tab_name_is_a_lighter_grey_block_and_its_number_is_the_accent_on_dark() {
         assert_eq!(
             style(Role::PillNameCurrent),
             Style {
                 bold: true,
-                ..on(palette::CRUST, palette::MAUVE)
+                ..on(palette::TEXT, palette::SURFACE1)
             }
         );
         assert_eq!(
@@ -1120,6 +1121,28 @@ mod tests {
             Role::PromptText,
         ] {
             let ratio = contrast(style(role));
+            assert!(ratio >= 4.5, "{role:?}: {ratio:.2}");
+        }
+    }
+
+    /// A quiet current tab is a grey block, not the accent and not the grey of the paused state;
+    /// it is clearly brighter than the block of the other tabs and its text reads on it.
+    #[test]
+    fn the_quiet_current_tab_block_is_a_lighter_grey_that_reads() {
+        for role in [Role::PillNameCurrent, Role::PillQuietCurrent] {
+            let current = style(role);
+            assert_ne!(current.bg, palette::MAUVE, "{role:?}");
+            assert_ne!(current.bg, palette::OVERLAY2, "{role:?}");
+            let against_other_tabs = contrast(Style {
+                fg: current.bg,
+                bg: palette::SURFACE0,
+                ..Style::default()
+            });
+            assert!(
+                against_other_tabs >= 1.3,
+                "{role:?} against the other tabs: {against_other_tabs:.2}"
+            );
+            let ratio = contrast(current);
             assert!(ratio >= 4.5, "{role:?}: {ratio:.2}");
         }
     }
