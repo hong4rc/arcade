@@ -1080,4 +1080,41 @@ mod tests {
         assert_eq!(t.plan().unwrap_err(), "nothing matches");
         assert_eq!(t.enter_line(), "Enter does nothing: nothing matches");
     }
+    #[test]
+    fn the_number_of_a_window_is_drawn_in_the_palette_of_the_bar_and_reads() {
+        let mut t = tree();
+        // Open the first window and choose it, so one number is on the chosen line.
+        t.left();
+        let keymap = crate::keymap::Keymap::defaults(&Default::default());
+        let keys = ListKeys::new(&keymap.list);
+        let drawn = t.draw(80, 24, &keys);
+        let find = |chosen: bool| {
+            drawn
+                .rows
+                .iter()
+                .find(|row| {
+                    let text: String = row.iter().map(|c| c.text.as_str()).collect();
+                    text.contains(if chosen { "> " } else { "  " }) && text.contains("server")
+                        || (chosen && text.contains("> ") && text.contains("editor"))
+                })
+                .cloned()
+        };
+        let number_cell = |row: &[arcade_term::Cell]| {
+            row.iter()
+                .find(|c| c.text == "1" || c.text == "2")
+                .cloned()
+                .expect("a window number")
+        };
+        let plain = number_cell(&find(false).expect("a plain window row"));
+        let chosen = number_cell(&find(true).expect("the chosen window row"));
+        for cell in [plain, chosen] {
+            assert!(
+                matches!(cell.style.fg, arcade_term::Color::Rgb(..)),
+                "{:?}",
+                cell.style
+            );
+            let ratio = theme::contrast_of(cell.style.fg, cell.style.bg);
+            assert!(ratio >= 4.5, "{ratio:.2}");
+        }
+    }
 }

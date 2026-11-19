@@ -682,9 +682,9 @@ pub fn draw_box(spec: &BoxSpec) -> Drawn {
             cells.extend(text_cells(line, style));
             if let Some(Some((from, to))) = spec.numbers.get(index) {
                 let number = theme::style(if Some(index) == spec.selected {
-                    Role::TabNumberCurrent
+                    Role::PickerNumberSelected
                 } else {
-                    Role::TabNumber
+                    Role::PickerNumber
                 });
                 // One blank cell was put in front of the text.
                 for cell in cells.iter_mut().skip(1 + from).take(to - from) {

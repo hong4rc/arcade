@@ -10,16 +10,6 @@ use arcade_term::{Color, Style};
 pub enum Role {
     /// The status bar's background and its plain text.
     StatusBar,
-    /// The session's name at the left end of the status bar.
-    /// The tab of a window that is not the current one.
-    Tab,
-    /// The tab of the current window.
-    TabCurrent,
-    /// The number in front of the name in the tab of a window that is not the current one, and in
-    /// the tab of the current window.
-    TabNumber,
-    TabNumberCurrent,
-    /// The program's own title in a tab, fainter than the name.
     /// The words at the right end of the status bar (`PREFIX`, `LOCK`, `COPY`).
     Indicator,
     /// A line that replaces the tabs for a moment: news or a result, an error, a question.
@@ -44,6 +34,9 @@ pub enum Role {
     PickerQuiet,
     /// The keys of the key line, apart from the words after them.
     PickerKey,
+    /// The number of a window in a line of the tree or of a list, and the same on the chosen line.
+    PickerNumber,
+    PickerNumberSelected,
     /// The line of the floating list that is chosen.
     PickerSelected,
     /// The cell behind a state symbol on the chosen line: the lighter grey of that line is too
@@ -202,24 +195,15 @@ pub fn style(role: Role) -> Style {
             ..on(palette::CRUST, palette::GREEN)
         },
         Role::SessionName => on(palette::TEXT, palette::SURFACE0),
-        Role::Tab => style(Role::StatusBar),
-        Role::TabCurrent => Style {
-            fg: Color::Indexed(0),
-            bg: Color::Indexed(4),
+        // The number of a window in the tree and the lists: blue, as the group headings are; on
+        // the chosen line it stands on the dark cell the state symbols stand on.
+        Role::PickerNumber => Style {
             bold: true,
-            ..Style::default()
+            ..on(palette::BLUE, palette::MANTLE)
         },
-        Role::TabNumber => Style {
-            fg: Color::Indexed(3),
+        Role::PickerNumberSelected => Style {
             bold: true,
-            ..style(Role::Tab)
-        },
-        // The colours of the current tab swapped: blue on the dark of its text, so the number
-        // stands out from the name without a colour the tab does not already use.
-        Role::TabNumberCurrent => Style {
-            fg: style(Role::TabCurrent).bg,
-            bg: style(Role::TabCurrent).fg,
-            ..style(Role::TabCurrent)
+            ..on(palette::BLUE, palette::CRUST)
         },
         Role::Indicator => Style {
             bold: true,
@@ -959,17 +943,6 @@ mod tests {
     }
 
     #[test]
-    fn the_number_of_the_current_tab_uses_only_the_colours_of_its_tab_and_stays_readable() {
-        let tab = style(Role::TabCurrent);
-        let number = style(Role::TabNumberCurrent);
-        // The two colours the tab already shows together, either way round.
-        assert!(number.fg == tab.fg || number.fg == tab.bg);
-        assert!(number.bg == tab.fg || number.bg == tab.bg);
-        assert_ne!(number.fg, number.bg);
-        assert_ne!(number.fg, tab.fg, "it must differ from the name next to it");
-    }
-
-    #[test]
     fn every_notification_mark_is_one_cell_in_its_colour_on_a_surface_and_never_a_solid_block() {
         use crate::notify::Class;
         let surface = style(Role::PillName).bg;
@@ -1122,10 +1095,6 @@ mod tests {
             Role::PillBadgeCurrent,
             Role::SessionBadge,
             Role::SessionName,
-            Role::Tab,
-            Role::TabCurrent,
-            Role::TabNumber,
-            Role::TabNumberCurrent,
             Role::Indicator,
             Role::MessageInfo,
             Role::MessageError,
@@ -1197,6 +1166,8 @@ mod tests {
             Role::PickerQuiet,
             Role::PickerKey,
             Role::PickerHeading,
+            Role::PickerNumber,
+            Role::PickerNumberSelected,
             Role::PickerSelected,
             Role::PickerSelectedBadge,
         ];
