@@ -470,7 +470,7 @@ pub const ALTERNATE_DEFAULT_MS: u64 = 2000;
 
 /// The shortest half blink the settings allow and the default one, in milliseconds.
 pub const BLINK_MIN_MS: u64 = 200;
-pub const BLINK_DEFAULT_MS: u64 = 500;
+pub const BLINK_DEFAULT_MS: u64 = 1000;
 
 impl Default for StateLook {
     fn default() -> Self {

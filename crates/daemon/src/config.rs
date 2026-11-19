@@ -1808,7 +1808,7 @@ position = "top"
         assert!(config.state_look.blinks(StateName::Input));
         assert!(config.state_look.blinks(StateName::Approval));
         assert!(!config.state_look.blinks(StateName::Error));
-        assert_eq!(config.state_look.blink_ms, 500);
+        assert_eq!(config.state_look.blink_ms, 1000);
         let config = parse("[status]\nblink = []\n").unwrap();
         assert!(!config.state_look.any_blink());
         let config =
