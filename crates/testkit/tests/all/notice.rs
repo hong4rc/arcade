@@ -1055,25 +1055,7 @@ fn the_session_list_marks_a_session_that_holds_an_input_notification_and_only_th
 }
 
 #[test]
-fn a_session_with_one_window_names_no_window_after_the_count() {
-    let daemon = counting_all_with_expiry(None);
-    let (mut client, first, _) = two_panes(&daemon);
-    notify(&daemon, first, "input", "a", "waiting");
-    assert!(mark_shown(&mut client, "◆"), "{}", bar(&client));
-    client.send(PREFIX);
-    client.send(b"s");
-    assert!(
-        client.wait_until(WAIT, |c| !rows_with(c, "1 window").is_empty()),
-        "{}",
-        client.screen_text()
-    );
-    let row = rows_with(&client, "1 window");
-    assert!(row[0].contains("work ◆  1 window"), "{}", row[0]);
-    assert!(!row[0].contains('·'), "{}", row[0]);
-}
-
-#[test]
-fn the_session_list_names_the_windows_with_a_state_most_urgent_first() {
+fn the_session_list_says_a_session_has_a_notice_but_not_in_which_window() {
     let daemon = counting_all_with_expiry(None);
     let mut client = start(&daemon);
     let first = client.focused_pane_id();
@@ -1103,10 +1085,11 @@ fn the_session_list_names_the_windows_with_a_state_most_urgent_first() {
         client.screen_text()
     );
     let row = rows_with(&client, "3 windows");
-    assert!(row[0].contains("work ◆  3 windows · 2◆ 1■"), "{}", row[0]);
-    // Window 3 holds nothing, so it is not named.
+    // The most urgent symbol after the name is all there is: no window is named.
+    assert!(row[0].contains("work ◆  3 windows"), "{}", row[0]);
+    assert!(!row[0].contains('·'), "{}", row[0]);
     assert!(
-        !row[0].contains("3◆") && !row[0].contains("3■"),
+        !row[0].contains("2◆") && !row[0].contains("1■"),
         "{}",
         row[0]
     );

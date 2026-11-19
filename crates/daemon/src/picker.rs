@@ -48,9 +48,6 @@ pub struct Item {
     /// The most urgent notification of what the line stands for (a session or a window), shown
     /// as the tree shows it: the plain symbol of its class after the name.
     pub notice: Option<crate::notify::Class>,
-    /// For a session: the numbers of its windows that carry a notification, with the class of
-    /// the most urgent one, most urgent first. Shown after the detail.
-    pub window_marks: Vec<(usize, crate::notify::Class)>,
 }
 
 impl Item {
@@ -65,21 +62,7 @@ impl Item {
             search,
             keys: None,
             notice: None,
-            window_marks: Vec::new(),
         }
-    }
-
-    /// The windows of a session that hold a notification (their number and class).
-    pub fn with_window_marks(mut self, mut marks: Vec<(usize, crate::notify::Class)>) -> Item {
-        let rank = |c: crate::notify::Class| {
-            crate::notify::Class::BY_URGENCY
-                .iter()
-                .position(|x| *x == c)
-                .unwrap_or(usize::MAX)
-        };
-        marks.sort_by_key(|(number, class)| (rank(*class), *number));
-        self.window_marks = marks;
-        self
     }
 
     /// The line stands for something that holds a notification of this class.
@@ -228,23 +211,10 @@ impl Picker {
             .notice
             .map(|class| format!(" {}", theme::notice_symbol(class)))
             .unwrap_or_default();
-        let marks = if item.window_marks.is_empty() {
-            String::new()
-        } else {
-            let list: Vec<String> = item
-                .window_marks
-                .iter()
-                .map(|(n, class)| format!("{n}{}", theme::notice_symbol(*class)))
-                .collect();
-            format!("{}{}", theme::symbol(Symbol::HintSeparator), list.join(" "))
-        };
         if item.detail.is_empty() {
             format!("{mark}{}{notice}{current}", item.name)
         } else {
-            format!(
-                "{mark}{}{notice}  {}{marks}{current}",
-                item.name, item.detail
-            )
+            format!("{mark}{}{notice}  {}{current}", item.name, item.detail)
         }
     }
 
@@ -462,7 +432,7 @@ pub fn hint_line(items: &[Option<Hint>]) -> Footer {
 
 /// Give the notification marks in a line the colour of their class, as the status bar does, and
 /// leave the rest of the cell's style (the background of the chosen line) as it is.
-fn color_notice_marks(cells: &mut [Cell], on_chosen_line: bool) {
+fn color_notice_marks(cells: &mut [Cell]) {
     for class in crate::notify::Class::BY_URGENCY {
         let mark: Vec<String> = theme::notice_symbol(class)
             .chars()
@@ -476,10 +446,6 @@ fn color_notice_marks(cells: &mut [Cell], on_chosen_line: bool) {
                 for cell in &mut cells[i..i + n] {
                     cell.style.fg = marked.fg;
                     cell.style.bold = marked.bold;
-                    // On the chosen line the symbol stands on a dark cell, so that it reads.
-                    if on_chosen_line {
-                        cell.style.bg = theme::style(Role::PickerSelectedBadge).bg;
-                    }
                 }
                 i += n;
             } else {
@@ -680,18 +646,15 @@ pub fn draw_box(spec: &BoxSpec) -> Drawn {
             };
             let mut cells = vec![blank(style)];
             cells.extend(text_cells(line, style));
-            if let Some(Some((from, to))) = spec.numbers.get(index) {
-                let number = theme::style(if Some(index) == spec.selected {
-                    Role::PickerNumberSelected
-                } else {
-                    Role::PickerNumber
-                });
+            // The number of a window is blue, except on the chosen line, which is white as a
+            // whole (blue does not read on its grey).
+            if Some(index) != spec.selected
+                && let Some(Some((from, to))) = spec.numbers.get(index)
+            {
+                let number = theme::style(Role::PickerNumber);
                 // One blank cell was put in front of the text.
                 for cell in cells.iter_mut().skip(1 + from).take(to - from) {
                     cell.style.fg = number.fg;
-                    if Some(index) == spec.selected {
-                        cell.style.bg = number.bg;
-                    }
                     cell.style.bold = number.bold;
                 }
             }
@@ -703,7 +666,7 @@ pub fn draw_box(spec: &BoxSpec) -> Drawn {
                     cell.style.fg = quiet.fg;
                 }
             }
-            color_notice_marks(&mut cells, Some(index) == spec.selected);
+            color_notice_marks(&mut cells);
             body.push((cells, style));
         }
     }
@@ -1029,48 +992,5 @@ mod tests {
         assert_eq!(lines[0], format!("  go {input}  1 window"));
         // No state: no symbol and no extra spaces.
         assert_eq!(lines[1], "  plain  1 window");
-    }
-    #[test]
-    fn a_session_line_names_the_windows_that_carry_a_state_most_urgent_first() {
-        use crate::notify::Class;
-        let error = theme::notice_symbol(Class::Error);
-        let info = theme::notice_symbol(Class::Info);
-        let sep = theme::symbol(Symbol::HintSeparator);
-        let with = Item::new(0, "work".into(), "3 windows".into(), false)
-            .with_notice(Some(Class::Error))
-            .with_window_marks(vec![(3, Class::Info), (1, Class::Error)]);
-        let without = Item::new(1, "plain".into(), "2 windows".into(), false);
-        let p = Picker::new(PickerKind::Sessions, "Sessions", vec![with, without], 0);
-        let lines: Vec<String> = p.shown().map(|i| p.line(i, false)).collect();
-        assert_eq!(
-            lines[0],
-            format!("  work {error}  3 windows{sep}1{error} 3{info}")
-        );
-        // No state in any window: nothing after the count.
-        assert_eq!(lines[1], "  plain  2 windows");
-    }
-
-    #[test]
-    fn a_narrow_session_list_cuts_the_window_marks_before_the_name() {
-        use crate::notify::Class;
-        let item = Item::new(0, "work".into(), "3 windows".into(), false)
-            .with_notice(Some(Class::Error))
-            .with_window_marks(vec![(1, Class::Error), (3, Class::Info)]);
-        let p = Picker::new(PickerKind::Sessions, "Sessions", vec![item], 0);
-        let full = cells_of(&p.line(&p.items[0], false));
-        let name_end = cells_of("  work ") + 1;
-        let drawn = p.draw(name_end as u16 + 4, 20, &keys());
-        let text: String = drawn
-            .rows
-            .iter()
-            .map(|row| row.iter().map(|c| c.text.as_str()).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(full > name_end + 4);
-        assert!(text.contains("work"), "the name stays:\n{text}");
-        assert!(
-            !text.contains("3 windows"),
-            "the count and marks go first:\n{text}"
-        );
     }
 }

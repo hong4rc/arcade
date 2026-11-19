@@ -34,14 +34,10 @@ pub enum Role {
     PickerQuiet,
     /// The keys of the key line, apart from the words after them.
     PickerKey,
-    /// The number of a window in a line of the tree or of a list, and the same on the chosen line.
+    /// The number of a window in a line of the tree or of a list.
     PickerNumber,
-    PickerNumberSelected,
     /// The line of the floating list that is chosen.
     PickerSelected,
-    /// The cell behind a state symbol on the chosen line: the lighter grey of that line is too
-    /// close to some state colours, so the symbol stands on a dark cell, as on a tab's badge.
-    PickerSelectedBadge,
     /// The line that names a group of lines, and the column titles, in the floating list.
     PickerHeading,
     /// The cells of copy mode that are selected or found by a search.
@@ -83,6 +79,7 @@ mod palette {
     pub const OVERLAY2: Color = Color::Rgb(0x94, 0x9c, 0xbb);
     pub const TEXT: Color = Color::Rgb(0xc6, 0xd0, 0xf5);
     pub const SUBTEXT0: Color = Color::Rgb(0xb5, 0xbf, 0xe2);
+    pub const LAVENDER: Color = Color::Rgb(0xba, 0xbb, 0xf1);
     pub const MAUVE: Color = Color::Rgb(0xca, 0x9e, 0xe6);
     pub const SAPPHIRE: Color = Color::Rgb(0x85, 0xc1, 0xdc);
     pub const GREEN: Color = Color::Rgb(0xa6, 0xd1, 0x89);
@@ -190,16 +187,6 @@ pub fn style(role: Role) -> Style {
             ..on(palette::CRUST, palette::GREEN)
         },
         Role::SessionName => on(palette::TEXT, palette::SURFACE0),
-        // The number of a window in the tree and the lists: blue, as the group headings are; on
-        // the chosen line it stands on the dark cell the state symbols stand on.
-        Role::PickerNumber => Style {
-            bold: true,
-            ..on(palette::BLUE, palette::MANTLE)
-        },
-        Role::PickerNumberSelected => Style {
-            bold: true,
-            ..on(palette::BLUE, palette::CRUST)
-        },
         Role::Indicator => Style {
             bold: true,
             ..on(palette::CRUST, palette::YELLOW)
@@ -233,27 +220,33 @@ pub fn style(role: Role) -> Style {
             ..Style::default()
         },
         // The floating lists and the tree use the palette of the bar, not the 16 colours of the
-        // terminal: text on the bar's background, a quiet frame and second text, an accent for
-        // the keys, and the chosen line as the current tab's block (a test checks each text).
-        Role::Picker => on(palette::TEXT, palette::MANTLE),
-        Role::PickerFrame | Role::PickerQuiet => on(palette::OVERLAY2, palette::MANTLE),
+        // terminal. The panel is darker than the bar and than a dark terminal, with a frame and
+        // a title in an accent so that it stands apart from what is under it; the chosen line
+        // is a grey block with white text and the state symbols stand on it in their own colours
+        // (a test checks each text and each symbol).
+        Role::Picker => on(palette::TEXT, palette::CRUST),
+        Role::PickerFrame => on(palette::LAVENDER, palette::CRUST),
+        Role::PickerQuiet => on(palette::OVERLAY2, palette::CRUST),
         Role::PickerTitle => Style {
             bold: true,
-            ..on(palette::TEXT, palette::MANTLE)
+            ..on(palette::MAUVE, palette::CRUST)
         },
         Role::PickerKey => Style {
             bold: true,
-            ..on(palette::MAUVE, palette::MANTLE)
+            ..on(palette::MAUVE, palette::CRUST)
+        },
+        Role::PickerNumber => Style {
+            bold: true,
+            ..on(palette::BLUE, palette::CRUST)
         },
         Role::PickerHeading => Style {
             bold: true,
-            ..on(palette::BLUE, palette::MANTLE)
+            ..on(palette::BLUE, palette::CRUST)
         },
         Role::PickerSelected => Style {
             bold: true,
-            ..on(palette::WHITE, palette::SURFACE2)
+            ..on(palette::WHITE, palette::SURFACE0)
         },
-        Role::PickerSelectedBadge => on(palette::TEXT, palette::CRUST),
         Role::IndicatorSelect => Style {
             bold: true,
             ..on(palette::CRUST, palette::MAUVE)
@@ -1145,8 +1138,9 @@ mod tests {
     }
 
     /// The roles of the floating lists and the tree are drawn in the palette of the bar: no
-    /// index of the terminal's 16 colours is left, the chosen line is the current tab's block,
-    /// and every text reads at 4.5 or more on its own background.
+    /// index of the terminal's 16 colours is left, the panel is darker than the bar, the frame
+    /// and the title are accents, the chosen line is white on SURFACE0, and every text reads at
+    /// 4.5 or more on its own background.
     #[test]
     fn the_list_roles_use_the_bars_palette_and_every_text_reads() {
         let roles = [
@@ -1157,9 +1151,7 @@ mod tests {
             Role::PickerKey,
             Role::PickerHeading,
             Role::PickerNumber,
-            Role::PickerNumberSelected,
             Role::PickerSelected,
-            Role::PickerSelectedBadge,
         ];
         for role in roles {
             let st = style(role);
@@ -1170,36 +1162,48 @@ mod tests {
             println!("{role:?}: {ratio:.2}");
         }
         let chosen = style(Role::PickerSelected);
-        let current = style(Role::PillNameCurrent);
-        assert_eq!((chosen.fg, chosen.bg), (palette::WHITE, palette::SURFACE2));
-        assert_eq!((chosen.fg, chosen.bg), (current.fg, current.bg));
+        assert_eq!((chosen.fg, chosen.bg), (palette::WHITE, palette::SURFACE0));
+        assert!(chosen.bold);
+        // The panel is darker than the bar and than the base of the theme, so that it stands
+        // apart from what is under it; its frame and title are accents.
+        assert_eq!(style(Role::Picker).bg, palette::CRUST);
+        assert_eq!(style(Role::PickerFrame).fg, palette::LAVENDER);
+        assert_eq!(style(Role::PickerTitle).fg, palette::MAUVE);
+        let base = Color::Rgb(0x30, 0x34, 0x46);
+        let frame_on_base = contrast_of(palette::LAVENDER, base);
+        println!("frame against BASE: {frame_on_base:.2}");
+        assert!(frame_on_base >= 4.5);
         // The key and the word after it are told apart by colour and by weight.
         assert_ne!(style(Role::PickerKey).fg, style(Role::PickerQuiet).fg);
         assert!(style(Role::PickerKey).bold && !style(Role::PickerQuiet).bold);
-        // The panel is the bar's own background.
-        assert_eq!(style(Role::Picker).bg, style(Role::StatusBar).bg);
     }
 
     /// A state symbol reads on every line of a list: at 4.5 on the panel, and on the chosen
-    /// line, where it stands on a dark cell, at 3.0 or more (it is a symbol, not text).
+    /// line, where it stands directly on the grey in its own colour, at 3.0 or more (it is a
+    /// symbol, not text).
     #[test]
     fn a_state_symbol_reads_on_a_list_line_and_on_the_chosen_line() {
         use crate::notify::Class;
         let panel = style(Role::Picker).bg;
-        let badge = style(Role::PickerSelectedBadge).bg;
-        let lighter = style(Role::PickerSelected).bg;
-        for class in Class::BY_URGENCY {
-            let colour = notice_style(class).fg;
+        let chosen = style(Role::PickerSelected).bg;
+        let mut colours: Vec<(String, Color)> = Class::BY_URGENCY
+            .into_iter()
+            .map(|c| (format!("{c:?}"), notice_style(c).fg))
+            .collect();
+        for tint in [Tint::Finished, Tint::ProgressError, Tint::Running] {
+            colours.push((
+                format!("{tint:?}"),
+                cell_style(tint, style(Role::PillName)).fg,
+            ));
+        }
+        for (name, colour) in colours {
             let on_panel = contrast_of(colour, panel);
-            let on_badge = contrast_of(colour, badge);
-            let on_chosen_grey = contrast_of(colour, lighter);
-            println!(
-                "{class:?}: panel {on_panel:.2}, chosen line's dark cell {on_badge:.2} (on the grey itself {on_chosen_grey:.2})"
-            );
-            assert!(on_panel >= 4.5, "{class:?} on the panel: {on_panel:.2}");
+            let on_chosen = contrast_of(colour, chosen);
+            println!("{name}: panel {on_panel:.2}, chosen line {on_chosen:.2}");
+            assert!(on_panel >= 4.5, "{name} on the panel: {on_panel:.2}");
             assert!(
-                on_badge >= 3.0,
-                "{class:?} on the chosen line: {on_badge:.2}"
+                on_chosen >= 3.0,
+                "{name} on the chosen line: {on_chosen:.2}"
             );
         }
     }
@@ -1227,9 +1231,7 @@ mod tests {
                 | Role::PickerQuiet
                 | Role::PickerKey
                 | Role::PickerNumber
-                | Role::PickerNumberSelected
                 | Role::PickerSelected
-                | Role::PickerSelectedBadge
                 | Role::PickerHeading
                 | Role::Selection
                 | Role::IndicatorSelect
@@ -1262,9 +1264,7 @@ mod tests {
             Role::PickerQuiet,
             Role::PickerKey,
             Role::PickerNumber,
-            Role::PickerNumberSelected,
             Role::PickerSelected,
-            Role::PickerSelectedBadge,
             Role::PickerHeading,
             Role::Selection,
             Role::IndicatorSelect,
