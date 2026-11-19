@@ -910,6 +910,46 @@ fn the_session_list_marks_a_session_that_holds_an_input_notification_and_only_th
 }
 
 #[test]
+fn the_session_list_names_the_windows_with_a_state_most_urgent_first() {
+    let daemon = counting_all_with_expiry(None);
+    let mut client = start(&daemon);
+    let first = client.focused_pane_id();
+    let (ok, why) = daemon.command("window.new", &[]).unwrap();
+    assert!(ok, "{why}");
+    assert!(
+        client.wait_until(WAIT, |c| bar(c).contains(" 2 ")),
+        "{}",
+        bar(&client)
+    );
+    let second = client.focused_pane_id();
+    let (ok, why) = daemon.command("window.new", &[]).unwrap();
+    assert!(ok, "{why}");
+    assert!(
+        client.wait_until(WAIT, |c| bar(c).contains(" 3 ")),
+        "{}",
+        bar(&client)
+    );
+    notify(&daemon, first, "error", "a", "broke");
+    notify(&daemon, second, "input", "a", "waiting");
+    assert!(mark_shown(&mut client, "◆"), "{}", bar(&client));
+    client.send(PREFIX);
+    client.send(b"s");
+    assert!(
+        client.wait_until(WAIT, |c| !rows_with(c, "3 windows").is_empty()),
+        "{}",
+        client.screen_text()
+    );
+    let row = rows_with(&client, "3 windows");
+    assert!(row[0].contains("work ◆  3 windows · 2◆ 1■"), "{}", row[0]);
+    // Window 3 holds nothing, so it is not named.
+    assert!(
+        !row[0].contains("3◆") && !row[0].contains("3■"),
+        "{}",
+        row[0]
+    );
+}
+
+#[test]
 fn the_window_list_marks_a_window_whose_pane_has_an_error() {
     let daemon = counting_all_with_expiry(None);
     let (mut client, first, _) = two_panes(&daemon);
