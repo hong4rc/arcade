@@ -260,18 +260,22 @@ fn a_row_lists_every_key_of_a_configuration_that_rebinds_unbinds_and_adds() {
 }
 
 #[test]
-fn the_choice_skips_the_headings() {
+fn the_choice_skips_the_headings_and_goes_round_at_the_ends() {
     let daemon = TestDaemon::start();
     let mut client = open_at(&daemon, 120, 36);
     let mut seen = Vec::new();
-    for _ in 0..70 {
+    // Down until the last row (bounded), never on a heading.
+    for _ in 0..200 {
         let row = chosen(&client).expect("a row is chosen");
         assert!(
             !HEADINGS.iter().any(|h| row.starts_with(h)),
             "a heading is chosen: {row:?}"
         );
         if seen.last() != Some(&row) {
-            seen.push(row);
+            seen.push(row.clone());
+        }
+        if row.contains("redraw") {
+            break;
         }
         press(&mut client, DOWN);
     }
@@ -281,11 +285,15 @@ fn the_choice_skips_the_headings() {
     assert!(seen.first().unwrap().contains("focus left"), "{seen:?}");
     assert!(seen.last().unwrap().contains("redraw"), "{seen:?}");
     assert!(seen.iter().any(|r| r.contains("new window")), "{seen:?}");
-    // And back up.
-    for _ in 0..80 {
-        press(&mut client, UP);
-    }
-    assert!(chosen(&client).unwrap().contains("focus left"));
+    // Down on the last row goes round to the first, and Up on the first back to the last.
+    press(&mut client, DOWN);
+    let ok = client.wait_until(WAIT, |c| {
+        chosen(c).is_some_and(|r| r.contains("focus left"))
+    });
+    assert!(ok, "{:?}\n{}", chosen(&client), client.screen_text());
+    press(&mut client, UP);
+    let ok = client.wait_until(WAIT, |c| chosen(c).as_deref() == Some("redraw"));
+    assert!(ok, "{:?}\n{}", chosen(&client), client.screen_text());
 }
 
 #[test]

@@ -3,7 +3,7 @@
 //! makes the [`Entry`] lines from its own books, and does what a [`Plan`] says.
 
 use crate::keymap::ListKeys;
-use crate::picker::{BoxSpec, Drawn, cells_of, draw_box, hint_line, keys_item};
+use crate::picker::{BoxSpec, Drawn, Footer, Hint, cells_of, draw_box, hint_line, keys_item};
 use crate::theme::{self, Symbol};
 
 /// What an item of the tree is, by the daemon's own number for it (unique over the daemon).
@@ -187,7 +187,7 @@ impl Tree {
         self.reveal(index);
     }
 
-    /// The previous item of the same tier, going on into the item before the parent.
+    /// The previous item of the same tier; from the first to the last.
     pub fn up(&mut self) {
         self.step(-1);
     }
@@ -205,7 +205,7 @@ impl Tree {
             let Some(at) = self.selected_row(&rows) else {
                 return;
             };
-            if let Some(next) = at.checked_add_signed(by).and_then(|n| rows.get(n)) {
+            if let Some(next) = wrapped(at, by, rows.len()).and_then(|n| rows.get(n)) {
                 self.go_to(*next);
             }
             return;
@@ -214,7 +214,7 @@ impl Tree {
             .filter(|i| self.entries[*i].key.same_tier(self.selected))
             .collect();
         let at = tier.iter().position(|i| *i == index).unwrap_or(0);
-        if let Some(next) = at.checked_add_signed(by).and_then(|n| tier.get(n)) {
+        if let Some(next) = wrapped(at, by, tier.len()).and_then(|n| tier.get(n)) {
             self.go_to(*next);
         }
     }
@@ -439,7 +439,7 @@ impl Tree {
 
     /// The line of keys under that, for what the tree is doing: looking, moving something, or
     /// filtering.
-    fn key_line_for(keys: &ListKeys, lifted: bool, filtered: bool) -> String {
+    fn key_line_for(keys: &ListKeys, lifted: bool, filtered: bool) -> Footer {
         let clear = filtered
             .then(|| keys_item(&[&keys.filter_clear], "clear filter"))
             .flatten();
@@ -461,7 +461,7 @@ impl Tree {
         let lift = (!filtered)
             .then(|| keys_item(&[&keys.lift], "lift"))
             .flatten();
-        let typing = (!filtered).then(|| "type to filter".to_string());
+        let typing = (!filtered).then(|| Hint::words("type to filter"));
         hint_line(&[
             mv,
             folding,
@@ -473,7 +473,7 @@ impl Tree {
         ])
     }
 
-    fn key_line(&self, keys: &ListKeys) -> String {
+    fn key_line(&self, keys: &ListKeys) -> Footer {
         Self::key_line_for(keys, self.lifted.is_some(), !self.filter.is_empty())
     }
 
@@ -506,7 +506,7 @@ impl Tree {
         }
         for lifted in [false, true] {
             for filtered in [false, true] {
-                widest = widest.max(cells_of(&Self::key_line_for(keys, lifted, filtered)));
+                widest = widest.max(Self::key_line_for(keys, lifted, filtered).width());
             }
         }
         widest.max(cells_of(&format!(
@@ -616,8 +616,9 @@ impl Tree {
             filter: &self.filter,
             lines: &lines,
             numbers: &numbers,
+            quiet: &[],
             selected,
-            footers: &[self.enter_line(), self.key_line(keys)],
+            footers: &[Footer::words(self.enter_line()), self.key_line(keys)],
             widest: self.widest(keys),
             list_rows: self.entries.len().max(1),
             margin: (0, 0),
@@ -625,6 +626,12 @@ impl Tree {
             rows,
         })
     }
+}
+
+/// The position `by` steps from `at` among `len`, going round at the ends; none for no lines.
+fn wrapped(at: usize, by: isize, len: usize) -> Option<usize> {
+    let len = isize::try_from(len).ok().filter(|n| *n > 0)?;
+    Some((at as isize + by).rem_euclid(len) as usize)
 }
 
 fn tier_name(key: Key) -> &'static str {
@@ -780,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn up_and_down_stay_on_their_tier_across_parents_and_open_what_they_reach() {
+    fn up_and_down_stay_on_their_tier_across_parents_open_what_they_reach_and_go_round() {
         let mut t = tree();
         t.down();
         assert_eq!(t.selected_key(), Key::Pane(102));
@@ -791,8 +798,10 @@ mod tests {
         t.up();
         t.up();
         assert_eq!(t.selected_key(), Key::Pane(101));
-        // The first of the tier: it stays.
+        // The first of the tier: up goes to the last, and down comes back to the first.
         t.up();
+        assert_eq!(t.selected_key(), Key::Pane(104));
+        t.down();
         assert_eq!(t.selected_key(), Key::Pane(101));
         // The tier of the windows.
         t.left();
@@ -802,7 +811,38 @@ mod tests {
         t.down();
         assert_eq!(t.selected_key(), Key::Window(21));
         t.down();
+        assert_eq!(t.selected_key(), Key::Window(11));
+        t.up();
         assert_eq!(t.selected_key(), Key::Window(21));
+    }
+
+    #[test]
+    fn up_from_the_first_session_goes_to_the_last_and_down_from_the_last_to_the_first() {
+        let mut t = tree();
+        t.left();
+        t.left();
+        assert_eq!(t.selected_key(), Key::Session(1));
+        t.up();
+        assert_eq!(t.selected_key(), Key::Session(2));
+        t.down();
+        assert_eq!(t.selected_key(), Key::Session(1));
+    }
+
+    #[test]
+    fn with_a_filter_up_and_down_go_round_among_the_lines_that_match() {
+        let mut t = tree();
+        t.type_text("o");
+        let matching: Vec<Key> = t.rows().iter().map(|i| t.entries[*i].key).collect();
+        assert!(matching.len() >= 2, "{matching:?}");
+        let (first, last) = (matching[0], *matching.last().unwrap());
+        // Go to the first matching line, then round to the last and back.
+        while t.selected_key() != first {
+            t.up();
+        }
+        t.up();
+        assert_eq!(t.selected_key(), last);
+        t.down();
+        assert_eq!(t.selected_key(), first);
     }
 
     #[test]

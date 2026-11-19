@@ -187,13 +187,20 @@ impl Picker {
         self.visible.iter().map(|i| &self.items[*i])
     }
 
+    /// One line up; from the first line to the last. With a filter on, among the lines it
+    /// leaves. An empty list stays as it is.
     pub fn up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        match self.visible.len() {
+            0 => {}
+            n => self.selected = (self.selected + n - 1) % n,
+        }
     }
 
+    /// One line down; from the last line to the first.
     pub fn down(&mut self) {
-        if self.selected + 1 < self.visible.len() {
-            self.selected += 1;
+        match self.visible.len() {
+            0 => {}
+            n => self.selected = (self.selected + 1) % n,
         }
     }
 
@@ -241,8 +248,33 @@ impl Picker {
         }
     }
 
+    /// Which characters of the line of `item` are its detail (what is said after the name), if
+    /// it has any: they are drawn quieter than the name, except on the chosen line.
+    fn detail_span(&self, item: &Item, selected: bool) -> Option<(usize, usize)> {
+        if item.detail.is_empty() {
+            return None;
+        }
+        let full = self.line(item, selected);
+        let mark = theme::symbol(if selected {
+            Symbol::PickerSelectedMark
+        } else {
+            Symbol::PickerOtherMark
+        });
+        let notice = item
+            .notice
+            .map(|class| 1 + theme::notice_symbol(class).chars().count())
+            .unwrap_or_default();
+        let from = mark.chars().count() + item.name.chars().count() + notice + 2;
+        let current = if item.current {
+            theme::symbol(Symbol::PickerCurrentMark).chars().count()
+        } else {
+            0
+        };
+        Some((from, full.chars().count() - current))
+    }
+
     /// The line of keys at the bottom of the box.
-    fn key_line(&self, keys: &ListKeys, filtered: bool) -> String {
+    fn key_line(&self, keys: &ListKeys, filtered: bool) -> Footer {
         hint_line(
             &self
                 .key_items(keys, filtered)
@@ -254,7 +286,7 @@ impl Picker {
 
     /// The items of the key line, each with how much it matters when there is no room for all
     /// of them (the higher, the longer it stays).
-    fn key_items(&self, keys: &ListKeys, filtered: bool) -> Vec<(Option<String>, u8)> {
+    fn key_items(&self, keys: &ListKeys, filtered: bool) -> Vec<(Option<Hint>, u8)> {
         let go = match self.kind {
             PickerKind::MoveWindow => "move here",
             PickerKind::Keys | PickerKind::Commands => "run",
@@ -263,7 +295,7 @@ impl Picker {
         let typing = if filtered {
             keys_item(&[&keys.filter_clear], "clear filter")
         } else {
-            Some("type to filter".to_string())
+            Some(Hint::words("type to filter"))
         };
         let clear = (self.kind == PickerKind::Notifications)
             .then(|| keys_item(&[&keys.clear], "clear"))
@@ -290,12 +322,14 @@ impl Picker {
         }
         let no_match = format!("  {}", theme::symbol(Symbol::PickerNoMatch));
         let mut lines: Vec<String> = Vec::new();
+        let mut quiet: Vec<Option<(usize, usize)>> = Vec::new();
         let mut selected = None;
         for (i, item) in self.shown().enumerate() {
             if i == self.selected {
                 selected = Some(lines.len());
             }
             lines.push(self.line(item, i == self.selected));
+            quiet.push(self.detail_span(item, i == self.selected));
         }
         if self.visible.is_empty() {
             lines.push(no_match.clone());
@@ -308,7 +342,7 @@ impl Picker {
             .chain([no_match])
             .map(|l| cells_of(&l))
             .chain([cells_of(&self.title) + 2])
-            .chain([false, true].map(|f| cells_of(&self.key_line(keys, f))))
+            .chain([false, true].map(|f| self.key_line(keys, f).width()))
             .max()
             .unwrap_or(0);
         draw_box(&BoxSpec {
@@ -316,6 +350,7 @@ impl Picker {
             filter: &self.filter,
             lines: &lines,
             numbers: &[],
+            quiet: &quiet,
             selected,
             footers: &[self.key_line(keys, filtered)],
             widest,
@@ -332,19 +367,64 @@ pub fn cells_of(text: &str) -> usize {
     text_cells(text, Default::default()).len()
 }
 
+/// One item of a key line: the keys, then what they do (`Up Down move`).
+#[derive(Clone)]
+pub struct Hint {
+    pub text: String,
+    /// How many characters of `text`, from its start, are the names of keys.
+    pub keys: usize,
+}
+
+impl Hint {
+    /// An item that has no key in it.
+    pub fn words(text: &str) -> Hint {
+        Hint {
+            text: text.to_string(),
+            keys: 0,
+        }
+    }
+}
+
+/// A line under the list: its text, and which stretches of it (in characters) are keys; the
+/// rest is words.
+#[derive(Clone, Default)]
+pub struct Footer {
+    pub text: String,
+    pub keys: Vec<(usize, usize)>,
+}
+
+impl Footer {
+    /// A line that has no key in it.
+    pub fn words(text: String) -> Footer {
+        Footer {
+            text,
+            keys: Vec::new(),
+        }
+    }
+
+    /// How many cells it takes.
+    pub fn width(&self) -> usize {
+        cells_of(&self.text)
+    }
+}
+
 /// One item of a key line: the keys, then what they do (`Up Down move`); keys that have no
 /// binding are left out, and when none has one there is no item.
-pub fn keys_item(keys: &[&Option<String>], what: &str) -> Option<String> {
+pub fn keys_item(keys: &[&Option<String>], what: &str) -> Option<Hint> {
     let names: Vec<&str> = keys.iter().filter_map(|k| k.as_deref()).collect();
-    (!names.is_empty()).then(|| format!("{} {what}", names.join(" ")))
+    let joined = names.join(" ");
+    (!names.is_empty()).then(|| Hint {
+        keys: joined.chars().count(),
+        text: format!("{joined} {what}"),
+    })
 }
 
 /// The items that exist, side by side, as many as fit in `width` cells: when they do not all
 /// fit, the one that matters least goes first, and the one that matters most always stays.
-pub fn fit_hint_line(mut items: Vec<(Option<String>, u8)>, width: usize) -> String {
+pub fn fit_hint_line(mut items: Vec<(Option<Hint>, u8)>, width: usize) -> Footer {
     loop {
         let line = hint_line(&items.iter().map(|(i, _)| i.clone()).collect::<Vec<_>>());
-        if cells_of(&line) <= width {
+        if line.width() <= width {
             return line;
         }
         let least = items
@@ -363,18 +443,26 @@ pub fn fit_hint_line(mut items: Vec<(Option<String>, u8)>, width: usize) -> Stri
 }
 
 /// The items that exist, side by side.
-pub fn hint_line(items: &[Option<String>]) -> String {
-    items
-        .iter()
-        .flatten()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .join("  ")
+pub fn hint_line(items: &[Option<Hint>]) -> Footer {
+    let mut line = Footer::default();
+    let mut at = 0;
+    for item in items.iter().flatten() {
+        if at > 0 {
+            line.text.push_str("  ");
+            at += 2;
+        }
+        if item.keys > 0 {
+            line.keys.push((at, at + item.keys));
+        }
+        line.text.push_str(&item.text);
+        at += item.text.chars().count();
+    }
+    line
 }
 
 /// Give the notification marks in a line the colour of their class, as the status bar does, and
 /// leave the rest of the cell's style (the background of the chosen line) as it is.
-fn color_notice_marks(cells: &mut [Cell]) {
+fn color_notice_marks(cells: &mut [Cell], on_chosen_line: bool) {
     for class in crate::notify::Class::BY_URGENCY {
         let mark: Vec<String> = theme::notice_symbol(class)
             .chars()
@@ -388,6 +476,10 @@ fn color_notice_marks(cells: &mut [Cell]) {
                 for cell in &mut cells[i..i + n] {
                     cell.style.fg = marked.fg;
                     cell.style.bold = marked.bold;
+                    // On the chosen line the symbol stands on a dark cell, so that it reads.
+                    if on_chosen_line {
+                        cell.style.bg = theme::style(Role::PickerSelectedBadge).bg;
+                    }
                 }
                 i += n;
             } else {
@@ -406,9 +498,11 @@ pub struct BoxSpec<'a> {
     /// For each line, the characters (from, to) of a window number that is drawn apart from the
     /// text around it.
     pub numbers: &'a [Option<(usize, usize)>],
+    /// For each line, the characters (from, to) that are said quietly (the detail of a line).
+    pub quiet: &'a [Option<(usize, usize)>],
     pub selected: Option<usize>,
     /// Lines of their own under the list; they never widen the box, and what does not fit is cut.
-    pub footers: &'a [String],
+    pub footers: &'a [Footer],
     /// The widest text the box could ever show, in cells, from everything it holds and not
     /// from what is chosen or typed now.
     pub widest: usize,
@@ -483,6 +577,21 @@ pub fn geometry(spec: &BoxSpec) -> Geometry {
     }
 }
 
+/// The cells of a line under the list: the words quiet, the names of keys in the key style.
+fn footer_cells(footer: &Footer) -> Vec<Cell> {
+    let words = theme::style(Role::PickerQuiet);
+    let keys = theme::style(Role::PickerKey);
+    let mut cells = Vec::new();
+    for (at, c) in footer.text.chars().enumerate() {
+        let is_key = footer.keys.iter().any(|(from, to)| at >= *from && at < *to);
+        cells.extend(text_cells(
+            &c.to_string(),
+            if is_key { keys } else { words },
+        ));
+    }
+    cells
+}
+
 /// A framed box: the title in the top edge, the filter line, the body rows (each with the style
 /// of its blank space, and exactly `geometry.shown` of them), and a line of its own for each
 /// footer.
@@ -491,17 +600,18 @@ pub fn assemble(
     title: &str,
     filter: &str,
     body: Vec<(Vec<Cell>, arcade_term::Style)>,
-    footers: &[String],
+    footers: &[Footer],
 ) -> Drawn {
     let inner = geometry.inner;
     let filter_line = format!("{}{}", theme::symbol(Symbol::PickerFilterMark), filter);
     let plain = theme::style(Role::Picker);
-    let side = |c: Symbol| text_cells(theme::symbol(c), plain);
+    let frame = theme::style(Role::PickerFrame);
+    let side = |c: Symbol| text_cells(theme::symbol(c), frame);
     let mut out: Vec<Vec<Cell>> = Vec::new();
 
     let mut top = side(Symbol::PickerTopLeft);
-    let title_cells = text_cells(&format!(" {title} "), plain);
-    let rule = text_cells(theme::symbol(Symbol::PickerHorizontal), plain);
+    let title_cells = text_cells(&format!(" {title} "), theme::style(Role::PickerTitle));
+    let rule = text_cells(theme::symbol(Symbol::PickerHorizontal), frame);
     let mut title_cells = if title_cells.len() > inner {
         cut(title_cells, inner, plain)
     } else {
@@ -535,7 +645,7 @@ pub fn assemble(
 
     for footer in footers.iter().take(geometry.footers) {
         let mut line = vec![blank(plain)];
-        line.extend(text_cells(footer, plain));
+        line.extend(footer_cells(footer));
         out.push(framed(line, plain));
     }
 
@@ -585,7 +695,15 @@ pub fn draw_box(spec: &BoxSpec) -> Drawn {
                     cell.style.bold = number.bold;
                 }
             }
-            color_notice_marks(&mut cells);
+            if Some(index) != spec.selected
+                && let Some(Some((from, to))) = spec.quiet.get(index)
+            {
+                let quiet = theme::style(Role::PickerQuiet);
+                for cell in cells.iter_mut().skip(1 + from).take(to - from) {
+                    cell.style.fg = quiet.fg;
+                }
+            }
+            color_notice_marks(&mut cells, Some(index) == spec.selected);
             body.push((cells, style));
         }
     }
@@ -622,15 +740,89 @@ mod tests {
     }
 
     #[test]
-    fn the_choice_moves_and_stops_at_the_ends() {
-        let mut p = Picker::new(PickerKind::Sessions, "Sessions", items(&["a", "b", "c"]), 0);
+    fn the_choice_goes_round_at_the_ends() {
+        for kind in [
+            PickerKind::Sessions,
+            PickerKind::Windows,
+            PickerKind::Keys,
+            PickerKind::Commands,
+            PickerKind::Notifications,
+            PickerKind::MoveWindow,
+        ] {
+            let mut p = Picker::new(kind, "List", items(&["a", "b", "c"]), 0);
+            // Up on the first line goes to the last.
+            p.up();
+            assert_eq!(p.chosen().unwrap().name, "c", "{kind:?}");
+            // Down on the last goes to the first.
+            p.down();
+            assert_eq!(p.chosen().unwrap().name, "a", "{kind:?}");
+            p.down();
+            p.down();
+            assert_eq!(p.chosen().unwrap().name, "c", "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn with_a_filter_the_choice_goes_round_among_the_lines_that_match() {
+        let mut p = Picker::new(
+            PickerKind::Sessions,
+            "Sessions",
+            items(&["alpha", "beta", "gamma", "delta"]),
+            0,
+        );
+        p.type_text("ta");
+        let names: Vec<String> = p.shown().map(|i| i.name.clone()).collect();
+        assert_eq!(names, ["beta", "delta"]);
+        // Up on the first match goes to the last match, and down comes back.
         p.up();
+        assert_eq!(p.chosen().unwrap().name, "delta");
+        p.down();
+        assert_eq!(p.chosen().unwrap().name, "beta");
+        // One match: the choice stays on it.
+        p.clear_filter();
+        p.type_text("del");
+        p.up();
+        assert_eq!(p.chosen().unwrap().name, "delta");
+        p.down();
+        assert_eq!(p.chosen().unwrap().name, "delta");
+    }
+
+    #[test]
+    fn an_empty_list_stays_as_it_is_when_the_choice_moves() {
+        let mut p = Picker::new(PickerKind::Sessions, "Sessions", items(&["a", "b"]), 1);
+        p.type_text("zzz");
+        p.up();
+        p.down();
         assert_eq!(p.selected, 0);
-        p.down();
-        p.down();
-        p.down();
-        assert_eq!(p.selected, 2);
-        assert_eq!(p.chosen().unwrap().name, "c");
+        assert!(p.chosen().is_none());
+    }
+
+    #[test]
+    fn the_keys_of_the_key_line_have_a_style_of_their_own_that_reads() {
+        let p = Picker::new(PickerKind::Sessions, "Sessions", items(&["a", "b"]), 0);
+        let drawn = p.draw(80, 24, &keys());
+        let footer = &drawn.rows[drawn.rows.len() - 2];
+        // The first cell of a word, counted in cells (the blank after the frame has no text).
+        let at = |word: &str| {
+            let chars: Vec<String> = word.chars().map(|c| c.to_string()).collect();
+            (0..footer.len())
+                .find(|i| {
+                    (0..chars.len()).all(|k| footer.get(i + k).is_some_and(|c| c.text == chars[k]))
+                })
+                .expect(word)
+        };
+        // `esc close`: the key in the key style, the word after it in the quiet one.
+        let esc = &footer[at("esc")];
+        let close = &footer[at("close")];
+        assert_eq!(esc.style.fg, theme::style(Role::PickerKey).fg);
+        assert_eq!(close.style.fg, theme::style(Role::PickerQuiet).fg);
+        assert_ne!(esc.style.fg, close.style.fg);
+        assert!(esc.style.bold && !close.style.bold);
+        // Both read on the panel.
+        for cell in [esc, close] {
+            let ratio = theme::contrast_of(cell.style.fg, cell.style.bg);
+            assert!(ratio >= 4.5, "{ratio:.2}");
+        }
     }
 
     #[test]
@@ -764,22 +956,33 @@ mod tests {
     fn a_hint_line_that_does_not_fit_loses_the_least_important_hints_first() {
         let items = || {
             vec![
-                (Some("up down move".to_string()), 2),
-                (Some("enter run".to_string()), 3),
+                (
+                    keys_item(
+                        &[&Some("up".to_string()), &Some("down".to_string())],
+                        "move",
+                    ),
+                    2,
+                ),
+                (keys_item(&[&Some("enter".to_string())], "run"), 3),
                 (None, 2),
-                (Some("type to filter".to_string()), 1),
-                (Some("esc close".to_string()), 9),
+                (Some(Hint::words("type to filter")), 1),
+                (keys_item(&[&Some("esc".to_string())], "close"), 9),
             ]
         };
         let all = fit_hint_line(items(), 200);
-        assert_eq!(all, "up down move  enter run  type to filter  esc close");
         assert_eq!(
-            fit_hint_line(items(), 36),
+            all.text,
+            "up down move  enter run  type to filter  esc close"
+        );
+        assert_eq!(
+            fit_hint_line(items(), 36).text,
             "up down move  enter run  esc close"
         );
-        assert_eq!(fit_hint_line(items(), 20), "enter run  esc close");
+        assert_eq!(fit_hint_line(items(), 20).text, "enter run  esc close");
         // The one that matters most stays even when it does not fit either.
-        assert_eq!(fit_hint_line(items(), 3), "esc close");
+        assert_eq!(fit_hint_line(items(), 3).text, "esc close");
+        // The names of keys are marked, the words and "type to filter" are not.
+        assert_eq!(all.keys, [(0, 7), (14, 19), (41, 44)]);
     }
 
     #[test]
@@ -800,13 +1003,18 @@ mod tests {
         p.clear_filter();
         assert_eq!(p.shown().count(), 2);
         // The key line says Enter goes and `+` makes a session; the other lists have no such key.
-        let line = p.key_line(&keys(), false);
+        let line = p.key_line(&keys(), false).text;
         assert!(
             line.contains("go") && line.contains("+ new session"),
             "{line}"
         );
         let windows = Picker::new(PickerKind::Windows, "Windows", items(&["one"]), 0);
-        assert!(!windows.key_line(&keys(), false).contains("new session"));
+        assert!(
+            !windows
+                .key_line(&keys(), false)
+                .text
+                .contains("new session")
+        );
     }
 
     #[test]

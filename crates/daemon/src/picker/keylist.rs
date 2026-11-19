@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 
 use arcade_term::{Cell, Code, Key, Mods};
 
-use super::{BoxSpec, Drawn, Item, Picker, assemble, cells_of, cut, fit_hint_line, geometry};
+use super::{
+    BoxSpec, Drawn, Footer, Hint, Item, Picker, assemble, cells_of, cut, fit_hint_line, geometry,
+};
 use crate::commands;
 use crate::compose::{blank, text_cells};
 use crate::config::TableName;
@@ -429,14 +431,14 @@ fn pad(text: &str, width: usize) -> String {
 }
 
 /// The footer: the keys of the list, and what a mark on a key means when some key has one.
-fn footer(picker: &Picker, keys: &ListKeys, filtered: bool, flagged: bool, width: usize) -> String {
+fn footer(picker: &Picker, keys: &ListKeys, filtered: bool, flagged: bool, width: usize) -> Footer {
     let mut items = picker.key_items(keys, filtered);
     if flagged {
         items.push((
-            Some(format!(
+            Some(Hint::words(&format!(
                 "{} not on this terminal",
                 theme::symbol(Symbol::KeyUnavailable)
-            )),
+            ))),
             8,
         ));
     }
@@ -447,7 +449,7 @@ fn probe_spec<'a>(
     picker: &'a Picker,
     list_rows: usize,
     widest: usize,
-    footers: &'a [String],
+    footers: &'a [Footer],
     cols: u16,
     rows: u16,
 ) -> BoxSpec<'a> {
@@ -456,6 +458,7 @@ fn probe_spec<'a>(
         filter: &picker.filter,
         lines: &[],
         numbers: &[],
+        quiet: &[],
         selected: None,
         footers,
         widest,
@@ -561,8 +564,8 @@ pub(super) fn draw(picker: &Picker, cols: u16, rows: u16, keys: &ListKeys) -> Dr
         .max(1);
     let widest = (columns * cell_width + (columns - 1) * GAP)
         .max(cells_of(&picker.title) + 2)
-        .max(cells_of(&footers_for(false)[0]))
-        .max(cells_of(&footers_for(true)[0]));
+        .max(footers_for(false)[0].width())
+        .max(footers_for(true)[0].width());
 
     // The lines of each column as they are now: only the groups with a match.
     let mut lines: [Vec<Line>; 2] = [Vec::new(), Vec::new()];
@@ -667,6 +670,14 @@ pub(super) fn draw(picker: &Picker, cols: u16, rows: u16, keys: &ListKeys) -> Dr
                 );
                 let style = if selected { chosen } else { plain };
                 let mut cells = text_cells(&text, style);
+                if !selected {
+                    // The key names are the second thing a line says, as a detail is.
+                    let quiet = theme::style(Role::PickerQuiet).fg;
+                    let from = cells_of(mark) + label_width + 2;
+                    for cell in cells.iter_mut().skip(from) {
+                        cell.style.fg = quiet;
+                    }
+                }
                 cells = cut(cells, cell_width, style);
                 return cells;
             }

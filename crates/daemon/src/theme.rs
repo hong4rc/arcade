@@ -34,10 +34,21 @@ pub enum Role {
     Divider,
     /// The part of a divider that touches the focused pane.
     DividerFocus,
-    /// The floating list: its frame and the lines that are not chosen.
+    /// The floating list: the lines that are not chosen, and its filter line.
     Picker,
+    /// The frame of the floating list.
+    PickerFrame,
+    /// The title in the top edge of the floating list.
+    PickerTitle,
+    /// The second thing a line says (its detail, "1 window") and the words of the key line.
+    PickerQuiet,
+    /// The keys of the key line, apart from the words after them.
+    PickerKey,
     /// The line of the floating list that is chosen.
     PickerSelected,
+    /// The cell behind a state symbol on the chosen line: the lighter grey of that line is too
+    /// close to some state colours, so the symbol stands on a dark cell, as on a tab's badge.
+    PickerSelectedBadge,
     /// The line that names a group of lines, and the column titles, in the floating list.
     PickerHeading,
     /// The cells of copy mode that are selected or found by a search.
@@ -128,6 +139,16 @@ fn contrast(style: Style) -> f64 {
 
 /// A colour moved toward white, a little at a time, until it reads on `background` at a contrast
 /// of at least 4.5; one that already does is left alone. Both must be given as red, green and blue.
+/// The contrast ratio of a text colour on a background, for tests of other files.
+#[cfg(test)]
+pub fn contrast_of(fg: Color, bg: Color) -> f64 {
+    contrast(Style {
+        fg,
+        bg,
+        ..Style::default()
+    })
+}
+
 fn readable_on(colour: Color, background: Color) -> Color {
     let Color::Rgb(r, g, b) = colour else {
         return colour;
@@ -226,23 +247,28 @@ pub fn style(role: Role) -> Style {
             bold: true,
             ..fg(4)
         },
-        Role::Picker => Style {
-            fg: Color::Indexed(7),
-            bg: Color::Indexed(0),
-            ..Style::default()
+        // The floating lists and the tree use the palette of the bar, not the 16 colours of the
+        // terminal: text on the bar's background, a quiet frame and second text, an accent for
+        // the keys, and the chosen line as the current tab's block (a test checks each text).
+        Role::Picker => on(palette::TEXT, palette::MANTLE),
+        Role::PickerFrame | Role::PickerQuiet => on(palette::OVERLAY2, palette::MANTLE),
+        Role::PickerTitle => Style {
+            bold: true,
+            ..on(palette::TEXT, palette::MANTLE)
+        },
+        Role::PickerKey => Style {
+            bold: true,
+            ..on(palette::MAUVE, palette::MANTLE)
         },
         Role::PickerHeading => Style {
-            fg: Color::Indexed(6),
-            bg: Color::Indexed(0),
             bold: true,
-            ..Style::default()
+            ..on(palette::BLUE, palette::MANTLE)
         },
         Role::PickerSelected => Style {
-            fg: Color::Indexed(0),
-            bg: Color::Indexed(4),
             bold: true,
-            ..Style::default()
+            ..on(palette::WHITE, palette::SURFACE2)
         },
+        Role::PickerSelectedBadge => on(palette::TEXT, palette::CRUST),
         Role::IndicatorSelect => Style {
             bold: true,
             ..on(palette::CRUST, palette::MAUVE)
@@ -1156,6 +1182,64 @@ mod tests {
             );
             let ratio = contrast(current);
             assert!(ratio >= 4.5, "{role:?}: {ratio:.2}");
+        }
+    }
+
+    /// The roles of the floating lists and the tree are drawn in the palette of the bar: no
+    /// index of the terminal's 16 colours is left, the chosen line is the current tab's block,
+    /// and every text reads at 4.5 or more on its own background.
+    #[test]
+    fn the_list_roles_use_the_bars_palette_and_every_text_reads() {
+        let roles = [
+            Role::Picker,
+            Role::PickerFrame,
+            Role::PickerTitle,
+            Role::PickerQuiet,
+            Role::PickerKey,
+            Role::PickerHeading,
+            Role::PickerSelected,
+            Role::PickerSelectedBadge,
+        ];
+        for role in roles {
+            let st = style(role);
+            assert!(matches!(st.fg, Color::Rgb(..)), "{role:?} fg {:?}", st.fg);
+            assert!(matches!(st.bg, Color::Rgb(..)), "{role:?} bg {:?}", st.bg);
+            let ratio = contrast(st);
+            assert!(ratio >= 4.5, "{role:?}: {ratio:.2}");
+            println!("{role:?}: {ratio:.2}");
+        }
+        let chosen = style(Role::PickerSelected);
+        let current = style(Role::PillNameCurrent);
+        assert_eq!((chosen.fg, chosen.bg), (palette::WHITE, palette::SURFACE2));
+        assert_eq!((chosen.fg, chosen.bg), (current.fg, current.bg));
+        // The key and the word after it are told apart by colour and by weight.
+        assert_ne!(style(Role::PickerKey).fg, style(Role::PickerQuiet).fg);
+        assert!(style(Role::PickerKey).bold && !style(Role::PickerQuiet).bold);
+        // The panel is the bar's own background.
+        assert_eq!(style(Role::Picker).bg, style(Role::StatusBar).bg);
+    }
+
+    /// A state symbol reads on every line of a list: at 4.5 on the panel, and on the chosen
+    /// line, where it stands on a dark cell, at 3.0 or more (it is a symbol, not text).
+    #[test]
+    fn a_state_symbol_reads_on_a_list_line_and_on_the_chosen_line() {
+        use crate::notify::Class;
+        let panel = style(Role::Picker).bg;
+        let badge = style(Role::PickerSelectedBadge).bg;
+        let lighter = style(Role::PickerSelected).bg;
+        for class in Class::BY_URGENCY {
+            let colour = notice_style(class).fg;
+            let on_panel = contrast_of(colour, panel);
+            let on_badge = contrast_of(colour, badge);
+            let on_chosen_grey = contrast_of(colour, lighter);
+            println!(
+                "{class:?}: panel {on_panel:.2}, chosen line's dark cell {on_badge:.2} (on the grey itself {on_chosen_grey:.2})"
+            );
+            assert!(on_panel >= 4.5, "{class:?} on the panel: {on_panel:.2}");
+            assert!(
+                on_badge >= 3.0,
+                "{class:?} on the chosen line: {on_badge:.2}"
+            );
         }
     }
 

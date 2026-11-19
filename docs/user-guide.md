@@ -233,10 +233,14 @@ Every list has a filter box on its first line: type letters and only the lines t
 
 Sessions in the lists and in the tree are in the order they were made, so a new session comes last.
 
+**Going round.** In every list (sessions, windows, keys, commands, notifications, move-window) and in the tree, Up on the first line goes to the last and Down on the last goes to the first. With a filter on, it goes round among the lines that match. The view scrolls so that the chosen line is in sight. An empty list stays as it is. In the tree the movement stays on the tier of the chosen item (sessions, windows or panes), so it goes round that tier.
+
+**How a list looks.** The lists and the tree use the same Catppuccin Frappe colours as the status bar, written as red, green and blue, so they do not follow the 16 colours of your terminal's theme: the bar's dark background, text in the main text colour, a quiet frame, a bold title, and the second thing a line says (the detail after a name such as `1 window`, the keys in the key list, the words of the key line) in a quieter colour. The chosen line has the look of the current tab: a lighter grey block with white bold text, so "chosen" reads the same on the bar and in the lists; its `>` and the ` *` that marks the current item stay. A state symbol keeps its own colour on every line; on the chosen line it stands on a dark cell, because some state colours (approval and info) are too close to the grey of that line to read there. The key line at the bottom draws each key (`Up Down`, `Enter`, `Esc`, `+`) in bold in the accent colour and the word after it (`move`, `go`, `close`) in the quiet colour, so `+ new session` and `esc close` read as a key and what it does. Every text reads at a contrast of 4.5 or more on its background (a test checks it).
+
 | Key | Action |
 |---|---|
-| Up arrow or `Ctrl+p` | Up one line |
-| Down arrow or `Ctrl+n` | Down one line |
+| Up arrow or `Ctrl+p` | Up one line; on the first line it goes round to the last |
+| Down arrow or `Ctrl+n` | Down one line; on the last line it goes round to the first |
 | Letters, digits, punctuation | Typed into the filter box |
 | `Backspace` | Delete one character of the filter box |
 | `Ctrl+u` | Clear the whole filter box |

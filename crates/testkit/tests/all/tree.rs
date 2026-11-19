@@ -202,9 +202,11 @@ fn up_and_down_keep_to_a_tier_and_left_and_right_go_out_and_in() {
     wait_chosen(&mut client, "zsh *");
     client.send(UP);
     wait_chosen(&mut client, "nvim");
-    // The first of its tier: Up stays.
+    // The first of its tier: Up goes round to the last pane, and Down comes back to the first.
     client.send(UP);
     quiet(&mut client);
+    assert_ne!(chosen(&client), "nvim");
+    client.send(DOWN);
     wait_chosen(&mut client, "nvim");
     // Left out to the window, then to the session, then nowhere.
     client.send(LEFT);
