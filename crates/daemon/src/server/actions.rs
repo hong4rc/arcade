@@ -805,12 +805,15 @@ impl Server {
                 };
                 Item::new(id, s.name.clone(), detail, s.id == session_id)
                     .with_notice(self.session_notice(s))
-                    .with_window_marks(
+                    .with_window_marks(if s.windows.len() < 2 {
+                        // One window: the symbol after the name already says where it is.
+                        Vec::new()
+                    } else {
                         s.windows
                             .iter()
                             .filter_map(|w| self.window_notice(w).map(|c| (w.number, c)))
-                            .collect(),
-                    )
+                            .collect()
+                    })
             })
             .collect();
         if items.is_empty() {

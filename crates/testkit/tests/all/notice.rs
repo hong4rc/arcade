@@ -1055,6 +1055,24 @@ fn the_session_list_marks_a_session_that_holds_an_input_notification_and_only_th
 }
 
 #[test]
+fn a_session_with_one_window_names_no_window_after_the_count() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, first, _) = two_panes(&daemon);
+    notify(&daemon, first, "input", "a", "waiting");
+    assert!(mark_shown(&mut client, "◆"), "{}", bar(&client));
+    client.send(PREFIX);
+    client.send(b"s");
+    assert!(
+        client.wait_until(WAIT, |c| !rows_with(c, "1 window").is_empty()),
+        "{}",
+        client.screen_text()
+    );
+    let row = rows_with(&client, "1 window");
+    assert!(row[0].contains("work ◆  1 window"), "{}", row[0]);
+    assert!(!row[0].contains('·'), "{}", row[0]);
+}
+
+#[test]
 fn the_session_list_names_the_windows_with_a_state_most_urgent_first() {
     let daemon = counting_all_with_expiry(None);
     let mut client = start(&daemon);
