@@ -414,25 +414,50 @@ fn badge_cells(
     };
     let (symbol, tint) = mark_parts(mark);
     let look = theme::state_style();
-    let padded = format!(" {symbol}{} ", " ".repeat(digits - 1));
+    if look == theme::StateStyle::Number {
+        let badge = theme::state_badge_on(look, tint, tab.current);
+        return (text_cells(&format!(" {} ", tab.number), badge), badge);
+    }
+    // The symbol and the number take turns in this cell (`[status] state-number`), so the cell
+    // has the same width in both phases, and in both it is drawn the same way.
+    let alternating = theme::alternates();
+    if alternating {
+        theme::note_alternate();
+    }
+    let number_now = alternating && theme::number_phase();
+    let text = if number_now {
+        format!(" {} ", tab.number)
+    } else {
+        format!(" {symbol}{} ", " ".repeat(digits - 1))
+    };
+    // The number of the phase is not blinking: only the symbol blinks.
+    let (style, cap) = if number_now {
+        theme::without_blink(|| symbol_look(look, tint, tab.current, name))
+    } else {
+        symbol_look(look, tint, tab.current, name)
+    };
+    (text_cells(&text, style), cap)
+}
+
+/// The colours of a tab's badge cell that shows a state, and the colour the round cap next to it
+/// takes: the state's colours on the block of the name (plain), or on the dark badge.
+fn symbol_look(
+    look: theme::StateStyle,
+    tint: theme::Tint,
+    current: bool,
+    name: arcade_term::Style,
+) -> (arcade_term::Style, arcade_term::Style) {
     match look {
-        theme::StateStyle::Plain if !tab.current => (
-            text_cells(&padded, theme::cell_style_on(tint, name, false)),
-            name,
-        ),
+        theme::StateStyle::Plain if !current => (theme::cell_style_on(tint, name, false), name),
         // The accent block of the current tab cannot carry a symbol, so there the Plain look
-        // draws the state as the Dark look does: the same padded text on the dark badge.
+        // draws the state as the Dark look does: on the dark badge.
         theme::StateStyle::Plain => {
             let badge = theme::state_badge_on(theme::StateStyle::Dark, tint, true);
-            (text_cells(&padded, badge), badge)
+            (badge, badge)
         }
-        theme::StateStyle::Number => {
-            let badge = theme::state_badge_on(look, tint, tab.current);
-            (text_cells(&format!(" {} ", tab.number), badge), badge)
-        }
-        theme::StateStyle::Dark | theme::StateStyle::Filled => {
-            let badge = theme::state_badge_on(look, tint, tab.current);
-            (text_cells(&padded, badge), badge)
+        theme::StateStyle::Dark | theme::StateStyle::Filled | theme::StateStyle::Number => {
+            let badge = theme::state_badge_on(look, tint, current);
+            (badge, badge)
         }
     }
 }
@@ -1197,6 +1222,67 @@ mod tests {
         // The number is a badge of its own at the end, in the accent colours in the current tab.
         assert_eq!(at("2 "), theme::style(Role::PillBadgeCurrent));
         assert_eq!(at("1 "), theme::style(Role::PillBadge));
+    }
+
+    /// A tab with a state takes turns between its symbol and its number in one cell of the same
+    /// width, in both looks of the tab, and the state on the current tab is drawn the same way.
+    #[test]
+    fn a_tab_with_a_state_takes_turns_between_symbol_and_number_at_the_same_width() {
+        let mut look = theme::StateLook::default();
+        look.alternate = true;
+        theme::set_state_look(look);
+        for tab_style in [TabStyle::Pill, TabStyle::Flat] {
+            let mut i = info();
+            i.style = tab_style;
+            let current = i.tabs.iter().position(|t| t.current).unwrap();
+            let quiet = {
+                let (_, _, spans) = build_with_tabs(120, &i);
+                spans[current].to - spans[current].from
+            };
+            i.tabs[current].notice = Some(Class::Input);
+            let symbol = theme::notice_symbol(Class::Input);
+            let number = i.tabs[current].number.to_string();
+            let ((symbol_cells, _, spans), _) =
+                theme::drawing_the_bar_at(false, false, || build_with_tabs(120, &i));
+            let ((number_cells, _, number_spans), _) =
+                theme::drawing_the_bar_at(false, true, || build_with_tabs(120, &i));
+            let span = &spans[current];
+            assert_eq!(
+                span.to - span.from,
+                quiet,
+                "{tab_style:?}: the symbol phase changed width"
+            );
+            assert_eq!(
+                number_spans[current].to - number_spans[current].from,
+                quiet,
+                "{tab_style:?}: the number phase changed width"
+            );
+            let shown = shown_text(&symbol_cells, span);
+            assert!(shown.contains(symbol), "{tab_style:?} {shown:?}");
+            let shown = shown_text(&number_cells, &number_spans[current]);
+            assert!(
+                shown.contains(&number) && !shown.contains(symbol),
+                "{tab_style:?} {shown:?}"
+            );
+        }
+    }
+
+    /// `replace` keeps the symbol in the cell of the number, whatever the phase.
+    #[test]
+    fn replace_keeps_the_symbol_in_place_of_the_number_in_every_phase() {
+        let mut look = theme::StateLook::default();
+        look.alternate = false;
+        theme::set_state_look(look);
+        let mut i = info();
+        let current = i.tabs.iter().position(|t| t.current).unwrap();
+        i.tabs[current].notice = Some(Class::Input);
+        let symbol = theme::notice_symbol(Class::Input);
+        for number_phase in [false, true] {
+            let ((cells, _, spans), _) =
+                theme::drawing_the_bar_at(false, number_phase, || build_with_tabs(120, &i));
+            let shown = shown_text(&cells, &spans[current]);
+            assert!(shown.contains(symbol), "{number_phase}: {shown:?}");
+        }
     }
 
     #[test]

@@ -377,10 +377,15 @@ fn keep_change(changes: &mut std::collections::VecDeque<WindowChange>, at: f64, 
 
 /// The bar of a session as it was drawn in each half of a blink.
 struct BarCache {
-    /// The cells of the bar's row, by half (`dim as usize`).
-    rows: [Vec<arcade_term::Cell>; 2],
-    /// Where the cursor of an open prompt is, by half.
-    prompt_cursor: [Option<u16>; 2],
+    /// The cells of the bar's row, by half of a blink and phase of the alternation (`bar_index`).
+    rows: [Vec<arcade_term::Cell>; 4],
+    /// Where the cursor of an open prompt is, by the same index.
+    prompt_cursor: [Option<u16>; 4],
+}
+
+/// The index of a bar in `BarCache`: the half of a blink and the phase of the alternation.
+pub(super) fn bar_index(dim: bool, number: bool) -> usize {
+    usize::from(dim) + 2 * usize::from(number)
 }
 
 struct Session {
@@ -411,6 +416,10 @@ struct Session {
     /// it was drawn (`[status] blink`).
     bar_blinks: bool,
     bar_blink_dim: bool,
+    /// Whether the bar as last drawn has a tab that takes turns between its symbol and its number,
+    /// and in which phase it was drawn.
+    bar_alternates: bool,
+    bar_number_phase: bool,
     /// The half of a blink changed since the bar was drawn: only the bar is drawn again, from
     /// `bar_cache`.
     blink_due: bool,
@@ -549,6 +558,8 @@ impl Session {
             chrome_dirty: true,
             bar_blinks: false,
             bar_blink_dim: false,
+            bar_alternates: false,
+            bar_number_phase: false,
             blink_due: false,
             bar_cache: None,
             changes: std::collections::VecDeque::new(),
@@ -988,10 +999,17 @@ impl Server {
             }
         }
         for s in self.sessions.values() {
-            // One shared deadline for every blinking symbol, and none when nothing blinks.
+            // One clock for the blinking symbols and the phases of the tabs that take turns: the
+            // next change of either, and none when nothing on the bar changes with time.
             if s.client.is_some()
                 && s.bar_blinks
                 && let Some(t) = self.next_blink_change(now)
+            {
+                consider(t);
+            }
+            if s.client.is_some()
+                && s.bar_alternates
+                && let Some(t) = self.next_alternate_change(now)
             {
                 consider(t);
             }
@@ -1026,20 +1044,44 @@ impl Server {
         (now.saturating_duration_since(self.started).as_millis() / half) % 2 == 1
     }
 
+    /// Whether tabs with a state show their number at `now`; the other phase shows the symbol.
+    pub(super) fn number_phase_at(&self, now: Instant) -> bool {
+        self.config.state_look.alternate
+            && crate::theme::alternate_phase(
+                now.saturating_duration_since(self.started).as_millis(),
+                u128::from(self.config.state_look.alternate_ms.max(1)),
+            )
+    }
+
     /// When the next half of a blink starts.
     fn next_blink_change(&self, now: Instant) -> Option<Instant> {
         let half = u128::from(self.config.state_look.blink_ms.max(1));
+        self.next_boundary(now, half)
+    }
+
+    /// When the next phase of the alternation starts.
+    fn next_alternate_change(&self, now: Instant) -> Option<Instant> {
+        let phase = u128::from(self.config.state_look.alternate_ms.max(1));
+        self.next_boundary(now, phase)
+    }
+
+    /// The next multiple of `period` milliseconds since the daemon started, after `now`.
+    fn next_boundary(&self, now: Instant, period: u128) -> Option<Instant> {
         let since = now.saturating_duration_since(self.started).as_millis();
-        let next = (since / half + 1) * half;
+        let next = (since / period + 1) * period;
         Some(self.started + Duration::from_millis(u64::try_from(next).ok()?))
     }
 
-    /// A bar with a symbol that blinks is drawn again when the half of the blink has changed
-    /// since it was drawn; only the cells of the symbols differ, so only they are sent.
+    /// A bar with a symbol that blinks, or a tab that takes turns, is drawn again when the half of
+    /// the blink or the phase has changed since it was drawn; only the changed cells are sent.
     fn wake_blink(&mut self) {
-        let dim = self.blink_dim_at(Instant::now());
+        let now = Instant::now();
+        let dim = self.blink_dim_at(now);
+        let number = self.number_phase_at(now);
         for s in self.sessions.values_mut() {
-            if s.client.is_some() && s.bar_blinks && s.bar_blink_dim != dim {
+            let blink = s.bar_blinks && s.bar_blink_dim != dim;
+            let phase = s.bar_alternates && s.bar_number_phase != number;
+            if s.client.is_some() && (blink || phase) {
                 s.blink_due = true;
             }
         }

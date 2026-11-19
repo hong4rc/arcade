@@ -190,6 +190,8 @@ fn a_report_that_says_the_same_again_does_not_redraw_the_bar() {
 fn with_expiry(seconds: u64) -> TestDaemon {
     TestDaemon::start_with(move |c| {
         c.config.progress_expires = Duration::from_secs(seconds);
+        // The symbol stays on the tab: these tests read it there, not its turn with the number.
+        c.config.state_look.alternate = false;
     })
 }
 

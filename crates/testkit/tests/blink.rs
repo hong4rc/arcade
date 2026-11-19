@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// A configuration that turns blinking off (the default blinks the states that wait for you).
-const NO_BLINK: &str = "[status]\nblink = []\n";
+const NO_BLINK: &str = "[status]\nblink = []\nstate-number = \"replace\"\n";
 
 use arcade_testkit::{AttachOptions, Screened, TestClient, TestDaemon, WAIT};
 
@@ -94,7 +94,8 @@ fn updates_in(client: &mut TestClient, time: Duration) -> usize {
     n
 }
 
-const BLINKING: &str = "[status]\nblink = [\"input\"]\nblink-interval = 200\n";
+const BLINKING: &str =
+    "[status]\nblink = [\"input\"]\nblink-interval = 200\nstate-number = \"replace\"\n";
 
 #[test]
 fn only_the_listed_states_blink_and_the_bar_keeps_its_width() {

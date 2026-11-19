@@ -998,6 +998,35 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                             ),
                             None => {}
                         },
+                        "state-number" => {
+                            if let Some(word) = r.string("state-number", v) {
+                                match word {
+                                    "alternate" => config.state_look.alternate = true,
+                                    "replace" => config.state_look.alternate = false,
+                                    _ => r.error(
+                                        v.span().start,
+                                        format!(
+                                            "state-number is alternate or replace, not \"{word}\""
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        "alternate-interval" => {
+                            if let Some(ms) = r.integer("alternate-interval", v) {
+                                if (ms as u64) < crate::theme::ALTERNATE_MIN_MS {
+                                    r.error(
+                                        v.span().start,
+                                        format!(
+                                            "alternate-interval is at least {} (milliseconds), not {ms}",
+                                            crate::theme::ALTERNATE_MIN_MS
+                                        ),
+                                    );
+                                } else {
+                                    config.state_look.alternate_ms = ms as u64;
+                                }
+                            }
+                        }
                         "state-style" => {
                             if let Some(word) = r.string("state-style", v) {
                                 match crate::theme::StateStyle::parse(word) {
@@ -1102,6 +1131,8 @@ pub fn parse(text: &str) -> Result<Config, Vec<ConfigError>> {
                                     "finished-after",
                                     "progress-expires",
                                     "state-style",
+                                    "state-number",
+                                    "alternate-interval",
                                     "state",
                                     "blink",
                                     "blink-interval",
@@ -1746,6 +1777,27 @@ position = "top"
             assert_eq!(errors[0].line, line, "{text}: {errors:?}");
             assert!(errors[0].message.contains(word), "{text}: {errors:?}");
         }
+    }
+
+    #[test]
+    fn alternation_is_on_by_default_its_phase_is_checked_and_replace_turns_it_off() {
+        let config = parse("").unwrap();
+        assert!(config.state_look.alternate);
+        assert_eq!(config.state_look.alternate_ms, 2000);
+        let config =
+            parse("[status]\nstate-number = \"replace\"\nalternate-interval = 500\n").unwrap();
+        assert!(!config.state_look.alternate);
+        assert_eq!(config.state_look.alternate_ms, 500);
+        let errors = parse("[status]\nalternate-interval = 50\n").unwrap_err();
+        assert!(
+            format!("{errors:?}").contains("alternate-interval is at least 200"),
+            "{errors:?}"
+        );
+        let errors = parse("[status]\nstate-number = \"both\"\n").unwrap_err();
+        assert!(
+            format!("{errors:?}").contains("state-number is alternate or replace"),
+            "{errors:?}"
+        );
     }
 
     #[test]

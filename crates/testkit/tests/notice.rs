@@ -44,7 +44,11 @@ fn nothing_shown_for(client: &mut TestClient, mark: &str, wait: Duration) -> boo
 
 #[test]
 fn a_bell_in_a_pane_out_of_focus_shows_on_its_tab_and_in_the_counter_and_looking_clears_it() {
-    let daemon = TestDaemon::start_counting_all();
+    // The symbol stays on the tab here: the alternation has tests of its own.
+    let daemon = TestDaemon::start_with(|c| {
+        c.config.notification.status_count = arcade_daemon::config::StatusCount::All;
+        c.config.state_look.alternate = false;
+    });
     let mut client = start(&daemon);
     signal_from_a_pane_left_behind(&mut client, "\\a");
     assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));

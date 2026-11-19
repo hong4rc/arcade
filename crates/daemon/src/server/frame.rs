@@ -380,6 +380,7 @@ impl Server {
         let status_position = self.config.status_position;
         let unlock_key = self.unlock_key_name();
         let blink_dim = self.blink_dim_at(Instant::now());
+        let number_phase = self.number_phase_at(Instant::now());
         let notice_sessions = self.notice_sessions(session_id);
         // Panes get the sizes the dragged divider gave them, once per frame.
         let stale = self
@@ -651,10 +652,15 @@ impl Server {
                 );
                 info.notice_sessions = notice_sessions;
                 let dim = blink_dim;
-                let ((cells, prompt_cursor, spans), blinks) =
-                    crate::theme::drawing_the_bar(dim, || status::build_with_tabs(cols, &info));
-                session.bar_blinks = blinks;
+                let number = number_phase;
+                let ((cells, prompt_cursor, spans), seen) =
+                    crate::theme::drawing_the_bar_at(dim, number, || {
+                        status::build_with_tabs(cols, &info)
+                    });
+                session.bar_blinks = seen.blink;
                 session.bar_blink_dim = dim;
+                session.bar_alternates = seen.alternate;
+                session.bar_number_phase = number;
                 // Where the tabs are as drawn, for a click on one.
                 session.counter_bar = spans.iter().find(|t| t.counter).map(|t| (t.from, t.to));
                 session.tab_bar = spans
@@ -662,21 +668,26 @@ impl Server {
                     .filter(|t| !t.counter)
                     .filter_map(|t| Some((session.windows.get(t.index)?.id, t.from, t.to)))
                     .collect();
-                session.bar_cache = if blinks {
-                    let other = !dim;
-                    let ((other_cells, other_cursor, _), _) =
-                        crate::theme::drawing_the_bar(other, || {
-                            status::build_with_tabs(cols, &info)
-                        });
-                    let mut rows = [Vec::new(), Vec::new()];
-                    rows[usize::from(dim)] = cells.clone();
-                    rows[usize::from(other)] = other_cells;
-                    let mut prompt_cursor_of = [None, None];
-                    prompt_cursor_of[usize::from(dim)] = prompt_cursor;
-                    prompt_cursor_of[usize::from(other)] = other_cursor;
+                session.bar_cache = if seen.blink || seen.alternate {
+                    // Every phase is built now, so a blink or a turn draws the bar from here.
+                    let mut rows = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+                    let mut cursors = [None; 4];
+                    for (d, n) in [(false, false), (false, true), (true, false), (true, true)] {
+                        let i = super::bar_index(d, n);
+                        if (d, n) == (dim, number) {
+                            rows[i] = cells.clone();
+                            cursors[i] = prompt_cursor;
+                        } else {
+                            let ((c, p, _), _) = crate::theme::drawing_the_bar_at(d, n, || {
+                                status::build_with_tabs(cols, &info)
+                            });
+                            rows[i] = c;
+                            cursors[i] = p;
+                        }
+                    }
                     Some(BarCache {
                         rows,
-                        prompt_cursor: prompt_cursor_of,
+                        prompt_cursor: cursors,
                     })
                 } else {
                     None
@@ -689,12 +700,12 @@ impl Server {
                 status_row(rows, status_position),
                 session.bar_cache.as_ref(),
             ) {
-                session
-                    .screen
-                    .set_row(y, cache.rows[usize::from(blink_dim)].clone());
-                cursor_override = cache.prompt_cursor[usize::from(blink_dim)].map(|x| (x, y));
+                let i = super::bar_index(blink_dim, number_phase);
+                session.screen.set_row(y, cache.rows[i].clone());
+                cursor_override = cache.prompt_cursor[i].map(|x| (x, y));
             }
             session.bar_blink_dim = blink_dim;
+            session.bar_number_phase = number_phase;
         }
         // The floating list is drawn over everything on every update.
         let picker_open = session.picker.is_some() || session.tree.is_some();

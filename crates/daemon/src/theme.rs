@@ -457,7 +457,16 @@ pub struct StateLook {
     /// a blink in milliseconds (`[status] blink-interval`).
     blink: [bool; 9],
     pub blink_ms: u64,
+    /// Whether a tab with a state takes turns between its symbol and its number
+    /// (`[status] state-number = "alternate"`); `replace` shows the symbol only.
+    pub alternate: bool,
+    /// How long each phase of that lasts, in milliseconds (`[status] alternate-interval`).
+    pub alternate_ms: u64,
 }
+
+/// The shortest phase the settings allow and the default one, in milliseconds.
+pub const ALTERNATE_MIN_MS: u64 = 200;
+pub const ALTERNATE_DEFAULT_MS: u64 = 2000;
 
 /// The shortest half blink the settings allow and the default one, in milliseconds.
 pub const BLINK_MIN_MS: u64 = 200;
@@ -474,6 +483,8 @@ impl Default for StateLook {
             settings: [StateSetting::default(); 9],
             blink,
             blink_ms: BLINK_DEFAULT_MS,
+            alternate: true,
+            alternate_ms: ALTERNATE_DEFAULT_MS,
         }
     }
 }
@@ -504,30 +515,96 @@ impl StateLook {
 struct BarBlink {
     drawing: bool,
     dim: bool,
+    /// Whether the tabs show their number in this phase of the alternation (not the symbol).
+    number: bool,
     seen: bool,
+    alternate_seen: bool,
 }
 
 thread_local! {
-    static BAR: std::cell::Cell<BarBlink> = const { std::cell::Cell::new(BarBlink { drawing: false, dim: false, seen: false }) };
+    static BAR: std::cell::Cell<BarBlink> = const { std::cell::Cell::new(BarBlink { drawing: false, dim: false, number: false, seen: false, alternate_seen: false }) };
+}
+
+/// What the bar drawn has in it that changes with time: a symbol that blinks, and a tab that
+/// takes turns between its symbol and its number.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BarSeen {
+    pub blink: bool,
+    pub alternate: bool,
 }
 
 /// Draw the status bar in the given half of a blink (`dim`: the symbols that blink are in their
-/// dim colour). Returns what `f` returned and whether a symbol that blinks is on the bar.
-pub fn drawing_the_bar<R>(dim: bool, f: impl FnOnce() -> R) -> (R, bool) {
+/// dim colour) and in the given phase of the alternation (`number`: the tabs with a state show
+/// their number). Returns what `f` returned and what changes with time on the bar.
+pub fn drawing_the_bar_at<R>(dim: bool, number: bool, f: impl FnOnce() -> R) -> (R, BarSeen) {
     BAR.with(|b| {
         b.set(BarBlink {
             drawing: true,
             dim,
+            number,
             seen: false,
+            alternate_seen: false,
         })
     });
     let result = f();
     let seen = BAR.with(|b| {
-        let seen = b.get().seen;
+        let bar = b.get();
         b.set(BarBlink::default());
-        seen
+        BarSeen {
+            blink: bar.seen,
+            alternate: bar.alternate_seen,
+        }
     });
     (result, seen)
+}
+
+/// Draw the status bar in the given half of a blink. Returns what `f` returned and whether a
+/// symbol that blinks is on the bar.
+#[cfg(test)]
+pub fn drawing_the_bar<R>(dim: bool, f: impl FnOnce() -> R) -> (R, bool) {
+    let (result, seen) = drawing_the_bar_at(dim, false, f);
+    (result, seen.blink)
+}
+
+/// Whether the phase of an alternation that lasts `interval_ms` at `elapsed_ms` is the second one
+/// (the number).
+pub fn alternate_phase(elapsed_ms: u128, interval_ms: u128) -> bool {
+    (elapsed_ms / interval_ms.max(1)) % 2 == 1
+}
+
+/// Whether tabs with a state take turns between their symbol and their number.
+pub fn alternates() -> bool {
+    LOOK.with(|l| l.get().alternate)
+}
+
+/// Whether the tabs are showing their number in this phase, while the bar is being drawn.
+pub fn number_phase() -> bool {
+    BAR.with(|b| b.get().drawing && b.get().number)
+}
+
+/// Note that a tab with a state takes turns on the bar being drawn.
+pub fn note_alternate() {
+    BAR.with(|b| {
+        b.set(BarBlink {
+            alternate_seen: true,
+            ..b.get()
+        })
+    });
+}
+
+/// Run `f` as if nothing blinks: the colours it draws are the bright ones (the number of a tab
+/// that takes turns does not blink).
+pub fn without_blink<R>(f: impl FnOnce() -> R) -> R {
+    let saved = BAR.with(std::cell::Cell::get);
+    BAR.with(|b| {
+        b.set(BarBlink {
+            drawing: false,
+            ..saved
+        })
+    });
+    let out = f();
+    BAR.with(|b| b.set(saved));
+    out
 }
 
 /// The colour of a state's symbol as drawn now: its own, or the dim one in the dim half of a
@@ -811,6 +888,17 @@ pub fn symbol(symbol: Symbol) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_phase_of_an_alternation_changes_each_interval_from_the_symbol_to_the_number() {
+        assert!(!alternate_phase(0, 1000));
+        assert!(!alternate_phase(999, 1000));
+        assert!(alternate_phase(1000, 1000));
+        assert!(alternate_phase(1999, 1000));
+        assert!(!alternate_phase(2000, 1000));
+        // A zero interval is taken as one millisecond, not a division by zero.
+        assert!(!alternate_phase(0, 0));
+    }
 
     #[test]
     fn the_current_tab_name_is_the_accent_block_with_dark_text_and_its_number_is_the_accent_on_dark()

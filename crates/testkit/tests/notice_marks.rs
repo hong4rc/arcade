@@ -77,7 +77,8 @@ fn a_notification_is_one_cell_on_the_tab_and_one_on_the_pane_and_not_counted_aga
 /// What the tabs cannot show, a notification in another session, is counted at the right end.
 #[test]
 fn the_count_at_the_right_end_is_for_the_other_sessions() {
-    let daemon = TestDaemon::start();
+    // The symbol stays on the tab here: the alternation has tests of its own.
+    let daemon = TestDaemon::start_with(|c| c.config.state_look.alternate = false);
     let mut other = daemon
         .attach(AttachOptions::new().size(100, 30).named("other"))
         .unwrap();
