@@ -71,7 +71,10 @@ mod palette {
     pub const MANTLE: Color = Color::Rgb(0x29, 0x2c, 0x3c);
     pub const CRUST: Color = Color::Rgb(0x23, 0x26, 0x34);
     pub const SURFACE0: Color = Color::Rgb(0x41, 0x45, 0x59);
-    pub const SURFACE1: Color = Color::Rgb(0x51, 0x57, 0x6d);
+    pub const SURFACE2: Color = Color::Rgb(0x62, 0x68, 0x80);
+    /// Pure white is outside the palette. It is used only for the text on the current tab's
+    /// block, by the author's choice: no palette colour reads at 4.5 on `SURFACE2`.
+    pub const WHITE: Color = Color::Rgb(0xff, 0xff, 0xff);
     pub const OVERLAY2: Color = Color::Rgb(0x94, 0x9c, 0xbb);
     pub const TEXT: Color = Color::Rgb(0xc6, 0xd0, 0xf5);
     pub const SUBTEXT0: Color = Color::Rgb(0xb5, 0xbf, 0xe2);
@@ -155,14 +158,14 @@ pub fn style(role: Role) -> Style {
     match role {
         Role::StatusBar => on(palette::SUBTEXT0, palette::MANTLE),
         Role::PillName => on(palette::TEXT, palette::SURFACE0),
-        // The current tab's name is a block of a lighter grey than the other tabs, with bright
+        // The current tab's name is a block of a lighter grey than the other tabs, with white
         // bold text; the number badge beside it carries the accent.
         Role::PillNameCurrent => Style {
             bold: true,
-            ..on(palette::TEXT, palette::SURFACE1)
+            ..on(palette::WHITE, palette::SURFACE2)
         },
         Role::PillQuiet => on(palette::SUBTEXT0, palette::SURFACE0),
-        Role::PillQuietCurrent => on(palette::TEXT, palette::SURFACE1),
+        Role::PillQuietCurrent => on(palette::WHITE, palette::SURFACE2),
         Role::PillBadge => Style {
             bold: true,
             ..on(palette::CRUST, palette::OVERLAY2)
@@ -908,7 +911,7 @@ mod tests {
             style(Role::PillNameCurrent),
             Style {
                 bold: true,
-                ..on(palette::TEXT, palette::SURFACE1)
+                ..on(palette::WHITE, palette::SURFACE2)
             }
         );
         assert_eq!(
@@ -1139,7 +1142,7 @@ mod tests {
                 ..Style::default()
             });
             assert!(
-                against_other_tabs >= 1.3,
+                against_other_tabs >= 1.5,
                 "{role:?} against the other tabs: {against_other_tabs:.2}"
             );
             let ratio = contrast(current);
