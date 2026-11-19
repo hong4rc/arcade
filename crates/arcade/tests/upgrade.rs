@@ -968,6 +968,9 @@ fn a_daemon_from_before_the_feature_is_restarted_with_its_sessions_made_again() 
 #[test]
 fn an_upgrade_keeps_a_zoomed_window_and_its_progress_and_ends_copy_mode() {
     let env = Env::new();
+    // The progress glyph is read on the tab: the turns of a state with its number are tested
+    // elsewhere, so the symbol stays here.
+    env.set_config("[status]\nstate-number = \"replace\"\n");
     let new = env.copy_of_program("arcade-new");
     let mut host = env.host(Path::new(ARCADE), &["new", "-s", "main"]);
     host.wait_for_prompt().unwrap();
