@@ -9,6 +9,8 @@ use arcade_testkit::{AttachOptions, Screened, TestClient, TestDaemon, WAIT};
 
 const ARCADE: &str = env!("CARGO_BIN_EXE_arcade");
 const PREFIX: &[u8] = b"\x1b[109;5u";
+const FOCUS_IN: &[u8] = b"\x1b[I";
+const FOCUS_OUT: &[u8] = b"\x1b[O";
 
 fn run(socket: &Path, pane: Option<u64>, args: &[&str]) -> Output {
     let mut command = Command::new(ARCADE);
@@ -37,7 +39,8 @@ fn bar(c: &TestClient) -> String {
 }
 
 /// A client whose window has two panes: the focus is in the second, and the number of the first
-/// (out of focus) is returned.
+/// (out of focus) is returned. The host terminal then loses the focus: with it, every pane on
+/// the screen counts as looked at and would not keep an `info` notification.
 fn two_panes(daemon: &TestDaemon) -> (TestClient, u64) {
     let mut client = daemon
         .attach(AttachOptions::new().size(100, 30).named("work"))
@@ -47,6 +50,8 @@ fn two_panes(daemon: &TestDaemon) -> (TestClient, u64) {
     client.send(PREFIX);
     client.send(b"|");
     assert!(client.wait_until(WAIT, |c| c.screen_text().contains('│')));
+    client.send(FOCUS_OUT);
+    std::thread::sleep(Duration::from_millis(100));
     (client, first)
 }
 
@@ -113,8 +118,8 @@ fn an_info_notification_goes_away_when_the_pane_is_looked_at() {
     let (mut client, first) = two_panes(&daemon);
     run(daemon.socket(), Some(first), &["notify"]);
     assert!(shown(&mut client, "●1"), "{}", bar(&client));
-    client.send(PREFIX);
-    client.send(b"h");
+    // The terminal gets the focus back: every pane of the window is looked at.
+    client.send(FOCUS_IN);
     assert!(gone(&mut client, "●"), "{}", bar(&client));
 }
 

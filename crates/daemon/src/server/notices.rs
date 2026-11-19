@@ -59,6 +59,24 @@ impl Server {
             .map(|_| session.current_window().focus)
     }
 
+    /// Every pane drawn on the screen of the client, when it has a client and its host terminal
+    /// has the focus: a glance at a window is a glance at all the panes it shows. In a zoomed
+    /// window only the zoomed pane is drawn, so only that one is looked at. These are the panes
+    /// that lose what goes away at a glance (`clear-on-focus`, and the mark a command leaves);
+    /// the pane in focus alone is still the one that counts for typing, for the next-notification
+    /// key and for what is sent out to the host terminal (`seen_pane`).
+    fn seen_panes(session: &Session) -> Vec<u64> {
+        if session.client.is_none() || !session.host_focused {
+            return Vec::new();
+        }
+        session
+            .current_window()
+            .visible_rects()
+            .into_iter()
+            .map(|(pane, _)| pane)
+            .collect()
+    }
+
     /// The pane that has the focus in the window the client shows, whether or not the host
     /// terminal is looked at.
     fn focused_pane(session: &Session) -> Option<u64> {
@@ -275,8 +293,7 @@ impl Server {
         let seen = self
             .sessions
             .get(&session_id)
-            .and_then(Self::seen_pane)
-            .is_some_and(|p| p == pane);
+            .is_some_and(|s| Self::seen_panes(s).contains(&pane));
         let policy = self.config.notification.class(signal.class);
         if self
             .config
@@ -305,8 +322,13 @@ impl Server {
     pub(super) fn settle_notices(&mut self, session_id: u64) {
         // What a command left on a tab is gone once the pane is looked at, as a notification of
         // class info is.
-        if let Some(pane) = self.sessions.get(&session_id).and_then(Self::seen_pane) {
-            self.forget_finished(pane);
+        let seen = self
+            .sessions
+            .get(&session_id)
+            .map(Self::seen_panes)
+            .unwrap_or_default();
+        for pane in &seen {
+            self.forget_finished(*pane);
         }
         if self.notices.is_empty() {
             return;
@@ -319,15 +341,15 @@ impl Server {
                 self.push_out(pane, n.class, &n.source, &n.title, &n.message);
             }
         }
-        let seen = self.sessions.get(&session_id).and_then(Self::seen_pane);
-        if let Some(pane) = seen
-            && self
+        for pane in seen {
+            if self
                 .notices
                 .get(pane)
                 .is_some_and(|n| self.config.notification.class(n.class).clear_on_focus)
-        {
-            self.notices.clear(pane);
-            self.notices_changed(pane);
+            {
+                self.notices.clear(pane);
+                self.notices_changed(pane);
+            }
         }
     }
 
@@ -355,8 +377,7 @@ impl Server {
         let seen = self
             .sessions
             .get(&session_id)
-            .and_then(Self::seen_pane)
-            .is_some_and(|p| p == pane);
+            .is_some_and(|s| Self::seen_panes(s).contains(&pane));
         let limits = self.command_limits();
         let Some(p) = self.panes.get_mut(&pane) else {
             return;

@@ -90,27 +90,44 @@ fn a_failed_command_is_taken_away_the_same_way() {
 }
 
 #[test]
-fn a_command_that_ends_in_another_pane_of_the_window_leaves_a_mark_that_goes_on_focusing_it() {
+fn a_command_that_ends_in_a_hidden_pane_of_the_window_leaves_a_mark_that_goes_when_it_is_drawn() {
     let path = config();
     let daemon = TestDaemon::start_with(|c| c.config_path = Some(path.clone()));
     let mut client = daemon.attach(AttachOptions::new().size(100, 30)).unwrap();
     client.wait_for_prompt().unwrap();
-    // The left pane runs the command; the focus goes to the right pane while it runs.
+    // The left pane runs the command; the focus goes to the right pane, which is zoomed, while
+    // the command runs, so the left pane is not drawn.
     long_command(&mut client, 2, 0);
     let (ok, why) = daemon.command("pane.split-right", &[]).unwrap();
+    assert!(ok, "{why}");
+    let (ok, why) = daemon.command("pane.zoom", &[]).unwrap();
     assert!(ok, "{why}");
     assert!(
         client.wait_until(Duration::from_secs(6), bar_has_mark),
         "no mark: {}",
         client.status_row()
     );
-    let (ok, why) = daemon.command("pane.focus-left", &[]).unwrap();
+    // Zoom off: the left pane is drawn, so it is looked at.
+    let (ok, why) = daemon.command("pane.zoom", &[]).unwrap();
     assert!(ok, "{why}");
     assert!(
         client.wait_until(Duration::from_secs(2), |c| !bar_has_mark(c)),
         "the mark stayed: {}",
         client.status_row()
     );
+}
+
+#[test]
+fn a_command_that_ends_in_a_pane_that_is_drawn_leaves_no_mark_even_without_the_focus() {
+    let path = config();
+    let daemon = TestDaemon::start_with(|c| c.config_path = Some(path.clone()));
+    let mut client = daemon.attach(AttachOptions::new().size(100, 30)).unwrap();
+    client.wait_for_prompt().unwrap();
+    long_command(&mut client, 2, 0);
+    let (ok, why) = daemon.command("pane.split-right", &[]).unwrap();
+    assert!(ok, "{why}");
+    client.wait_until(Duration::from_secs(5), |_| false);
+    assert!(!bar_has_mark(&mut client), "{}", client.status_row());
 }
 
 #[test]

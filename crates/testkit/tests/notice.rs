@@ -30,6 +30,10 @@ fn signal_from_a_pane_left_behind(client: &mut TestClient, printf_argument: &str
     client.send(PREFIX);
     client.send(b"|");
     assert!(client.wait_until(WAIT, |c| c.screen_text().contains('│')));
+    // Every pane on the screen counts as looked at while the host terminal has the focus, so
+    // the person looks away: what the pane left behind then stands until the focus is back.
+    client.send(FOCUS_OUT);
+    std::thread::sleep(Duration::from_millis(100));
 }
 
 fn mark_shown(client: &mut TestClient, mark: &str) -> bool {
@@ -54,9 +58,9 @@ fn a_bell_in_a_pane_out_of_focus_shows_on_its_tab_and_in_the_counter_and_looking
     assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
     // The tab of the window wears the mark, too, in place of its number.
     assert!(bar(&client).contains(" ● "), "{}", bar(&client));
-    // Going to the pane that rang is looking at it: an info notification goes away at once.
-    client.send(PREFIX);
-    client.send(b"h");
+    // Looking at the window again is looking at every pane it shows: an info notification goes
+    // away at once, also in the pane beside the one in focus.
+    client.send(FOCUS_IN);
     assert!(
         client.wait_until(WAIT, |c| !bar(c).contains("●")),
         "{}",
@@ -92,12 +96,12 @@ fn the_two_notification_escape_sequences_make_one_each_and_the_others_make_none(
         bar(&client)
     );
     // A message in OSC 9, and a title and body in OSC 777, are.
+    client.send(FOCUS_IN);
     client.send(PREFIX);
     client.send(b"h");
     signal_from_a_pane_left_behind(&mut client, "\\033]9;build done\\007");
     assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
-    client.send(PREFIX);
-    client.send(b"h");
+    client.send(FOCUS_IN);
     assert!(client.wait_until(WAIT, |c| !bar(c).contains("●")));
     signal_from_a_pane_left_behind(&mut client, "\\033]777;notify;Title;Body\\007");
     assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
@@ -125,6 +129,7 @@ fn a_pane_whose_program_ends_takes_its_notification_with_it() {
     client.send(PREFIX);
     client.send(b"|");
     assert!(client.wait_until(WAIT, |c| c.screen_text().contains('│')));
+    client.send(FOCUS_OUT);
     assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
     // The first pane's shell ends, the pane closes, and the counter goes with it.
     assert!(
@@ -142,6 +147,10 @@ fn a_notification_is_kept_when_the_client_detaches_and_attaches_again() {
     let mut client = start(&daemon);
     signal_from_a_pane_left_behind(&mut client, "\\a");
     assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
+    // Zoomed on the pane in focus, so the pane that rang is not drawn when the client comes back.
+    client.send(PREFIX);
+    client.send(b"z");
+    std::thread::sleep(Duration::from_millis(200));
     client.detach();
     assert!(client.wait_closed(WAIT));
     let mut again = daemon
@@ -404,6 +413,8 @@ fn nothing_goes_out_for_the_pane_that_is_looked_at() {
 fn an_info_notification_asks_for_a_notification_but_does_not_ring() {
     let daemon = TestDaemon::start_counting_all();
     let (mut client, [first, _, _]) = three_panes(&daemon);
+    client.send(FOCUS_OUT);
+    settle(&mut client, Duration::from_millis(100));
     notify(&daemon, first, "info", "build", "done");
     assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
     settle(&mut client, Duration::from_millis(200));
@@ -703,12 +714,11 @@ fn a_command_notification_can_go_out_as_one_message() {
 fn a_class_can_be_made_to_go_away_when_looked_at() {
     let daemon = daemon_with("[notification.approval]\nclear-on-focus = true\n");
     let (mut client, [first, _, _]) = three_panes(&daemon);
+    client.send(FOCUS_OUT);
+    settle(&mut client, Duration::from_millis(100));
     notify(&daemon, first, "approval", "a", "x");
     assert!(mark_shown(&mut client, "▲1"), "{}", bar(&client));
-    client.send(PREFIX);
-    client.send(b"h");
-    client.send(PREFIX);
-    client.send(b"h");
+    client.send(FOCUS_IN);
     assert!(gone(&mut client, "▲"), "{}", bar(&client));
 }
 
@@ -738,6 +748,8 @@ fn counting_all_with_expiry(after: Option<Duration>) -> TestDaemon {
 fn an_unlooked_at_info_notification_goes_away_after_the_expiry_and_an_input_one_stays() {
     let daemon = counting_all_with_expiry(Some(Duration::from_secs(1)));
     let (mut client, [p1, p2, _]) = three_panes(&daemon);
+    client.send(FOCUS_OUT);
+    settle(&mut client, Duration::from_millis(100));
     notify(&daemon, p1, "info", "a", "done");
     notify(&daemon, p2, "input", "b", "waiting");
     assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
@@ -757,6 +769,8 @@ fn an_unlooked_at_info_notification_goes_away_after_the_expiry_and_an_input_one_
 fn with_the_expiry_off_an_unlooked_at_info_notification_stays() {
     let daemon = counting_all_with_expiry(None);
     let (mut client, [p1, _, _]) = three_panes(&daemon);
+    client.send(FOCUS_OUT);
+    settle(&mut client, Duration::from_millis(100));
     notify(&daemon, p1, "info", "a", "done");
     assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
     assert!(
@@ -764,4 +778,91 @@ fn with_the_expiry_off_an_unlooked_at_info_notification_stays() {
         "{}",
         bar(&client)
     );
+}
+
+// ---- A glance at a window is a glance at every pane it shows ----
+
+/// Two panes side by side, the focus in the second. Returns the client and both numbers.
+fn two_panes(daemon: &TestDaemon) -> (TestClient, u64, u64) {
+    let mut client = start(daemon);
+    let first = client.focused_pane_id();
+    client.split_right();
+    let second = client.focused_pane_id();
+    (client, first, second)
+}
+
+fn standing(daemon: &TestDaemon) -> String {
+    daemon.command("notify.list", &[]).unwrap().1
+}
+
+#[test]
+fn a_glance_at_the_window_clears_the_info_of_a_visible_pane_that_has_not_the_focus() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, first, _) = two_panes(&daemon);
+    // The host terminal is not looked at, so the signal stands.
+    client.send(FOCUS_OUT);
+    settle(&mut client, Duration::from_millis(200));
+    notify(&daemon, first, "info", "a", "done");
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
+    assert!(!standing(&daemon).trim().is_empty());
+    // Looking at the window again: the pane beside the one in focus is looked at, too.
+    client.send(FOCUS_IN);
+    assert!(gone(&mut client, "●"), "{}", bar(&client));
+    assert!(!standing(&daemon).contains("done"), "{}", standing(&daemon));
+}
+
+#[test]
+fn a_new_info_signal_for_a_visible_pane_without_the_focus_is_blocked() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, first, _) = two_panes(&daemon);
+    notify(&daemon, first, "info", "a", "done");
+    assert!(
+        nothing_shown_for(&mut client, "●", Duration::from_millis(400)),
+        "{}",
+        bar(&client)
+    );
+    let (_, log) = daemon.command("notify.log", &[]).unwrap();
+    assert!(log.contains("blocked"), "{log}");
+}
+
+#[test]
+fn in_a_zoomed_window_the_hidden_pane_keeps_its_info() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, first, _) = two_panes(&daemon);
+    client.send(PREFIX);
+    client.send(b"z");
+    settle(&mut client, Duration::from_millis(200));
+    notify(&daemon, first, "info", "a", "done");
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
+    assert!(
+        !nothing_shown_for(&mut client, "●1", Duration::from_millis(500)),
+        "{}",
+        bar(&client)
+    );
+    // Zoom off: the pane is drawn again, so it is looked at.
+    client.send(PREFIX);
+    client.send(b"z");
+    assert!(gone(&mut client, "●"), "{}", bar(&client));
+}
+
+#[test]
+fn an_input_notification_on_a_visible_pane_without_the_focus_stays() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, first, _) = two_panes(&daemon);
+    notify(&daemon, first, "input", "a", "waiting");
+    assert!(mark_shown(&mut client, "◆1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(500));
+    assert!(bar(&client).contains("◆1"), "{}", bar(&client));
+}
+
+#[test]
+fn with_the_host_terminal_out_of_focus_the_info_of_a_visible_pane_stays() {
+    let daemon = counting_all_with_expiry(None);
+    let (mut client, first, _) = two_panes(&daemon);
+    client.send(FOCUS_OUT);
+    settle(&mut client, Duration::from_millis(200));
+    notify(&daemon, first, "info", "a", "done");
+    assert!(mark_shown(&mut client, "●1"), "{}", bar(&client));
+    settle(&mut client, Duration::from_millis(600));
+    assert!(bar(&client).contains("●1"), "{}", bar(&client));
 }
