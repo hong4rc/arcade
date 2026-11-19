@@ -1646,12 +1646,18 @@ impl Server {
     }
 
     /// Run `f` with `cause` as the reason for any window change it makes, then put back the
-    /// reason that was there.
+    /// reason that was there. The reason that was named first is kept, so a change made under
+    /// the notification jump keeps that name, whatever helper it went through. The one exception
+    /// is a key: a list or the tree that a key opened names its own choice, since the key only
+    /// asked for the list.
     pub(super) fn with_cause<T>(
         &mut self,
         cause: impl Into<String>,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
+        if self.cause.as_deref().is_some_and(|c| !is_key_cause(c)) {
+            return f(self);
+        }
         let previous = self.cause.replace(cause.into());
         let out = f(self);
         self.cause = previous;

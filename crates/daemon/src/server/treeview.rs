@@ -552,7 +552,7 @@ impl Server {
             return Err("that session is gone".to_string());
         }
         if let Some(window) = window {
-            self.with_cause("the tree", |s| s.select_window(target, window));
+            self.select_window(target, window);
             if let Some(pane) = pane {
                 let ctx = Ctx {
                     session: target,

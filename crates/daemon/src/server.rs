@@ -359,6 +359,11 @@ impl ChangeKind {
     }
 }
 
+/// Whether a reason was named by a key (`key <name>` or `prefix then <name>`).
+fn is_key_cause(cause: &str) -> bool {
+    cause.starts_with("key ") || cause.starts_with("prefix then ")
+}
+
 /// How many changes a session keeps for `arcade window log`.
 const CHANGES_KEPT: usize = 20;
 

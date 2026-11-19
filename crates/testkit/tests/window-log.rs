@@ -3,9 +3,13 @@
 
 use std::time::Duration;
 
-use arcade_testkit::{AttachOptions, Screened, TestDaemon, WAIT};
+use arcade_testkit::{AttachOptions, Screened, TestClient, TestDaemon, WAIT};
 
 const PREFIX: &[u8] = b"\x1b[109;5u";
+const FOCUS_IN: &[u8] = b"\x1b[I";
+const FOCUS_OUT: &[u8] = b"\x1b[O";
+/// Ctrl+Alt+a, the key of `notification.next`.
+const NEXT_NOTIFICATION: &[u8] = b"\x1b[97;7u";
 
 fn start(daemon: &TestDaemon) -> arcade_testkit::TestClient {
     let mut client = daemon
@@ -101,4 +105,122 @@ fn the_host_terminal_losing_and_gaining_the_focus_is_logged_in_order() {
 fn run(daemon: &TestDaemon, name: &str, args: &[&str]) {
     let (ok, output) = daemon.command(name, args).unwrap();
     assert!(ok, "{name} {args:?}: {output}");
+}
+
+/// The lines of the log that record a change from window 2 to window 1.
+fn to_window_one(lines: &[String]) -> Vec<&String> {
+    lines
+        .iter()
+        .filter(|l| l.contains("window 2 -> 1"))
+        .collect()
+}
+
+fn daemon_with_auto_jump(name: &str, settings: &str) -> TestDaemon {
+    let path =
+        std::env::temp_dir().join(format!("arc-window-log-{name}-{}.toml", std::process::id()));
+    std::fs::write(&path, settings).unwrap();
+    TestDaemon::start_with(move |c| c.config_path = Some(path))
+}
+
+fn notify(daemon: &TestDaemon, pane: u64) {
+    let target = format!("target={pane}");
+    let (ok, why) = daemon
+        .command(
+            "notify.send",
+            &[
+                "version=1",
+                &target,
+                "class=approval",
+                "source=test",
+                "message=may I",
+            ],
+        )
+        .unwrap();
+    assert!(ok, "{why}");
+}
+
+/// Window 1 (named A) has the pane `first`; window 2 (named B) is shown.
+fn two_windows(daemon: &TestDaemon) -> (TestClient, u64) {
+    let mut client = daemon
+        .attach(AttachOptions::new().size(100, 30).named("work"))
+        .unwrap();
+    client.wait_for_prompt().unwrap();
+    run(daemon, "window.rename", &["A"]);
+    let first = client.focused_pane_id();
+    run(daemon, "window.new", &[]);
+    run(daemon, "window.rename", &["B"]);
+    assert!(client.wait_until(WAIT, |c| c.focused_pane_id() != first));
+    (client, first)
+}
+
+#[test]
+fn the_focus_coming_back_names_the_notification_jump_as_the_reason_when_it_jumps() {
+    let daemon = daemon_with_auto_jump("jump", "[notification]\nauto-jump = true\n");
+    let (mut client, first) = two_windows(&daemon);
+    client.send(FOCUS_OUT);
+    notify(&daemon, first);
+    assert!(client.wait_until(WAIT, |c| c.status_row().contains('▲')));
+    client.send(FOCUS_IN);
+    assert!(client.wait_until(WAIT, |c| c.focused_pane_id() == first));
+    let (_, log) = daemon.command("window.log", &[]).unwrap();
+    let lines: Vec<String> = log.lines().map(str::to_string).collect();
+    let change = to_window_one(&lines);
+    assert_eq!(change.len(), 1, "{lines:?}");
+    assert!(
+        change[0].ends_with("a notification jump, when the host terminal got the focus back"),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_left_press_on_a_tab_names_the_click_and_its_column() {
+    let daemon = TestDaemon::start();
+    let (mut client, first) = two_windows(&daemon);
+    let rows = client.screen_rows();
+    let (y, bar) = (rows.len() - 1, rows[rows.len() - 1].clone());
+    let at = bar.find("A  1").unwrap_or_else(|| panic!("{bar:?}"));
+    let x = bar[..at].chars().count() as u16;
+    client.send(format!("\x1b[<0;{};{}M\x1b[<0;{};{}m", x + 1, y + 1, x + 1, y + 1).as_bytes());
+    assert!(client.wait_until(WAIT, |c| c.focused_pane_id() == first));
+    let (_, log) = daemon.command("window.log", &[]).unwrap();
+    let lines: Vec<String> = log.lines().map(str::to_string).collect();
+    let change = to_window_one(&lines);
+    assert_eq!(change.len(), 1, "{lines:?}");
+    assert!(
+        change[0].ends_with(&format!("a click on the bar, column {x}")),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn notification_next_by_its_key_names_the_key() {
+    let daemon = TestDaemon::start();
+    let (mut client, first) = two_windows(&daemon);
+    notify(&daemon, first);
+    assert!(client.wait_until(WAIT, |c| c.status_row().contains('▲')));
+    client.send(NEXT_NOTIFICATION);
+    assert!(client.wait_until(WAIT, |c| c.focused_pane_id() == first));
+    let (_, log) = daemon.command("window.log", &[]).unwrap();
+    let lines: Vec<String> = log.lines().map(str::to_string).collect();
+    let change = to_window_one(&lines);
+    assert_eq!(change.len(), 1, "{lines:?}");
+    assert!(change[0].ends_with("key ctrl+alt+a"), "{lines:?}");
+}
+
+#[test]
+fn choosing_a_row_in_the_notification_list_names_the_list() {
+    let daemon = TestDaemon::start();
+    let (mut client, first) = two_windows(&daemon);
+    notify(&daemon, first);
+    assert!(client.wait_until(WAIT, |c| c.status_row().contains('▲')));
+    client.send(PREFIX);
+    client.send(b"a");
+    assert!(client.wait_until(WAIT, |c| c.screen_text().contains("Notifications")));
+    client.send(b"\r");
+    assert!(client.wait_until(WAIT, |c| c.focused_pane_id() == first));
+    let (_, log) = daemon.command("window.log", &[]).unwrap();
+    let lines: Vec<String> = log.lines().map(str::to_string).collect();
+    let change = to_window_one(&lines);
+    assert_eq!(change.len(), 1, "{lines:?}");
+    assert!(change[0].ends_with("the notification list"), "{lines:?}");
 }
