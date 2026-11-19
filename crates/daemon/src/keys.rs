@@ -587,7 +587,8 @@ pub fn stray_answers(bytes: &[u8]) -> bool {
                 .iter()
                 .position(|b| (0x40..=0x7e).contains(b))
                 .map(|p| p + 1),
-            b']' | b'P' => rest
+            // A string that ends with BEL or ESC \: an OSC, a DCS, or an APC (a graphics answer).
+            b']' | b'P' | b'_' => rest
                 .iter()
                 .enumerate()
                 .find(|(n, b)| **b == 0x07 || (**b == 0x1b && rest.get(n + 1) == Some(&b'\\')))
@@ -946,6 +947,12 @@ mod tests {
         assert!(!stray_answers(b"\x1b[?1u\x1b[?62;22c"));
         assert!(!stray_answers(b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\\x1b[0n"));
         assert!(!stray_answers(b"\x1bP1$r0m\x1b\\"));
+        // Four whole answers in one write, as the terminal sent them: a mode report, a graphics
+        // answer (an APC string), another mode report and device attributes.
+        assert!(!stray_answers(
+            b"\x1b[?2026;2$y\x1b_Gi=31;OK\x1b\\\x1b[?1016;2$y\x1b[?62;22c"
+        ));
+        assert!(!stray_answers(b"\x1b_Gi=31;OK\x07"));
         assert!(stray_answers(b"\x12"));
         assert!(stray_answers(b"\xff"));
         assert!(stray_answers(b"\x1b[?62;"));
