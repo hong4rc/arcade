@@ -1980,7 +1980,6 @@ impl Server {
     }
 }
 
-/// A binding's command with its arguments, as it would be typed.
 /// What `arcade window log` says about where a new shell was told to start: the directory read
 /// from the pane it was made from, or why that could not be read and where it started instead.
 pub(super) fn directory_note(pane: u64, read: &Result<String, String>, used: &str) -> String {
@@ -1992,6 +1991,7 @@ pub(super) fn directory_note(pane: u64, read: &Result<String, String>, used: &st
     }
 }
 
+/// A binding's command with its arguments, as it would be typed.
 fn binding_line(binding: &Binding) -> String {
     if binding.args.is_empty() {
         binding.command.clone()
