@@ -231,3 +231,29 @@ fn choosing_a_row_in_the_notification_list_names_the_list() {
     assert_eq!(change.len(), 1, "{lines:?}");
     assert!(change[0].ends_with("the notification list"), "{lines:?}");
 }
+
+#[test]
+fn a_new_window_says_which_directory_it_read_from_the_pane_it_was_made_from() {
+    let daemon = TestDaemon::start();
+    let mut client = start(&daemon);
+    // The shell moves to a directory other than the one the session started in.
+    client.type_line("mkdir -p moved-here && cd moved-here && echo moved-$((40 + 2))");
+    client.wait_for_text("moved-42").unwrap();
+    client.send(PREFIX);
+    client.send(b"c");
+    client.wait_for_prompt().unwrap();
+    client.type_line("pwd; echo here-$((40 + 2))");
+    client.wait_for_text("here-42").unwrap();
+    assert!(
+        client.screen_text().contains("moved-here\n"),
+        "the new shell is in the directory of the pane it was made from: {}",
+        client.screen_text()
+    );
+    let lines = log(&daemon);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("work  new shell from pane") && l.ends_with("moved-here")),
+        "{lines:?}"
+    );
+}

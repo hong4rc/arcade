@@ -250,8 +250,14 @@ pub fn signal_group(pid: i32, signal: i32) {
 }
 
 /// The working directory of a process, when the system tells us.
-#[cfg(target_os = "macos")]
 pub fn process_cwd(pid: i32) -> Option<String> {
+    read_cwd(pid).ok()
+}
+
+/// The working directory of a process, or the reason it could not be read, in words for a
+/// diagnostic.
+#[cfg(target_os = "macos")]
+pub fn read_cwd(pid: i32) -> Result<String, String> {
     // SAFETY: proc_pidinfo fills the struct we give it, of the size we state.
     let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
@@ -266,20 +272,27 @@ pub fn process_cwd(pid: i32) -> Option<String> {
         )
     };
     if got != size {
-        return None;
+        let error = io::Error::last_os_error();
+        return Err(format!("the system gave {got} of {size} bytes ({error})"));
     }
     // SAFETY: the path array is one block of bytes that the system ended with a zero byte.
     let path = unsafe { std::ffi::CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
-    let path = path.to_str().ok()?;
-    (!path.is_empty()).then(|| path.to_string())
+    let path = path
+        .to_str()
+        .map_err(|_| "the path is not text".to_string())?;
+    if path.is_empty() {
+        return Err("the system gave an empty path".to_string());
+    }
+    Ok(path.to_string())
 }
 
-/// The working directory of a process, when the system tells us.
+/// The working directory of a process, or the reason it could not be read, in words for a
+/// diagnostic.
 #[cfg(not(target_os = "macos"))]
-pub fn process_cwd(pid: i32) -> Option<String> {
+pub fn read_cwd(pid: i32) -> Result<String, String> {
     std::fs::read_link(format!("/proc/{pid}/cwd"))
-        .ok()
         .map(|p| p.display().to_string())
+        .map_err(|e| e.to_string())
 }
 
 /// The name of the program a process runs, when the system tells us.
@@ -362,6 +375,18 @@ mod tests {
             cols: 80,
             rows: 24,
         }
+    }
+
+    #[test]
+    fn the_directory_of_a_process_is_read_and_a_process_that_is_not_there_gives_a_reason() {
+        let own = read_cwd(std::process::id() as i32).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&own).unwrap(),
+            std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap()
+        );
+        let why = read_cwd(i32::MAX).unwrap_err();
+        assert!(!why.is_empty(), "{why:?}");
+        assert_eq!(process_cwd(i32::MAX), None);
     }
 
     /// Everything that can be read from the master right now.

@@ -1034,11 +1034,9 @@ impl Server {
             .sessions
             .get(&ctx.session)
             .ok_or_else(|| "no such session".to_string())?;
-        let cwd = self
-            .panes
-            .get(&ctx.pane)
-            .and_then(|p| pty::process_cwd(p.pid))
-            .unwrap_or_else(|| source.cwd.clone());
+        let read = self.pane_directory(ctx.pane);
+        let cwd = read.clone().unwrap_or_else(|_| source.cwd.clone());
+        let used = cwd.clone();
         let request = arcade_proto::AttachRequest {
             session: None,
             create: arcade_proto::CreateMode::Always,
@@ -1050,6 +1048,7 @@ impl Server {
             rows: source.rows,
         };
         let created = self.create_session(&request)?;
+        self.note_directory(created, ctx.pane, &read, &used);
         let created_name = self
             .sessions
             .get(&created)
@@ -1432,15 +1431,13 @@ impl Server {
         let rect = probe
             .rect_of(u64::MAX)
             .ok_or_else(|| "no room to split".to_string())?;
-        let cwd = self
-            .panes
-            .get(&ctx.pane)
-            .and_then(|p| pty::process_cwd(p.pid))
-            .unwrap_or_else(|| session.cwd.clone());
+        let read = self.pane_directory(ctx.pane);
+        let cwd = read.clone().unwrap_or_else(|_| session.cwd.clone());
         let env = session.env.clone();
-        let pane = self.spawn_pane(Vec::new(), cwd, &env, rect.w, rect.h)?;
+        let pane = self.spawn_pane(Vec::new(), cwd.clone(), &env, rect.w, rect.h)?;
         let new_id = pane.id;
         self.panes.insert(new_id, pane);
+        self.note_directory(ctx.session, ctx.pane, &read, &cwd);
         if let Some(window) = self
             .sessions
             .get_mut(&ctx.session)
@@ -1468,10 +1465,8 @@ impl Server {
         }
         let (cols, rows) = window_area(session.cols, session.rows, self.config.status_position);
         let cwd = self
-            .panes
-            .get(&ctx.pane)
-            .and_then(|p| pty::process_cwd(p.pid))
-            .unwrap_or_else(|| session.cwd.clone());
+            .pane_directory(ctx.pane)
+            .unwrap_or_else(|_| session.cwd.clone());
         let name = name_of_pane(&self.panes, self.config.window_name_from, ctx.pane, &cwd);
         self.unzoom(ctx);
         self.remove_leaf(ctx);
@@ -1608,27 +1603,59 @@ impl Server {
 
     // ---- Windows ----
 
+    /// The directory of the shell of a pane now, or why the system did not say.
+    fn pane_directory(&self, pane: u64) -> Result<String, String> {
+        match self.panes.get(&pane) {
+            Some(p) => pty::read_cwd(p.pid).map_err(|e| format!("pid {}: {e}", p.pid)),
+            None => Err("the pane is gone".to_string()),
+        }
+    }
+
+    /// Keep for `arcade window log` where a new shell was told to start, and why: the directory
+    /// read from the pane, or the reason it could not be read and the directory used instead.
+    fn note_directory(
+        &mut self,
+        session_id: u64,
+        pane: u64,
+        read: &Result<String, String>,
+        used: &str,
+    ) {
+        let at = self.started.elapsed().as_secs_f64();
+        let Some(session) = self.sessions.get_mut(&session_id) else {
+            return;
+        };
+        let kind = ChangeKind::Directory {
+            session: session.name.clone(),
+            text: directory_note(pane, read, used),
+        };
+        keep_change(&mut session.window_changes, at, kind);
+    }
+
     /// A new window. Its shell starts in `directory` when one is given and exists, else where the
     /// shell of the pane that asked is now; the window is named after the directory its own
     /// shell starts in.
     fn new_window(&mut self, ctx: Ctx, directory: Option<String>) -> Result<String, String> {
+        let given = directory.filter(|d| std::path::Path::new(d).is_dir());
+        let read = if given.is_none() {
+            Some(self.pane_directory(ctx.pane))
+        } else {
+            None
+        };
         let session = self
             .sessions
             .get(&ctx.session)
             .ok_or_else(|| "no such session".to_string())?;
         let (cols, rows) = window_area(session.cols, session.rows, self.config.status_position);
-        let cwd = directory
-            .filter(|d| std::path::Path::new(d).is_dir())
-            .or_else(|| {
-                self.panes
-                    .get(&ctx.pane)
-                    .and_then(|p| pty::process_cwd(p.pid))
-            })
+        let cwd = given
+            .or_else(|| read.clone().and_then(Result::ok))
             .unwrap_or_else(|| session.cwd.clone());
         let env = session.env.clone();
         let pane = self.spawn_pane(Vec::new(), cwd.clone(), &env, cols, rows)?;
         let pane_id = pane.id;
         self.panes.insert(pane_id, pane);
+        if let Some(read) = &read {
+            self.note_directory(ctx.session, ctx.pane, read, &cwd);
+        }
         let window_id = self.next_window;
         self.next_window += 1;
         let (base_index, renumber) = (self.config.base_index, self.config.renumber);
@@ -1954,6 +1981,17 @@ impl Server {
 }
 
 /// A binding's command with its arguments, as it would be typed.
+/// What `arcade window log` says about where a new shell was told to start: the directory read
+/// from the pane it was made from, or why that could not be read and where it started instead.
+pub(super) fn directory_note(pane: u64, read: &Result<String, String>, used: &str) -> String {
+    match read {
+        Ok(dir) => format!("new shell from pane {pane}: its directory is {dir}"),
+        Err(why) => format!(
+            "new shell from pane {pane}: its directory could not be read ({why}), started in {used}"
+        ),
+    }
+}
+
 fn binding_line(binding: &Binding) -> String {
     if binding.args.is_empty() {
         binding.command.clone()
@@ -1993,5 +2031,27 @@ mod pane_info_tests {
         let line = pane_info_line("0.1.5", "a", 2, "b", 3, "x\ny\"z", 1.0);
         assert!(!line.contains('\n'), "{line}");
         assert!(line.contains("pane 3 \"x\\ny\\\"z\""), "{line}");
+    }
+}
+
+#[cfg(test)]
+mod directory_note_tests {
+    use super::directory_note;
+
+    #[test]
+    fn a_directory_that_was_read_is_named_and_one_that_was_not_gives_its_reason_and_the_fallback() {
+        assert_eq!(
+            directory_note(12, &Ok("/work/artemic".to_string()), "/work/artemic"),
+            "new shell from pane 12: its directory is /work/artemic"
+        );
+        let note = directory_note(
+            12,
+            &Err("pid 93806: the system gave 0 of 2352 bytes (No such process)".to_string()),
+            "/work/hong-agent",
+        );
+        assert_eq!(
+            note,
+            "new shell from pane 12: its directory could not be read (pid 93806: the system gave 0 of 2352 bytes (No such process)), started in /work/hong-agent"
+        );
     }
 }

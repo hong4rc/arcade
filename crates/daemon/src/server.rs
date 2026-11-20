@@ -340,6 +340,8 @@ enum ChangeKind {
     },
     /// The host terminal got or lost the focus while this session was attached.
     Focus { session: String, gained: bool },
+    /// A shell was started in a directory taken from a pane: what was read, or why not.
+    Directory { session: String, text: String },
 }
 
 impl ChangeKind {
@@ -355,6 +357,7 @@ impl ChangeKind {
                 "{session}  host focus {}",
                 if *gained { "gained" } else { "lost" }
             ),
+            ChangeKind::Directory { session, text } => format!("{session}  {text}"),
         }
     }
 }
