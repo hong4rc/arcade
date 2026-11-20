@@ -14,7 +14,7 @@ Run from the repository root. The first time on a new machine, run `./scripts/fe
 
 | Task | Command |
 |---|---|
-| Tests | `cargo test --workspace` |
+| Tests | `./scripts/test.sh` (all tests through cargo-nextest, then doc tests; the first run downloads nextest into `.tools/nextest`) |
 | Format | `cargo fmt --all` (check without changing: `cargo fmt --all --check`) |
 | Lint | `cargo lint` |
 | Compare the parsers (decision 001) | `cargo parser-eval all` |
@@ -28,6 +28,7 @@ A change counts as done only when the test, format and lint commands all run cle
 
 - The Rust version is pinned in `rust-toolchain.toml`.
 - The terminal emulation library libghostty-vt is written in Zig and needs exactly Zig 0.17. `./scripts/fetch-zig.sh` downloads Zig into `.tools/zig` inside the repository (nothing is installed on the machine); `.cargo/config.toml` points the `ZIG` variable there.
+- `./scripts/fetch-nextest.sh` downloads a pinned cargo-nextest into `.tools/nextest` (nothing is installed on the machine); `scripts/test.sh` calls it when needed.
 - `.cargo/config.toml` sets `LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast`. Do not remove this line: without it, the Zig part is compiled in debug mode and becomes thousands of times slower (measured, see decision 001).
 
 ## Constraints
