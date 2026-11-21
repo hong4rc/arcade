@@ -1085,8 +1085,9 @@ fn a_forced_upgrade_of_the_same_build_says_what_happened() {
         let out = env.plain_with(&live, &["upgrade", "--force"]);
         let shown = text(&out);
         assert!(out.status.success(), "attached {attached}: {shown}");
+        let version = env!("CARGO_PKG_VERSION");
         assert!(
-            shown.contains("upgraded 0.1.5 -> 0.1.5: kept 1 sessions"),
+            shown.contains(&format!("upgraded {version} -> {version}: kept 1 sessions")),
             "attached {attached}: {shown}"
         );
         assert_eq!(
